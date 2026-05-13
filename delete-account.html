@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fundora Account Deletion</title>
-    <meta name="description" content="Learn how to delete your Fundora account and request data removal from our personal finance app.">
+    <meta name="description"
+        content="Learn how to delete your Fundora account and request data removal from our personal finance app.">
     <meta name="keywords" content="Fundora, account deletion, data removal, privacy, mobile app">
     <meta name="author" content="Fundora">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -103,6 +105,23 @@
             background-color: #2f855a;
         }
 
+        .button-row {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .button-secondary {
+            background-color: #ffffff;
+            color: #2f855a;
+            border: 2px solid #38a169;
+        }
+
+        .button-secondary:hover {
+            background-color: #f0fff4;
+        }
+
         footer {
             background-color: #2d3748;
             color: #ffffff;
@@ -153,6 +172,7 @@
         }
     </style>
 </head>
+
 <body>
     <header>
         <div class="container">
@@ -175,9 +195,25 @@
 
         <section class="section">
             <h2>Request deletion without app access</h2>
-            <p>If you can no longer access the Fundora app, you can request account deletion by emailing us from your registered email address.</p>
+            <p>If you can no longer access the Fundora app, you can request account deletion by emailing us from your
+                registered email address.</p>
             <p>We may need to verify your account ownership before processing the request.</p>
-            <a href="mailto:fundoraapp.support@gmail.com?subject=Fundora%20Account%20Deletion%20Request&body=Hello%20Fundora%20Support%2C%0A%0AI%20would%20like%20to%20request%20deletion%20of%20my%20Fundora%20account%20and%20associated%20personal%20data.%0A%0ARegistered%20email%3A%0A%0AReason%2C%20optional%3A" class="button">Request Account Deletion</a>
+            <div class="button-row">
+                <a href="mailto:fundoraapp.support@gmail.com?subject=Fundora%20Account%20Deletion%20Request&body=Hello%20Fundora%20Support%2C%0A%0AI%20would%20like%20to%20request%20deletion%20of%20my%20Fundora%20account%20and%20associated%20personal%20data.%0A%0ARegistered%20email%3A%0A%0AReason%2C%20optional%3A"
+                    class="button">
+                    Request by Email App
+                </a>
+
+                <a href="https://mail.google.com/mail/?view=cm&fs=1&to=fundoraapp.support@gmail.com&su=Fundora%20Account%20Deletion%20Request&body=Hello%20Fundora%20Support%2C%0A%0AI%20would%20like%20to%20request%20deletion%20of%20my%20Fundora%20account%20and%20associated%20personal%20data.%0A%0ARegistered%20email%3A%0A%0AReason%2C%20optional%3A"
+                    class="button button-secondary" target="_blank" rel="noopener noreferrer">
+                    Request with Gmail
+                </a>
+            </div>
+            <p class="fallback-text">
+                If the button does not open your email app, email us directly at
+                <a href="mailto:fundoraapp.support@gmail.com">fundoraapp.support@gmail.com</a>
+                with the subject “Fundora Account Deletion Request”.
+            </p>
         </section>
 
         <section class="section">
@@ -198,7 +234,12 @@
 
         <section class="section">
             <h2>Shared group records</h2>
-            <p>Some shared Group Event or Group Goal records may remain because they are part of other members' shared financial history. Where retained, your identity will be anonymized as "Deleted user", and personal identifiers such as email and login credentials will be removed.</p>
+            <p>Some shared Group Event or Group Goal records may remain because they are part of other members' shared
+                financial history. Where retained, your identity will be anonymized as "Deleted user", and personal
+                identifiers such as email and login credentials will be removed.</p>
+            <p>If you are the owner of a shared Group Event or Group Goal, ownership may be transferred to another
+                active member where possible. If no other active members remain, the shared record may be archived or
+                closed.</p>
         </section>
 
         <section class="section">
@@ -209,12 +250,17 @@
                 <li>Records needed for dispute resolution or legal compliance</li>
                 <li>Data required for fraud prevention</li>
             </ul>
-            <p>Retained data is not linked to your personal identity and will be deleted after the required retention period.</p>
+            <p>Where possible, retained data will be minimized, anonymized, or separated from personal identifiers.
+                Retention periods may vary depending on legal, security, operational, or dispute-resolution
+                requirements.</p>
         </section>
 
         <section class="section">
             <h2>Processing time</h2>
-            <p>Account deletions requested through the app are processed immediately. Email requests may take up to 30 days to process, depending on verification requirements.</p>
+            <p>Account deletion requests submitted through the app are usually processed immediately after successful
+                verification. In some cases, completion may take additional time due to security checks, network issues,
+                or service processing. Email requests may take up to 30 days to process, depending on verification
+                requirements.</p>
         </section>
 
         <section class="section">
@@ -236,4 +282,5 @@
         </div>
     </footer>
 </body>
+
 </html>
