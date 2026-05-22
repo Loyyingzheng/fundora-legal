@@ -1,0 +1,4 @@
+# Optional: keep your local configured copy private if you prefer.
+# Firebase web config is public, but do not commit anything containing private secrets.
+.env
+*.local.js
