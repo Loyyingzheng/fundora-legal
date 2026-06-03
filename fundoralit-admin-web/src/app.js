@@ -12,6 +12,24 @@ const config = window.FUNDORALIT_ADMIN_CONFIG || {};
 const coreApiBaseUrl = normalizeBaseUrl(config.coreApiBaseUrl || '');
 const firebaseConfig = config.firebase || {};
 
+// Centralized admin API path presets.
+// Keep all backend route links here so future backend changes only need one small update.
+const API_PATHS = {
+  feedback: {
+    list: '/api/feedback/admin',
+    close: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/close`,
+    reopen: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/reopen`,
+  },
+  rewardSurvey: {
+    list: '/api/subscription/feedback-trial/admin/surveys',
+    close: (id) => `/api/subscription/feedback-trial/admin/surveys/${encodeURIComponent(id)}/close`,
+    reopen: (id) => `/api/subscription/feedback-trial/admin/surveys/${encodeURIComponent(id)}/reopen`,
+  },
+  reviewPrompt: {
+    list: '/api/review-prompts/admin/states',
+  },
+};
+
 const state = {
   auth: null,
   user: null,
@@ -23,6 +41,7 @@ const state = {
   data: null,
   error: '',
   message: '',
+  modal: null,
 };
 
 const authBox = document.getElementById('authBox');
@@ -166,7 +185,7 @@ async function loadData() {
   try {
     let response;
     if (state.activeTab === 'feedback') {
-      response = await api('/api/feedback/admin', {
+      response = await api(API_PATHS.feedback.list, {
         params: {
           page: state.page,
           size: state.size,
@@ -174,11 +193,11 @@ async function loadData() {
         },
       });
     } else if (state.activeTab === 'premium') {
-      response = await api('/api/subscription/feedback-trial/admin/surveys', {
+      response = await api(API_PATHS.rewardSurvey.list, {
         params: { page: state.page, size: 50 },
       });
     } else {
-      response = await api('/api/review-prompts/admin/states', {
+      response = await api(API_PATHS.reviewPrompt.list, {
         params: { page: state.page, size: 50, sort: 'updatedAt,desc' },
       });
     }
@@ -192,20 +211,83 @@ async function loadData() {
   }
 }
 
-async function patchAction(path, successMessage) {
+async function patchAction(path, successMessage, body) {
   if (!confirm('Confirm this admin action?')) return;
+  await performPatchAction(path, successMessage, body);
+}
+
+async function performPatchAction(path, successMessage, body) {
   state.loading = true;
   state.error = '';
   render();
   try {
-    await api(path, { method: 'PATCH' });
+    await api(path, { method: 'PATCH', ...(body !== undefined ? { body } : {}) });
     setMessage(successMessage || 'Updated successfully.');
+    state.modal = null;
     await loadData();
   } catch (error) {
     setMessage(error.message || 'Admin action failed.', true);
     state.loading = false;
     render();
   }
+}
+
+function openCloseModal(kind, item) {
+  const isReward = kind === 'rewardSurvey';
+  const targetLabel = isReward ? 'reward survey' : 'feedback';
+  state.modal = {
+    kind,
+    id: item.id,
+    title: `Close / Solve ${targetLabel}`,
+    userEmail: item.userEmail || extractEmailFromDebugJson(item.debugJson) || '',
+    notifyUser: true,
+    adminReplyMessage: '',
+    defaultPreview: buildDefaultCloseMessage(kind, item),
+  };
+  render();
+}
+
+function closeModal() {
+  state.modal = null;
+  render();
+}
+
+function extractEmailFromDebugJson(debugJson) {
+  if (!debugJson) return '';
+  try {
+    const parsed = typeof debugJson === 'string' ? JSON.parse(debugJson) : debugJson;
+    return parsed?.userEmail || parsed?.email || parsed?.profileEmail || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function buildDefaultCloseMessage(kind, item) {
+  const target = kind === 'rewardSurvey' ? 'feedback reward review' : 'feedback report';
+  const issue = item.issue || item.futureUsageIntent || item.module || 'your submission';
+  return [
+    `Hi,`,
+    ``,
+    `Thank you for sharing ${target} with Fundoralit.`,
+    `We have reviewed and marked it as solved/closed.`,
+    issue ? `Reference: ${issue}` : '',
+    ``,
+    `Best regards,`,
+    `Fundoralit Support`,
+  ].filter(Boolean).join('\n');
+}
+
+async function submitCloseModal() {
+  if (!state.modal?.id) return;
+  const kind = state.modal.kind;
+  const path = kind === 'rewardSurvey'
+    ? API_PATHS.rewardSurvey.close(state.modal.id)
+    : API_PATHS.feedback.close(state.modal.id);
+  const body = {
+    notifyUser: Boolean(state.modal.notifyUser),
+    adminReplyMessage: String(state.modal.adminReplyMessage || '').trim() || null,
+  };
+  await performPatchAction(path, kind === 'rewardSurvey' ? 'Reward survey closed.' : 'Feedback closed.', body);
 }
 
 function renderAuth() {
@@ -329,7 +411,7 @@ function renderFeedbackItem(item) {
     ]),
     el('p', { class: 'item-desc', text: item.description || '-' }),
     renderMetaGrid([
-      ['ID', item.id], ['User ID', item.userId], ['Severity', item.severity],
+      ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail || extractEmailFromDebugJson(item.debugJson)], ['Severity', item.severity],
       ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
       ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
     ]),
@@ -339,8 +421,8 @@ function renderFeedbackItem(item) {
     el('details', {}, [el('summary', { text: 'Debug JSON' }), el('pre', { text: debugText })]),
     el('div', { class: 'actions' }, [
       isClosed
-        ? el('button', { class: 'btn success small', text: 'Reopen', onclick: () => patchAction(`/api/feedback/admin/${item.id}/reopen`, 'Feedback reopened.') })
-        : el('button', { class: 'btn danger small', text: 'Close', onclick: () => patchAction(`/api/feedback/admin/${item.id}/close`, 'Feedback closed.') }),
+        ? el('button', { class: 'btn success small', text: 'Reopen', onclick: () => patchAction(API_PATHS.feedback.reopen(item.id), 'Feedback reopened.') })
+        : el('button', { class: 'btn danger small', text: 'Close', onclick: () => openCloseModal('feedback', item) }),
     ]),
   ]);
 }
@@ -367,8 +449,8 @@ function renderPremiumItem(item) {
     ]),
     el('div', { class: 'actions' }, [
       isClosed
-        ? el('button', { class: 'btn success small', text: 'Reopen survey', onclick: () => patchAction(`/api/subscription/feedback-trial/admin/surveys/${item.id}/reopen`, 'Survey reopened.') })
-        : el('button', { class: 'btn danger small', text: 'Close survey', onclick: () => patchAction(`/api/subscription/feedback-trial/admin/surveys/${item.id}/close`, 'Survey closed.') }),
+        ? el('button', { class: 'btn success small', text: 'Reopen survey', onclick: () => patchAction(API_PATHS.rewardSurvey.reopen(item.id), 'Survey reopened.') })
+        : el('button', { class: 'btn danger small', text: 'Close survey', onclick: () => openCloseModal('rewardSurvey', item) }),
     ]),
   ]);
 }
@@ -407,6 +489,58 @@ function renderPagination() {
     el('button', { class: 'btn ghost small', text: 'Previous', disabled: state.loading || page <= 0, onclick: () => { state.page = Math.max(0, page - 1); loadData(); } }),
     el('button', { class: 'btn ghost small', text: `Page ${page + 1} / ${Math.max(totalPages, 1)}`, disabled: true }),
     el('button', { class: 'btn ghost small', text: 'Next', disabled: state.loading || page + 1 >= totalPages, onclick: () => { state.page = page + 1; loadData(); } }),
+  ]);
+}
+
+
+function renderCloseModal() {
+  if (!state.modal) return null;
+  const title = state.modal.title || 'Close item';
+  const bodyText = el('textarea', {
+    rows: '6',
+    placeholder: 'Optional. Add a personal update for the user. Leave empty to use the backend default email template only.',
+  });
+  bodyText.value = state.modal.adminReplyMessage || '';
+  bodyText.addEventListener('input', () => { state.modal.adminReplyMessage = bodyText.value; });
+
+  const notify = el('input', { type: 'checkbox' });
+  notify.checked = Boolean(state.modal.notifyUser);
+  notify.addEventListener('change', () => { state.modal.notifyUser = notify.checked; });
+
+  return el('div', { class: 'modal-backdrop', onclick: (event) => { if (event.target.classList.contains('modal-backdrop')) closeModal(); } }, [
+    el('section', { class: 'modal-card', role: 'dialog', 'aria-modal': 'true' }, [
+      el('div', { class: 'modal-head' }, [
+        el('div', {}, [
+          el('p', { class: 'eyebrow', text: 'Admin action' }),
+          el('h2', { text: title }),
+        ]),
+        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+      ]),
+      el('div', { class: 'modal-body' }, [
+        el('p', { class: 'muted', text: 'This action will mark the item as closed/solved. The backend should generate the safe default email format. Your message below is optional and will be included only if the backend supports it.' }),
+        renderMetaGrid([
+          ['Target ID', state.modal.id],
+          ['User Email', state.modal.userEmail || 'Backend will resolve if available'],
+          ['Notify User', state.modal.notifyUser ? 'Yes' : 'No'],
+        ]),
+        el('div', { class: 'field' }, [
+          el('label', { text: 'Optional developer reply message' }),
+          bodyText,
+        ]),
+        el('details', { class: 'default-preview' }, [
+          el('summary', { text: 'Default email preview' }),
+          el('pre', { text: state.modal.defaultPreview || '' }),
+        ]),
+        el('label', { class: 'check-row' }, [
+          notify,
+          el('span', { text: 'Notify user by email when backend email notification is enabled' }),
+        ]),
+      ]),
+      el('div', { class: 'modal-actions' }, [
+        el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
+        el('button', { class: 'btn danger', text: state.loading ? 'Closing...' : 'Close / Solve', disabled: state.loading, onclick: submitCloseModal }),
+      ]),
+    ]),
   ]);
 }
 
@@ -449,6 +583,8 @@ function render() {
   renderAuth();
   clear(mainContent);
   mainContent.appendChild(state.user ? renderSignedIn() : renderSignedOut());
+  const modal = renderCloseModal();
+  if (modal) mainContent.appendChild(modal);
 }
 
 function validateConfig() {

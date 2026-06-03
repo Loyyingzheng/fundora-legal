@@ -4,9 +4,11 @@
 window.FUNDORALIT_ADMIN_CONFIG = {
   coreApiBaseUrl: 'https://fundora-app-t1jp.onrender.com',
   firebase: {
-    apiKey: 'YOUR_FIREBASE_WEB_API_KEY',
-    authDomain: 'YOUR_PROJECT.firebaseapp.com',
-    projectId: 'YOUR_PROJECT_ID',
-    appId: 'YOUR_FIREBASE_WEB_APP_ID'
+    apiKey: "AIzaSyBEj6yVCCPafrPJnbvKLL05PRLSm23SsLU",
+    authDomain: "fundora-2cb67.firebaseapp.com",
+    projectId: "fundora-2cb67",
+    storageBucket: "fundora-2cb67.firebasestorage.app",
+    messagingSenderId: "602856692123",
+    appId: "1:602856692123:web:366bfd6972bdad19a3293e"
   }
 };
