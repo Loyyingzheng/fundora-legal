@@ -28,6 +28,74 @@ const API_PATHS = {
   reviewPrompt: {
     list: '/api/review-prompts/admin/states',
   },
+  analytics: {
+    overview: '/api/analytics/admin/overview',
+    retention: '/api/analytics/admin/retention',
+    funnel: '/api/analytics/admin/funnel',
+    features: '/api/analytics/admin/features',
+    invites: '/api/analytics/admin/invites',
+    smartCapture: '/api/analytics/admin/smart-capture',
+  },
+};
+
+function todayDateString() {
+  const date = new Date();
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function daysAgoDateString(days) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - Number(days));
+  const yyyy = date.getUTCFullYear();
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function formatNumber(value) {
+  if (value === undefined || value === null || Number.isNaN(Number(value))) return '-';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  if (Math.abs(num) >= 1000) return num.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  if (Math.abs(num) >= 1) return num.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  return num.toString();
+}
+
+function formatPercent(value) {
+  if (value === undefined || value === null || value === '') return '-';
+  const num = Number(value);
+  if (Number.isNaN(num) || !Number.isFinite(num)) return '-';
+  const normalized = num <= 1 && num >= -1 ? num * 100 : num;
+  return `${normalized.toLocaleString(undefined, { maximumFractionDigits: 1, minimumFractionDigits: 1 })}%`;
+}
+
+function formatMetricValue(value, suffix = '') {
+  if (value === undefined || value === null || value === '') return '-';
+  const num = Number(value);
+  if (!Number.isFinite(num)) return String(value);
+  return `${formatNumber(num)}${suffix ? ` ${suffix}` : ''}`;
+}
+
+function getMetric(obj, keys, fallback = 0) {
+  if (!obj || typeof obj !== 'object') return fallback;
+  const keyList = Array.isArray(keys) ? keys : [keys];
+  for (const key of keyList) {
+    if (!key) continue;
+    const value = obj[key];
+    if (value === undefined || value === null || value === '') continue;
+    const num = Number(value);
+    if (!Number.isNaN(num) && Number.isFinite(num)) return num;
+    return value;
+  }
+  return fallback;
+}
+
+const initialAnalyticsDateRange = {
+  from: daysAgoDateString(30),
+  to: todayDateString(),
 };
 
 const state = {
@@ -42,6 +110,17 @@ const state = {
   error: '',
   message: '',
   modal: null,
+  analyticsDateRange: { ...initialAnalyticsDateRange },
+  analyticsData: {
+    overview: null,
+    retention: null,
+    funnel: null,
+    features: null,
+    invites: null,
+    smartCapture: null,
+  },
+  analyticsLoading: false,
+  analyticsError: '',
 };
 
 const authBox = document.getElementById('authBox');
@@ -183,6 +262,11 @@ async function loadData() {
   render();
 
   try {
+    if (state.activeTab === 'analytics') {
+      await loadAnalyticsData();
+      return;
+    }
+
     let response;
     if (state.activeTab === 'feedback') {
       response = await api(API_PATHS.feedback.list, {
@@ -209,6 +293,58 @@ async function loadData() {
     state.loading = false;
     render();
   }
+}
+
+async function loadAnalyticsData() {
+  state.analyticsLoading = true;
+  state.analyticsError = '';
+  render();
+
+  const params = {
+    from: state.analyticsDateRange.from,
+    to: state.analyticsDateRange.to,
+  };
+
+  const requests = [
+    ['overview', API_PATHS.analytics.overview],
+    ['retention', API_PATHS.analytics.retention],
+    ['funnel', API_PATHS.analytics.funnel],
+    ['features', API_PATHS.analytics.features],
+    ['invites', API_PATHS.analytics.invites],
+    ['smartCapture', API_PATHS.analytics.smartCapture],
+  ].map(async ([key, path]) => {
+    try {
+      const response = await api(path, { params });
+      return { key, data: normalizeAnalyticsResponse(response) };
+    } catch (error) {
+      return { key, error: error.message || 'Failed to load section.' };
+    }
+  });
+
+  const results = await Promise.allSettled(requests);
+  const failedSections = [];
+  const nextData = { overview: null, retention: null, funnel: null, features: null, invites: null, smartCapture: null };
+
+  results.forEach((result) => {
+    if (result.status !== 'fulfilled' || !result.value) {
+      return;
+    }
+    const { key, data, error } = result.value;
+    if (error) {
+      failedSections.push(key);
+    } else {
+      nextData[key] = data;
+    }
+  });
+
+  state.analyticsData = nextData;
+  if (failedSections.length) {
+    state.analyticsError = 'Some analytics sections could not be loaded. The dashboard is showing available data only.';
+  }
+
+  state.analyticsLoading = false;
+  state.loading = false;
+  render();
 }
 
 async function patchAction(path, successMessage, body) {
@@ -338,6 +474,7 @@ function renderTabs() {
     ['feedback', 'App Feedback'],
     ['premium', 'Reward Review Surveys'],
     ['review', 'Review Prompt Summary'],
+    ['analytics', 'Growth Analytics'],
   ];
   return el('div', { class: 'tabs' }, tabs.map(([id, label]) => el('button', {
     class: `tab ${state.activeTab === id ? 'active' : ''}`,
@@ -348,16 +485,273 @@ function renderTabs() {
       state.data = null;
       state.message = '';
       state.error = '';
+      state.analyticsError = '';
       loadData();
     },
   })));
 }
 
+function normalizeAnalyticsResponse(response) {
+  if (response === undefined || response === null) return null;
+  if (typeof response !== 'object') return response;
+  if (Object.prototype.hasOwnProperty.call(response, 'data') && response.data !== response) return response.data;
+  return response;
+}
+
+function normalizeAnalyticsRows(response) {
+  const value = normalizeAnalyticsResponse(response);
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  return value.rows || value.cohorts || value.content || value.data || [];
+}
+
 function renderNotice() {
   const nodes = [];
   if (state.error) nodes.push(el('div', { class: 'error', text: state.error }));
+  if (state.analyticsError) nodes.push(el('div', { class: 'error', text: state.analyticsError }));
   if (state.message) nodes.push(el('div', { class: 'success-msg', text: state.message }));
   return nodes;
+}
+
+function renderAnalyticsToolbar() {
+  const fromInput = el('input', {
+    type: 'date',
+    value: state.analyticsDateRange.from,
+    onchange: (event) => { state.analyticsDateRange.from = event.target.value; },
+  });
+  const toInput = el('input', {
+    type: 'date',
+    value: state.analyticsDateRange.to,
+    onchange: (event) => { state.analyticsDateRange.to = event.target.value; },
+  });
+  return el('div', { class: 'analytics-toolbar' }, [
+    el('label', {}, [el('span', { text: 'From' }), fromInput]),
+    el('label', {}, [el('span', { text: 'To' }), toInput]),
+    el('div', { class: 'analytics-toolbar-actions' }, [
+      el('button', {
+        class: 'btn',
+        text: 'Refresh',
+        onclick: () => loadAnalyticsData(),
+      }),
+      el('button', {
+        class: 'btn ghost',
+        text: 'Reset range',
+        onclick: () => {
+          state.analyticsDateRange = { ...initialAnalyticsDateRange };
+          loadAnalyticsData();
+        },
+      }),
+    ]),
+  ]);
+}
+
+function renderAnalyticsHero() {
+  return el('section', { class: 'analytics-hero card' }, [
+    el('div', { class: 'analytics-section-head' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Growth Analytics' }),
+        el('h2', { text: 'Track whether Fundoralit users return, invite others, and convert to paid plans.' }),
+        el('p', { class: 'muted', text: 'View aggregated metrics for retention, funnel conversion, feature adoption, invites, and Smart Capture performance without exposing any user-level or financial details.' }),
+      ]),
+    ]),
+    renderAnalyticsToolbar(),
+    el('p', { class: 'analytics-note', text: 'This dashboard shows privacy-safe usage metrics only. It must not display exact amounts, merchant names, notes, receipt text, notification text, or user financial content.' }),
+  ]);
+}
+
+function renderAnalyticsSection(title, subtitle, children) {
+  return el('section', { class: 'analytics-section card' }, [
+    el('div', { class: 'analytics-section-head' }, [
+      el('div', {}, [
+        el('h3', { text: title }),
+        subtitle ? el('p', { class: 'muted', text: subtitle }) : null,
+      ]),
+    ]),
+    el('div', {}, children),
+  ]);
+}
+
+function renderAnalyticsCard(label, value, hint = '', tone = '') {
+  return el('article', { class: `analytics-card ${tone || ''}`.trim() }, [
+    el('span', { class: 'muted', text: label }),
+    el('strong', { text: value }),
+    hint ? el('p', { class: 'analytics-note', text: hint }) : null,
+  ]);
+}
+
+function renderAnalyticsProgress(label, value, target, suffix = '', hint = '') {
+  const metric = Number(value);
+  const threshold = Number(target);
+  const ratio = Number.isFinite(metric) && Number.isFinite(threshold) && threshold !== 0
+    ? Math.min(100, Math.max(0, (metric / threshold) * 100))
+    : 0;
+  const display = suffix === '%' ? formatPercent(value) : formatMetricValue(value, suffix);
+  const targetValue = suffix === '%' ? formatPercent(target) : formatMetricValue(target, suffix);
+  return el('div', { class: 'analytics-progress' }, [
+    el('div', { class: 'analytics-progress-meta' }, [
+      el('span', { text: label }),
+      el('strong', { text: `${display} / ${targetValue}` }),
+    ]),
+    el('div', { class: 'analytics-progress-track' }, [
+      el('div', { class: 'analytics-progress-fill', style: `width: ${ratio}%` }),
+    ]),
+    hint ? el('p', { class: 'analytics-note', text: hint }) : null,
+  ]);
+}
+
+function renderAnalyticsMiniTable(title, rows) {
+  return el('div', { class: 'analytics-mini-table' }, [
+    el('h4', { text: title }),
+    el('table', { class: 'analytics-table' }, [
+      el('tbody', {}, rows.map((row) => el('tr', {}, (
+        Array.isArray(row) ? row : [row]
+      ).map((cell) => el('td', { text: cell ?? '-' }))))),
+    ]),
+  ]);
+}
+
+function renderAnalyticsBarList(title, items) {
+  const values = items.map((item) => Number(item.value) || 0);
+  const maxValue = Math.max(...values, 1);
+  return el('div', { class: 'analytics-bar-list' }, [
+    el('h4', { text: title }),
+    ...items.map((item) => {
+      const barWidth = Number(item.value) > 0 ? Math.round((Number(item.value) / maxValue) * 100) : 0;
+      return el('div', { class: 'analytics-bar-row' }, [
+        el('div', { class: 'analytics-bar-label' }, [el('span', { text: item.label }), el('strong', { text: formatMetricValue(item.value) })]),
+        el('div', { class: 'analytics-bar-track' }, [el('div', { class: 'analytics-bar-fill', style: `width: ${barWidth}%` })]),
+      ]);
+    }),
+  ]);
+}
+
+function renderAnalyticsEmptyState() {
+  return el('div', { class: 'analytics-empty' }, [
+    el('h3', { text: 'No analytics data available' }),
+    el('p', { class: 'muted', text: 'No analytics data found for this date range. Try a wider date range or confirm mobile tracking is sending events.' }),
+  ]);
+}
+
+function renderAnalyticsDashboard() {
+  const overview = normalizeAnalyticsResponse(state.analyticsData.overview) || {};
+  const retentionRows = normalizeAnalyticsRows(state.analyticsData.retention);
+  const funnel = normalizeAnalyticsResponse(state.analyticsData.funnel) || {};
+  const features = normalizeAnalyticsResponse(state.analyticsData.features) || {};
+  const invites = normalizeAnalyticsResponse(state.analyticsData.invites) || {};
+  const smartCapture = normalizeAnalyticsResponse(state.analyticsData.smartCapture) || {};
+
+  const overviewCards = [
+    ['DAU', formatMetricValue(getMetric(overview, ['dau'])), 'Daily active users.'],
+    ['WAU', formatMetricValue(getMetric(overview, ['wau'])), 'Weekly active users.'],
+    ['MAU', formatMetricValue(getMetric(overview, ['mau'])), 'Monthly active users.'],
+    ['Active users', formatMetricValue(getMetric(overview, ['activeUsers'])), 'Users active in the selected period.'],
+    ['New users', formatMetricValue(getMetric(overview, ['newUsers'])), 'New signups or first-time users.'],
+    ['Paid users', formatMetricValue(getMetric(overview, ['paidUsers', 'activePaidUsers'])), 'Users on paid plans.'],
+    ['D7 retention', formatPercent(getMetric(overview, ['d7RetentionRate', 'd7Retention'])), 'Seven-day return rate.'],
+    ['D30 retention', formatPercent(getMetric(overview, ['d30RetentionRate', 'd30Retention'])), 'Thirty-day return rate.'],
+    ['Avg transactions / WAU', formatMetricValue(getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser'])), 'Transactions per weekly active user.'],
+    ['Users with ≥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Users reaching the weekly activity threshold.'],
+    ['Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Invites sent through the app.'],
+    ['Smart Capture enabled users', formatMetricValue(getMetric(overview, ['smartCaptureEnabledUsers'])), 'Users with Smart Capture enabled.'],
+    ['Smart Capture candidate saved rate', formatPercent(getMetric(overview, ['smartCaptureCandidateSavedRate', 'candidateSavedRate'])), 'Proportion of candidates saved.'],
+  ].map(([label, value, hint]) => renderAnalyticsCard(label, value, hint));
+
+  const targetCards = [
+    renderAnalyticsProgress('D30 retention target', getMetric(overview, ['d30RetentionRate', 'd30Retention']), 8, '%', 'Target >= 8%'),
+    renderAnalyticsProgress('Free to paid conversion target', getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion']), 3, '%', 'Target >= 3%'),
+    renderAnalyticsProgress('Transaction frequency target', getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser']), 5, '', 'Target >= 5 per WAU'),
+    renderAnalyticsCard('Users with ≥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
+    renderAnalyticsProgress('Paid users target', getMetric(overview, ['paidUsers', 'activePaidUsers']), 100, '', 'Early validation target 100-300'),
+    renderAnalyticsCard('Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Shows whether Group Event / Group Goal has viral potential.'),
+  ];
+
+  const retentionTable = renderAnalyticsSection('Retention cohorts', 'Returns for new user cohorts over time.', [
+    renderAnalyticsMiniTable('Cohort retention', retentionRows.length ? retentionRows.map((row) => [
+      row.cohortDate || row.date || '-',
+      formatMetricValue(getMetric(row, ['newUsers'])),
+      `${formatMetricValue(getMetric(row, ['d1Retained']))} / ${formatPercent(getMetric(row, ['d1RetentionRate']))}`,
+      `${formatMetricValue(getMetric(row, ['d7Retained']))} / ${formatPercent(getMetric(row, ['d7RetentionRate']))}`,
+      `${formatMetricValue(getMetric(row, ['d30Retained']))} / ${formatPercent(getMetric(row, ['d30RetentionRate']))}`,
+    ]) : [['No retention cohorts found', '']])
+  ]);
+
+  const funnelCards = renderAnalyticsSection('Paywall funnel', 'Conversion stages from paywall view to subscription started.', [
+    renderAnalyticsMiniTable('Funnel summary', [
+      ['Paywall viewed users', formatMetricValue(getMetric(funnel, ['paywallViewedUsers']))],
+      ['Trial started users', formatMetricValue(getMetric(funnel, ['trialStartedUsers']))],
+      ['Subscription started users', formatMetricValue(getMetric(funnel, ['subscriptionStartedUsers']))],
+      ['Conversion rate', formatPercent(getMetric(funnel, ['conversionRate', 'freeToPaidConversion']))],
+      ['Cancellation detected users', formatMetricValue(getMetric(funnel, ['cancellationDetectedUsers']))],
+    ]),
+  ]);
+
+  const featuresList = renderAnalyticsSection('Feature adoption', 'Adoption levels for core product interactions.', [
+    renderAnalyticsBarList('Feature usage', [
+      { label: 'Transaction users', value: getMetric(features, ['transactionUsers']) },
+      { label: 'OCR saved users', value: getMetric(features, ['ocrSavedUsers']) },
+      { label: 'Bill created users', value: getMetric(features, ['billCreatedUsers']) },
+      { label: 'Personal goal created users', value: getMetric(features, ['personalGoalCreatedUsers']) },
+      { label: 'Group goal created users', value: getMetric(features, ['groupGoalCreatedUsers']) },
+      { label: 'Group event created users', value: getMetric(features, ['groupEventCreatedUsers']) },
+      { label: 'Smart Capture enabled users', value: getMetric(features, ['smartCaptureEnabledUsers', 'enabledUsers']) },
+      { label: 'Smart Capture detected users', value: getMetric(features, ['smartCaptureDetectedUsers']) },
+      { label: 'Smart Capture saved users', value: getMetric(features, ['smartCaptureSavedUsers']) },
+      { label: 'Smart Capture dismissed users', value: getMetric(features, ['smartCaptureDismissedUsers']) },
+      { label: 'Smart Capture corrected users', value: getMetric(features, ['smartCaptureCorrectedUsers']) },
+    ]),
+  ]);
+
+  const invitesSection = renderAnalyticsSection('Collaboration & invites', 'Invite activity for group goals and group events.', [
+    renderAnalyticsMiniTable('Invite summary', [
+      ['Group Goal invite sent', formatMetricValue(getMetric(invites, ['groupGoalInviteSent']))],
+      ['Group Goal joined', formatMetricValue(getMetric(invites, ['groupGoalJoined']))],
+      ['Group Event invite sent', formatMetricValue(getMetric(invites, ['groupEventInviteSent']))],
+      ['Group Event joined', formatMetricValue(getMetric(invites, ['groupEventJoined']))],
+      ['Total invite sent', formatMetricValue(getMetric(invites, ['totalInviteSent']))],
+      ['Total invite joined', formatMetricValue(getMetric(invites, ['totalInviteJoined']))],
+      ['Invite conversion rate', formatPercent(getMetric(invites, ['inviteConversionRate']))],
+    ]),
+  ]);
+
+  const smartCaptureSection = renderAnalyticsSection('Smart Capture performance', 'Monitoring Smart Capture enablement and candidate resolution.', [
+    renderAnalyticsMiniTable('Smart Capture summary', [
+      ['Enabled users', formatMetricValue(getMetric(smartCapture, ['enabledUsers', 'smartCaptureEnabledUsers']))],
+      ['Permission granted', formatMetricValue(getMetric(smartCapture, ['permissionGrantedCount']))],
+      ['Permission denied', formatMetricValue(getMetric(smartCapture, ['permissionDeniedCount']))],
+      ['Setup completed', formatMetricValue(getMetric(smartCapture, ['setupCompletedCount']))],
+      ['Candidate detected', formatMetricValue(getMetric(smartCapture, ['candidateDetectedCount']))],
+      ['Candidate saved', formatMetricValue(getMetric(smartCapture, ['candidateSavedCount']))],
+      ['Candidate dismissed', formatMetricValue(getMetric(smartCapture, ['candidateDismissedCount']))],
+      ['Candidate corrected', formatMetricValue(getMetric(smartCapture, ['candidateCorrectedCount']))],
+      ['Duplicate blocked', formatMetricValue(getMetric(smartCapture, ['duplicateBlockedCount']))],
+      ['Ignored by rule', formatMetricValue(getMetric(smartCapture, ['ignoredByRuleCount']))],
+      ['Throttled', formatMetricValue(getMetric(smartCapture, ['throttledCount']))],
+      ['Health failure count', formatMetricValue(getMetric(smartCapture, ['healthFailureCount']))],
+      ['Candidate saved rate', formatPercent(getMetric(smartCapture, ['candidateSavedRate', 'smartCaptureCandidateSavedRate']))],
+    ]),
+  ]);
+
+  const anyData = Object.values(state.analyticsData).some((segment) => segment && (Array.isArray(segment) ? segment.length > 0 : Object.keys(segment).length > 0));
+  if (state.analyticsLoading) {
+    return el('div', {}, [renderAnalyticsHero(), el('div', { class: 'card', text: 'Loading analytics data...' })]);
+  }
+
+  if (!anyData) {
+    return el('div', {}, [renderAnalyticsHero(), renderAnalyticsEmptyState()]);
+  }
+
+  return el('div', {}, [
+    renderAnalyticsHero(),
+    el('div', { class: 'analytics-grid' }, targetCards),
+    renderAnalyticsSection('Overview metrics', 'Core activity and retention signals for the selected date range.', [
+      el('div', { class: 'analytics-grid' }, overviewCards),
+    ]),
+    retentionRows.length ? retentionTable : renderAnalyticsEmptyState(),
+    funnelCards,
+    featuresList,
+    invitesSection,
+    smartCaptureSection,
+  ]);
 }
 
 function renderStats(items) {
@@ -547,6 +941,12 @@ function renderCloseModal() {
 function renderSignedIn() {
   const items = state.data?.content || [];
   const children = [renderTabs(), ...renderNotice()];
+
+  if (state.activeTab === 'analytics') {
+    children.push(renderAnalyticsDashboard());
+    children.push(el('p', { class: 'footer-note', text: 'Admin changes are limited to the backend endpoints already implemented in Core Backend. Add backend audit logs later if you want stronger production traceability.' }));
+    return el('section', {}, children);
+  }
 
   if (state.activeTab === 'feedback') children.push(renderFeedbackToolbar());
   else children.push(el('div', { class: 'toolbar' }, [el('button', { class: 'btn', text: state.loading ? 'Loading...' : 'Refresh', disabled: state.loading, onclick: () => loadData() })]));
