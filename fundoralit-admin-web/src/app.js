@@ -471,14 +471,15 @@ function renderAuth() {
 
 function renderTabs() {
   const tabs = [
-    ['feedback', 'App Feedback'],
-    ['premium', 'Reward Review Surveys'],
-    ['review', 'Review Prompt Summary'],
-    ['analytics', 'Growth Analytics'],
+    ['feedback', 'App Feedback', 'Reports'],
+    ['premium', 'Reward Review Surveys', 'Trial reward'],
+    ['review', 'Review Prompt Summary', 'Store prompt'],
+    ['analytics', 'Growth Analytics', 'Usage metrics'],
   ];
-  return el('div', { class: 'tabs' }, tabs.map(([id, label]) => el('button', {
+  return el('nav', { class: 'tabs', 'aria-label': 'Admin sections' }, tabs.map(([id, label, helper]) => el('button', {
     class: `tab ${state.activeTab === id ? 'active' : ''}`,
-    text: label,
+    'data-tab': id,
+    'aria-current': state.activeTab === id ? 'page' : null,
     onclick: () => {
       state.activeTab = id;
       state.page = 0;
@@ -488,7 +489,13 @@ function renderTabs() {
       state.analyticsError = '';
       loadData();
     },
-  })));
+  }, [
+    el('span', { class: 'tab-icon', 'aria-hidden': 'true' }),
+    el('span', { class: 'tab-copy' }, [
+      el('span', { class: 'tab-label', text: label }),
+      el('span', { class: 'tab-helper', text: helper }),
+    ]),
+  ])));
 }
 
 function normalizeAnalyticsResponse(response) {
@@ -626,7 +633,8 @@ function renderAnalyticsBarList(title, items) {
 }
 
 function renderAnalyticsEmptyState() {
-  return el('div', { class: 'analytics-empty' }, [
+  return el('div', { class: 'analytics-empty empty-state' }, [
+    el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }),
     el('h3', { text: 'No analytics data available' }),
     el('p', { class: 'muted', text: 'No analytics data found for this date range. Try a wider date range or confirm mobile tracking is sending events.' }),
   ]);
@@ -767,7 +775,11 @@ function renderStats(items) {
 }
 
 function stat(label, value) {
-  return el('div', { class: 'stat' }, [el('span', { class: 'muted', text: label }), el('strong', { text: value })]);
+  return el('div', { class: 'stat' }, [
+    el('span', { class: 'stat-icon', 'aria-hidden': 'true' }),
+    el('span', { class: 'muted stat-label', text: label }),
+    el('strong', { text: value }),
+  ]);
 }
 
 function renderFeedbackToolbar() {
@@ -945,7 +957,7 @@ function renderSignedIn() {
   if (state.activeTab === 'analytics') {
     children.push(renderAnalyticsDashboard());
     children.push(el('p', { class: 'footer-note', text: 'Admin changes are limited to the backend endpoints already implemented in Core Backend. Add backend audit logs later if you want stronger production traceability.' }));
-    return el('section', {}, children);
+    return el('section', { class: 'page-section' }, children);
   }
 
   if (state.activeTab === 'feedback') children.push(renderFeedbackToolbar());
@@ -954,9 +966,9 @@ function renderSignedIn() {
   children.push(renderStats(items));
 
   if (state.loading && !items.length) {
-    children.push(el('div', { class: 'card', text: 'Loading admin data...' }));
+    children.push(el('div', { class: 'card empty-state' }, [el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }), el('strong', { text: 'Loading admin data...' }), el('p', { class: 'muted', text: 'Please wait while the latest records are being prepared.' })]));
   } else if (!items.length) {
-    children.push(el('div', { class: 'card muted', text: 'No records found.' }));
+    children.push(el('div', { class: 'card empty-state' }, [el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }), el('strong', { text: 'No records found.' }), el('p', { class: 'muted', text: 'Try another filter or refresh after new submissions are created.' })]));
   } else {
     const renderer = state.activeTab === 'feedback'
       ? renderFeedbackItem
@@ -968,11 +980,12 @@ function renderSignedIn() {
 
   children.push(renderPagination());
   children.push(el('p', { class: 'footer-note', text: 'Admin changes are limited to the backend endpoints already implemented in Core Backend. Add backend audit logs later if you want stronger production traceability.' }));
-  return el('section', {}, children);
+  return el('section', { class: 'page-section' }, children);
 }
 
 function renderSignedOut() {
-  return el('section', { class: 'card' }, [
+  return el('section', { class: 'card signed-out-card' }, [
+    el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }),
     el('h2', { text: 'Sign in required' }),
     el('p', { class: 'muted', text: 'Use a Firebase account that is allowed by the Core Backend admin allowlist. This frontend does not decide who is admin.' }),
     ...renderNotice(),
