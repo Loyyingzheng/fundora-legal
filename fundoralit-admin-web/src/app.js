@@ -38,23 +38,49 @@ const API_PATHS = {
   },
 };
 
-function todayDateString() {
-  const date = new Date();
+function toLocalDateString(date) {
   const yyyy = date.getFullYear();
   const mm = String(date.getMonth() + 1).padStart(2, '0');
   const dd = String(date.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function daysAgoDateString(days) {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - Number(days));
-  const yyyy = date.getUTCFullYear();
-  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(date.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+function todayDateString() {
+  return toLocalDateString(new Date());
 }
 
+function daysAgoDateString(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - Number(days));
+  return toLocalDateString(date);
+}
+
+function firstDayOfCurrentMonthString() {
+  const date = new Date();
+  return toLocalDateString(new Date(date.getFullYear(), date.getMonth(), 1));
+}
+
+function getAnalyticsPresetRange(preset) {
+  if (preset === '7d') return { from: daysAgoDateString(6), to: todayDateString() };
+  if (preset === '90d') return { from: daysAgoDateString(89), to: todayDateString() };
+  if (preset === 'mtd') return { from: firstDayOfCurrentMonthString(), to: todayDateString() };
+  return { from: daysAgoDateString(29), to: todayDateString() };
+}
+
+function clampAnalyticsRange(range) {
+  const today = todayDateString();
+  const from = range?.from || daysAgoDateString(29);
+  let to = range?.to || today;
+  let notice = '';
+  if (to > today) {
+    to = today;
+    notice = 'Analytics cannot include future dates. The end date was adjusted to today.';
+  }
+  if (from > to) {
+    return { from: to, to, notice: notice || 'The start date was adjusted because it was after the end date.' };
+  }
+  return { from, to, notice };
+}
 function formatNumber(value) {
   if (value === undefined || value === null || Number.isNaN(Number(value))) return '-';
   const num = Number(value);
@@ -93,10 +119,8 @@ function getMetric(obj, keys, fallback = 0) {
   return fallback;
 }
 
-const initialAnalyticsDateRange = {
-  from: daysAgoDateString(30),
-  to: todayDateString(),
-};
+const initialAnalyticsPreset = '30d';
+const initialAnalyticsDateRange = getAnalyticsPresetRange(initialAnalyticsPreset);
 
 const state = {
   auth: null,
@@ -111,6 +135,8 @@ const state = {
   message: '',
   modal: null,
   analyticsDateRange: { ...initialAnalyticsDateRange },
+  analyticsPreset: initialAnalyticsPreset,
+  analyticsRangeNotice: '',
   analyticsData: {
     overview: null,
     retention: null,
@@ -299,6 +325,10 @@ async function loadAnalyticsData() {
   state.analyticsLoading = true;
   state.analyticsError = '';
   render();
+
+  const clampedRange = clampAnalyticsRange(state.analyticsDateRange);
+  state.analyticsDateRange = { from: clampedRange.from, to: clampedRange.to };
+  state.analyticsRangeNotice = clampedRange.notice || '';
 
   const params = {
     from: state.analyticsDateRange.from,
@@ -520,35 +550,79 @@ function renderNotice() {
   return nodes;
 }
 
+function setAnalyticsPreset(preset) {
+  state.analyticsPreset = preset;
+  const range = clampAnalyticsRange(getAnalyticsPresetRange(preset));
+  state.analyticsDateRange = { from: range.from, to: range.to };
+  state.analyticsRangeNotice = range.notice || '';
+  loadAnalyticsData();
+}
+
+function updateAnalyticsCustomRange(field, value) {
+  const nextRange = clampAnalyticsRange({
+    ...state.analyticsDateRange,
+    [field]: value,
+  });
+  state.analyticsDateRange = { from: nextRange.from, to: nextRange.to };
+  state.analyticsPreset = 'custom';
+  state.analyticsRangeNotice = nextRange.notice || '';
+  render();
+}
+
 function renderAnalyticsToolbar() {
+  const presetButtons = [
+    ['7d', 'Last 7 days'],
+    ['30d', 'Last 30 days'],
+    ['90d', 'Last 90 days'],
+    ['mtd', 'Month to date'],
+    ['custom', 'Custom'],
+  ];
+
   const fromInput = el('input', {
     type: 'date',
     value: state.analyticsDateRange.from,
-    onchange: (event) => { state.analyticsDateRange.from = event.target.value; },
+    max: todayDateString(),
+    onchange: (event) => updateAnalyticsCustomRange('from', event.target.value),
   });
   const toInput = el('input', {
     type: 'date',
     value: state.analyticsDateRange.to,
-    onchange: (event) => { state.analyticsDateRange.to = event.target.value; },
+    max: todayDateString(),
+    onchange: (event) => updateAnalyticsCustomRange('to', event.target.value),
   });
-  return el('div', { class: 'analytics-toolbar' }, [
-    el('label', {}, [el('span', { text: 'From' }), fromInput]),
-    el('label', {}, [el('span', { text: 'To' }), toInput]),
-    el('div', { class: 'analytics-toolbar-actions' }, [
-      el('button', {
-        class: 'btn',
-        text: 'Refresh',
-        onclick: () => loadAnalyticsData(),
-      }),
-      el('button', {
-        class: 'btn ghost',
-        text: 'Reset range',
-        onclick: () => {
-          state.analyticsDateRange = { ...initialAnalyticsDateRange };
-          loadAnalyticsData();
-        },
-      }),
+
+  return el('div', { class: 'analytics-toolbar-shell' }, [
+    el('div', { class: 'analytics-preset-row', role: 'group', 'aria-label': 'Analytics date range presets' }, presetButtons.map(([id, label]) => el('button', {
+      class: `analytics-preset ${state.analyticsPreset === id ? 'active' : ''}`,
+      type: 'button',
+      text: label,
+      onclick: () => {
+        if (id === 'custom') {
+          state.analyticsPreset = 'custom';
+          render();
+          return;
+        }
+        setAnalyticsPreset(id);
+      },
+    }))),
+    el('div', { class: 'analytics-toolbar' }, [
+      el('label', {}, [el('span', { text: 'From' }), fromInput]),
+      el('label', {}, [el('span', { text: 'To' }), toInput]),
+      el('div', { class: 'analytics-toolbar-actions' }, [
+        el('button', {
+          class: 'btn',
+          text: 'Refresh',
+          onclick: () => loadAnalyticsData(),
+        }),
+        el('button', {
+          class: 'btn ghost',
+          text: 'Reset to 30 days',
+          onclick: () => setAnalyticsPreset(initialAnalyticsPreset),
+        }),
+      ]),
     ]),
+    state.analyticsRangeNotice ? el('p', { class: 'analytics-range-notice', text: state.analyticsRangeNotice }) : null,
+    el('p', { class: 'analytics-range-help', text: 'Selected range affects Active users, New users, feature adoption, funnel, invites, and Smart Capture sections. DAU, WAU, and MAU use today-based rolling windows.' }),
   ]);
 }
 
@@ -578,10 +652,26 @@ function renderAnalyticsSection(title, subtitle, children) {
   ]);
 }
 
-function renderAnalyticsCard(label, value, hint = '', tone = '') {
+function getAnalyticsToneForMetric(value, target, higherIsBetter = true) {
+  const metric = Number(value);
+  const threshold = Number(target);
+  if (!Number.isFinite(metric) || !Number.isFinite(threshold) || threshold === 0) return '';
+  const ratio = metric / threshold;
+  if (higherIsBetter) {
+    if (ratio >= 1) return 'good';
+    if (ratio >= 0.5) return 'warn';
+    return 'danger';
+  }
+  return ratio <= 1 ? 'good' : 'warn';
+}
+
+function renderAnalyticsCard(label, value, hint = '', tone = '', meta = '') {
   return el('article', { class: `analytics-card ${tone || ''}`.trim() }, [
-    el('span', { class: 'muted', text: label }),
-    el('strong', { text: value }),
+    el('div', { class: 'analytics-card-main' }, [
+      el('span', { class: 'analytics-card-label', text: label }),
+      el('strong', { text: value }),
+      meta ? el('span', { class: 'analytics-card-meta', text: meta }) : null,
+    ]),
     hint ? el('p', { class: 'analytics-note', text: hint }) : null,
   ]);
 }
@@ -594,9 +684,10 @@ function renderAnalyticsProgress(label, value, target, suffix = '', hint = '') {
     : 0;
   const display = suffix === '%' ? formatPercent(value) : formatMetricValue(value, suffix);
   const targetValue = suffix === '%' ? formatPercent(target) : formatMetricValue(target, suffix);
-  return el('div', { class: 'analytics-progress' }, [
-    el('div', { class: 'analytics-progress-meta' }, [
-      el('span', { text: label }),
+  const tone = getAnalyticsToneForMetric(metric, threshold);
+  return el('article', { class: `analytics-target-card ${tone}`.trim() }, [
+    el('div', { class: 'analytics-target-head' }, [
+      el('span', { class: 'analytics-card-label', text: label }),
       el('strong', { text: `${display} / ${targetValue}` }),
     ]),
     el('div', { class: 'analytics-progress-track' }, [
@@ -750,7 +841,9 @@ function renderAnalyticsDashboard() {
 
   return el('div', {}, [
     renderAnalyticsHero(),
-    el('div', { class: 'analytics-grid' }, targetCards),
+    renderAnalyticsSection('Product-market fit targets', 'Quick checks for the launch validation targets you care about most.', [
+      el('div', { class: 'analytics-target-grid' }, targetCards),
+    ]),
     renderAnalyticsSection('Overview metrics', 'Core activity and retention signals for the selected date range.', [
       el('div', { class: 'analytics-grid' }, overviewCards),
     ]),
