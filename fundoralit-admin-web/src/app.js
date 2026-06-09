@@ -896,82 +896,101 @@ function select(options, selected, onChange) {
   return node;
 }
 
+function renderItemSummary({ title, subtitle, statusNode }) {
+  return el('summary', { class: 'item-summary' }, [
+    el('div', { class: 'item-head' }, [
+      el('div', { class: 'item-summary-copy' }, [
+        el('div', { class: 'item-title', text: title || '-' }),
+        subtitle ? el('div', { class: 'muted item-subtitle', text: subtitle }) : null,
+      ]),
+      el('div', { class: 'item-summary-right' }, [
+        statusNode,
+        el('span', { class: 'item-toggle', 'aria-hidden': 'true', text: '⌄' }),
+      ]),
+    ]),
+  ]);
+}
+
+function renderCollapsibleItem({ title, subtitle, statusNode, children }) {
+  return el('article', { class: 'item collapsible-item' }, [
+    el('details', { class: 'item-dropdown' }, [
+      renderItemSummary({ title, subtitle, statusNode }),
+      el('div', { class: 'item-body' }, children),
+    ]),
+  ]);
+}
+
 function renderFeedbackItem(item) {
   const status = String(item.status || 'OPEN').toUpperCase();
   const isClosed = status === 'CLOSED';
   const debugText = safeJson(item.debugJson);
-  return el('article', { class: 'item' }, [
-    el('div', { class: 'item-head' }, [
-      el('div', {}, [
-        el('div', { class: 'item-title', text: `${item.type || '-'} · ${item.module || '-'}` }),
-        el('div', { class: 'muted', text: item.issue || '-' }),
+  return renderCollapsibleItem({
+    title: `${item.type || '-'} · ${item.module || '-'}`,
+    subtitle: item.issue || item.userEmail || extractEmailFromDebugJson(item.debugJson) || 'Feedback report',
+    statusNode: el('span', { class: getStatusClass(status), text: status }),
+    children: [
+      el('p', { class: 'item-desc', text: item.description || '-' }),
+      renderMetaGrid([
+        ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail || extractEmailFromDebugJson(item.debugJson)], ['Severity', item.severity],
+        ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
+        ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
       ]),
-      el('span', { class: getStatusClass(status), text: status }),
-    ]),
-    el('p', { class: 'item-desc', text: item.description || '-' }),
-    renderMetaGrid([
-      ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail || extractEmailFromDebugJson(item.debugJson)], ['Severity', item.severity],
-      ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
-      ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
-    ]),
-    item.screenshotUrl ? el('a', { href: item.screenshotUrl, target: '_blank', rel: 'noopener noreferrer' }, [
-      el('img', { class: 'img-preview', src: item.screenshotUrl, alt: 'Feedback screenshot' }),
-    ]) : el('p', { class: 'muted', text: 'No screenshot attached.' }),
-    el('details', {}, [el('summary', { text: 'Debug JSON' }), el('pre', { text: debugText })]),
-    el('div', { class: 'actions' }, [
-      isClosed
-        ? el('button', { class: 'btn success small', text: 'Reopen', onclick: () => patchAction(API_PATHS.feedback.reopen(item.id), 'Feedback reopened.') })
-        : el('button', { class: 'btn danger small', text: 'Close', onclick: () => openCloseModal('feedback', item) }),
-    ]),
-  ]);
+      item.screenshotUrl ? el('a', { href: item.screenshotUrl, target: '_blank', rel: 'noopener noreferrer' }, [
+        el('img', { class: 'img-preview', src: item.screenshotUrl, alt: 'Feedback screenshot' }),
+      ]) : el('p', { class: 'muted', text: 'No screenshot attached.' }),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Debug JSON' }), el('pre', { text: debugText })]),
+      el('div', { class: 'actions' }, [
+        isClosed
+          ? el('button', { class: 'btn success small', text: 'Reopen', onclick: () => patchAction(API_PATHS.feedback.reopen(item.id), 'Feedback reopened.') })
+          : el('button', { class: 'btn danger small', text: 'Close', onclick: () => openCloseModal('feedback', item) }),
+      ]),
+    ],
+  });
 }
 
 function renderPremiumItem(item) {
   const status = String(item.status || 'OPEN').toUpperCase();
   const isClosed = status === 'CLOSED';
-  return el('article', { class: 'item' }, [
-    el('div', { class: 'item-head' }, [
-      el('div', {}, [
-        el('div', { class: 'item-title', text: item.futureUsageIntent || 'Reward review survey' }),
-        el('div', { class: 'muted', text: item.userEmail || item.userId || '-' }),
+  return renderCollapsibleItem({
+    title: item.futureUsageIntent || 'Reward review survey',
+    subtitle: item.userEmail || item.userId || item.improvementText || '-',
+    statusNode: el('span', { class: getStatusClass(status), text: status }),
+    children: [
+      el('p', { class: 'item-desc', text: item.improvementText || item.strengthsNote || item.mostUsedFeatureNote || '-' }),
+      renderMetaGrid([
+        ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail],
+        ['Most Used Features', item.mostUsedFeatures], ['Feature Note', item.mostUsedFeatureNote], ['Discovery Source', item.discoverySource],
+        ['Discovery Note', item.discoveryNote], ['Strengths', item.strengths], ['Strengths Note', item.strengthsNote],
+        ['Reward Days', item.rewardDays], ['Reward Status', item.rewardStatus], ['Reward Expires', formatDate(item.rewardExpiresAt)],
+        ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
+        ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId],
       ]),
-      el('span', { class: getStatusClass(status), text: status }),
-    ]),
-    el('p', { class: 'item-desc', text: item.improvementText || item.strengthsNote || item.mostUsedFeatureNote || '-' }),
-    renderMetaGrid([
-      ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail],
-      ['Most Used Features', item.mostUsedFeatures], ['Feature Note', item.mostUsedFeatureNote], ['Discovery Source', item.discoverySource],
-      ['Discovery Note', item.discoveryNote], ['Strengths', item.strengths], ['Strengths Note', item.strengthsNote],
-      ['Reward Days', item.rewardDays], ['Reward Status', item.rewardStatus], ['Reward Expires', formatDate(item.rewardExpiresAt)],
-      ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
-      ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId],
-    ]),
-    el('div', { class: 'actions' }, [
-      isClosed
-        ? el('button', { class: 'btn success small', text: 'Reopen survey', onclick: () => patchAction(API_PATHS.rewardSurvey.reopen(item.id), 'Survey reopened.') })
-        : el('button', { class: 'btn danger small', text: 'Close survey', onclick: () => openCloseModal('rewardSurvey', item) }),
-    ]),
-  ]);
+      el('div', { class: 'actions' }, [
+        isClosed
+          ? el('button', { class: 'btn success small', text: 'Reopen survey', onclick: () => patchAction(API_PATHS.rewardSurvey.reopen(item.id), 'Survey reopened.') })
+          : el('button', { class: 'btn danger small', text: 'Close survey', onclick: () => openCloseModal('rewardSurvey', item) }),
+      ]),
+    ],
+  });
 }
 
 function renderReviewPromptItem(item) {
-  return el('article', { class: 'item' }, [
-    el('div', { class: 'item-head' }, [
-      el('div', {}, [
-        el('div', { class: 'item-title', text: item.userEmail || item.userId || 'Review prompt state' }),
-        el('div', { class: 'muted', text: `Prompt count: ${item.promptCount ?? 0}` }),
+  const isDisabled = Boolean(item.disabled);
+  return renderCollapsibleItem({
+    title: item.userEmail || item.userId || 'Review prompt state',
+    subtitle: `Prompt count: ${item.promptCount ?? 0} · Native requests: ${item.nativeRequestCount ?? 0}`,
+    statusNode: el('span', { class: isDisabled ? 'badge warn' : 'badge closed', text: isDisabled ? 'DISABLED' : 'ACTIVE' }),
+    children: [
+      renderMetaGrid([
+        ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail],
+        ['Prompt Count', item.promptCount], ['Manual Click Count', item.manualClickCount], ['Native Request Count', item.nativeRequestCount],
+        ['Last Prompted', formatDate(item.lastPromptedAt)], ['Last Accepted', formatDate(item.lastAcceptedAt)], ['Last Dismissed', formatDate(item.lastDismissedAt)],
+        ['Last Skipped', formatDate(item.lastSkippedAt)], ['Last Manual Clicked', formatDate(item.lastManualClickedAt)], ['Last Native Requested', formatDate(item.lastNativeRequestedAt)],
+        ['Last Source', item.lastPromptSource], ['Last Platform', item.lastPromptPlatform], ['Last App Version', item.lastAppVersion],
+        ['Last Device ID', item.lastDeviceId], ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)],
       ]),
-      el('span', { class: item.disabled ? 'badge warn' : 'badge closed', text: item.disabled ? 'DISABLED' : 'ACTIVE' }),
-    ]),
-    renderMetaGrid([
-      ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail],
-      ['Prompt Count', item.promptCount], ['Manual Click Count', item.manualClickCount], ['Native Request Count', item.nativeRequestCount],
-      ['Last Prompted', formatDate(item.lastPromptedAt)], ['Last Accepted', formatDate(item.lastAcceptedAt)], ['Last Dismissed', formatDate(item.lastDismissedAt)],
-      ['Last Skipped', formatDate(item.lastSkippedAt)], ['Last Manual Clicked', formatDate(item.lastManualClickedAt)], ['Last Native Requested', formatDate(item.lastNativeRequestedAt)],
-      ['Last Source', item.lastPromptSource], ['Last Platform', item.lastPromptPlatform], ['Last App Version', item.lastAppVersion],
-      ['Last Device ID', item.lastDeviceId], ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)],
-    ]),
-  ]);
+    ],
+  });
 }
 
 function renderMetaGrid(rows) {
