@@ -1047,6 +1047,21 @@ function getCreditStatusHint(item) {
   return 'No service credit action recorded yet.';
 }
 
+
+function feedbackHasUnresolvedCreditAction(item) {
+  const status = String(item?.status || '').toUpperCase();
+  const providerStatus = getProviderActionStatus(item);
+  const suggestedCredit = Number(item?.suggestedCreditDays ?? item?.finalCreditDays ?? 0);
+  const eligibleForCredit = asBoolean(item?.eligibleForCredit, false) || suggestedCredit > 0;
+  const needsCreditBeforeClose = (status === 'VERIFIED' || status === 'CREDIT_ELIGIBLE' || status === 'CREDIT_GRANTED')
+    && eligibleForCredit
+    && providerStatus !== 'GOOGLE_PLAY_DEFER_APPLIED'
+    && status !== 'CREDIT_APPLIED';
+  return needsCreditBeforeClose
+    || providerStatus === 'GOOGLE_PLAY_DEFER_PENDING'
+    || providerStatus === 'GOOGLE_PLAY_DEFER_FAILED';
+}
+
 function buildReviewUserMessagePreview({ status, creditDays, serviceCreditExpiresAt, reviewReason }) {
   const normalized = String(status || 'REVIEWING').toUpperCase();
   const reasonLine = reviewReason ? `\n\nReview note:\n${reviewReason}` : '';
@@ -1178,6 +1193,7 @@ function renderFeedbackItem(item) {
   const suggestedCredit = getItemSuggestedCreditDays(item);
   const providerStatus = getProviderActionStatus(item);
   const canGrantCredit = isPositiveCreditStatus(status) && !isCreditApplied;
+  const hasUnresolvedCreditAction = feedbackHasUnresolvedCreditAction(item);
   const statusHelper = STATUS_COPY[status]?.helper || '';
   const decisionChips = [
     item.bugLevel || item.severity ? `Level: ${item.bugLevel || item.severity}` : null,
@@ -1197,6 +1213,7 @@ function renderFeedbackItem(item) {
         el('span', { text: getCreditStatusHint(item) }),
       ]),
       decisionChips.length ? el('div', { class: 'chip-row' }, decisionChips.map((text) => el('span', { class: 'chip', text }))) : null,
+      hasUnresolvedCreditAction ? el('div', { class: 'notice warning inline-notice', text: 'Service credit is not fully resolved yet. Do not close this feedback until Google Play defer is applied or the credit issue is resolved.' }) : null,
       el('p', { class: 'item-desc', text: item.description || '-' }),
       renderMetaGrid([
         ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail || extractEmailFromDebugJson(item.debugJson)], ['Type', item.type],
@@ -1220,7 +1237,7 @@ function renderFeedbackItem(item) {
         !isClosed ? el('button', { class: 'btn ghost small', text: 'Need info', onclick: () => openFeedbackReviewModal(item, 'NEED_MORE_INFO') }) : null,
         !isClosed ? el('button', { class: 'btn ghost small', text: 'Reject / Duplicate', onclick: () => openFeedbackReviewModal(item, 'REJECTED_NOT_REPRODUCIBLE') }) : null,
         canGrantCredit ? el('button', { class: 'btn secondary small', text: 'Grant credit', onclick: () => openFeedbackCreditModal(item) }) : null,
-        !isClosed ? el('button', { class: 'btn danger small', text: 'Close final', onclick: () => openCloseModal('feedback', item) }) : null,
+        !isClosed ? el('button', { class: 'btn danger small', text: hasUnresolvedCreditAction ? 'Close locked' : 'Close final', disabled: hasUnresolvedCreditAction, title: hasUnresolvedCreditAction ? 'Resolve service credit before closing this feedback.' : '', onclick: () => openCloseModal('feedback', item) }) : null,
       ]),
     ],
   });
