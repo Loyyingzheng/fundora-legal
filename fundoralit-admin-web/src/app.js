@@ -17,6 +17,10 @@ const firebaseConfig = config.firebase || {};
 const API_PATHS = {
   feedback: {
     list: '/api/feedback/admin',
+    options: '/api/feedback/admin/options',
+    review: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/review`,
+    serviceCredit: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/service-credit`,
+    serviceCredits: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/service-credits`,
     close: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/close`,
     reopen: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/reopen`,
   },
@@ -130,6 +134,7 @@ const state = {
   page: 0,
   size: 30,
   feedbackFilters: { status: '', module: '', type: '' },
+  feedbackOptions: null,
   data: null,
   error: '',
   message: '',
@@ -151,6 +156,39 @@ const state = {
 
 const authBox = document.getElementById('authBox');
 const mainContent = document.getElementById('mainContent');
+
+const FEEDBACK_STATUS_OPTIONS = [
+  'OPEN',
+  'REVIEWING',
+  'NEED_MORE_INFO',
+  'VERIFIED',
+  'REJECTED_NOT_BUG',
+  'REJECTED_NOT_REPRODUCIBLE',
+  'DUPLICATE',
+  'CREDIT_ELIGIBLE',
+  'CREDIT_GRANTED',
+  'CREDIT_APPLIED',
+  'CLOSED',
+];
+
+const BUG_LEVEL_OPTIONS = ['NONE', 'MINOR', 'MEDIUM', 'MAJOR', 'CRITICAL'];
+const AFFECTED_AREA_OPTIONS = ['FREE_FEATURE', 'PRO_FEATURE', 'PAYMENT', 'DATA', 'ACCOUNT', 'SYNC', 'UI', 'OTHER'];
+const BUG_CREDIT_RULES = { NONE: 0, MINOR: 1, MEDIUM: 3, MAJOR: 7, CRITICAL: 14 };
+const CREDIT_PROVIDER_STATUSES = ['GOOGLE_PLAY_DEFER_PENDING', 'GOOGLE_PLAY_DEFER_APPLIED', 'GOOGLE_PLAY_DEFER_FAILED'];
+
+const STATUS_COPY = {
+  OPEN: { label: 'Open', tone: 'open', helper: 'New report waiting for admin review.' },
+  REVIEWING: { label: 'Reviewing', tone: 'info', helper: 'Admin is checking the issue.' },
+  NEED_MORE_INFO: { label: 'Need more info', tone: 'warn', helper: 'Ask the user for screenshot, recording, or steps.' },
+  VERIFIED: { label: 'Verified', tone: 'success', helper: 'Confirmed issue. Check service credit eligibility.' },
+  REJECTED_NOT_BUG: { label: 'Working as designed', tone: 'neutral', helper: 'Not a bug, but keep as UX improvement reference.' },
+  REJECTED_NOT_REPRODUCIBLE: { label: 'Unable to reproduce', tone: 'warn', helper: 'Could not reproduce with provided details.' },
+  DUPLICATE: { label: 'Duplicate', tone: 'neutral', helper: 'Already reported. Link to existing issue internally if needed.' },
+  CREDIT_ELIGIBLE: { label: 'Credit eligible', tone: 'credit', helper: 'Ready for Pro service credit approval.' },
+  CREDIT_GRANTED: { label: 'Credit granted', tone: 'credit', helper: 'Credit request was created.' },
+  CREDIT_APPLIED: { label: 'Credit applied', tone: 'success', helper: 'Credit or Google Play renewal extension was applied.' },
+  CLOSED: { label: 'Closed', tone: 'closed', helper: 'Finalized.' },
+};
 
 function normalizeBaseUrl(url) {
   return String(url || '').replace(/\/+$/, '');
@@ -195,8 +233,14 @@ function safeJson(value) {
 
 function getStatusClass(status) {
   const normalized = String(status || '').toUpperCase();
-  if (normalized === 'CLOSED') return 'badge closed';
-  if (normalized === 'OPEN') return 'badge open';
+  const tone = STATUS_COPY[normalized]?.tone || '';
+  if (tone === 'closed') return 'badge closed';
+  if (tone === 'open') return 'badge open';
+  if (tone === 'success') return 'badge success';
+  if (tone === 'credit') return 'badge credit';
+  if (tone === 'info') return 'badge info';
+  if (tone === 'neutral') return 'badge neutral';
+  if (tone === 'danger') return 'badge danger';
   return 'badge warn';
 }
 
@@ -283,6 +327,9 @@ function setMessage(message, isError = false) {
 
 async function loadData() {
   if (!state.user) return;
+  if (state.activeTab === 'feedback') {
+    loadFeedbackOptions().catch(() => {});
+  }
   state.loading = true;
   state.error = '';
   render();
@@ -319,6 +366,18 @@ async function loadData() {
     state.loading = false;
     render();
   }
+}
+
+
+async function loadFeedbackOptions() {
+  if (state.feedbackOptions || !state.user) return state.feedbackOptions;
+  try {
+    const response = await api(API_PATHS.feedback.options);
+    state.feedbackOptions = response || null;
+  } catch (_) {
+    state.feedbackOptions = null;
+  }
+  return state.feedbackOptions;
 }
 
 async function loadAnalyticsData() {
@@ -875,14 +934,20 @@ function stat(label, value) {
   ]);
 }
 
+
 function renderFeedbackToolbar() {
-  const status = select(['', 'OPEN', 'CLOSED'], state.feedbackFilters.status, (value) => { state.feedbackFilters.status = value; });
+  const statuses = ['', ...FEEDBACK_STATUS_OPTIONS];
+  const status = select(statuses, state.feedbackFilters.status, (value) => { state.feedbackFilters.status = value; });
   const module = select(['', 'BILLS', 'BUCKETS', 'GOALS', 'GROUP_EVENT', 'PROFILE', 'SMART_CAPTURE', 'WALLET', 'NOT_SURE'], state.feedbackFilters.module, (value) => { state.feedbackFilters.module = value; });
   const type = select(['', 'BUG', 'SUGGESTION', 'UI_FEEDBACK', 'OTHER'], state.feedbackFilters.type, (value) => { state.feedbackFilters.type = value; });
-  return el('div', { class: 'toolbar' }, [
+  return el('div', { class: 'toolbar feedback-toolbar' }, [
     el('div', {}, [el('label', { text: 'Status' }), status]),
     el('div', {}, [el('label', { text: 'Module' }), module]),
     el('div', {}, [el('label', { text: 'Type' }), type]),
+    el('div', { class: 'toolbar-help wide' }, [
+      el('strong', { text: 'Service credit workflow' }),
+      el('span', { text: 'Review → select bug level → backend suggests credit → admin confirms. Different statuses trigger different user-friendly backend messages.' }),
+    ]),
     el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
   ]);
@@ -920,29 +985,242 @@ function renderCollapsibleItem({ title, subtitle, statusNode, children }) {
   ]);
 }
 
+
+function getStatusLabel(status) {
+  const normalized = String(status || 'OPEN').toUpperCase();
+  return STATUS_COPY[normalized]?.label || normalized;
+}
+
+function isFeedbackBug(item) {
+  return String(item?.type || '').toUpperCase() === 'BUG';
+}
+
+function isPositiveCreditStatus(status) {
+  return ['VERIFIED', 'CREDIT_ELIGIBLE', 'CREDIT_GRANTED'].includes(String(status || '').toUpperCase());
+}
+
+function asBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  return String(value).toLowerCase() === 'true';
+}
+
+function getFeedbackCreditPolicy() {
+  const raw = state.feedbackOptions?.creditRules || state.feedbackOptions?.rules || null;
+  return raw && typeof raw === 'object' ? raw : BUG_CREDIT_RULES;
+}
+
+function calculateSuggestedCreditDays({ type, status, bugLevel, affectsProFeature }) {
+  const normalizedType = String(type || '').toUpperCase();
+  const normalizedStatus = String(status || '').toUpperCase();
+  const normalizedBugLevel = String(bugLevel || 'NONE').toUpperCase();
+  if (normalizedType && normalizedType !== 'BUG') return 0;
+  if (['REJECTED_NOT_BUG', 'REJECTED_NOT_REPRODUCIBLE', 'DUPLICATE', 'CLOSED'].includes(normalizedStatus)) return 0;
+  if (!['VERIFIED', 'CREDIT_ELIGIBLE', 'CREDIT_GRANTED', 'CREDIT_APPLIED'].includes(normalizedStatus)) return 0;
+  if (!asBoolean(affectsProFeature, false)) return 1;
+  const rules = getFeedbackCreditPolicy();
+  const value = Number(rules[normalizedBugLevel] ?? BUG_CREDIT_RULES[normalizedBugLevel] ?? 0);
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function getItemSuggestedCreditDays(item) {
+  const backendValue = Number(item?.suggestedCreditDays ?? item?.finalCreditDays);
+  if (Number.isFinite(backendValue) && backendValue >= 0) return backendValue;
+  return calculateSuggestedCreditDays({
+    type: item?.type,
+    status: item?.status,
+    bugLevel: item?.bugLevel || item?.severity || 'NONE',
+    affectsProFeature: item?.affectsProFeature,
+  });
+}
+
+function getProviderActionStatus(item) {
+  return String(item?.providerActionStatus || item?.creditProviderActionStatus || '').toUpperCase();
+}
+
+function getCreditStatusHint(item) {
+  const providerStatus = getProviderActionStatus(item);
+  if (providerStatus === 'GOOGLE_PLAY_DEFER_PENDING') return 'Google Play renewal extension is being processed. Do not tell the user it is completed yet.';
+  if (providerStatus === 'GOOGLE_PLAY_DEFER_APPLIED') return 'Google Play renewal date has been extended for this credit.';
+  if (providerStatus === 'GOOGLE_PLAY_DEFER_FAILED') return 'Google Play defer failed. Ask backend/support to check credential, purchase token, or retry later.';
+  if (item?.serviceCreditExpiresAt) return `Service credit expires ${formatDate(item.serviceCreditExpiresAt)}.`;
+  return 'No service credit action recorded yet.';
+}
+
+function buildReviewUserMessagePreview({ status, creditDays, serviceCreditExpiresAt, reviewReason }) {
+  const normalized = String(status || 'REVIEWING').toUpperCase();
+  const reasonLine = reviewReason ? `\n\nReview note:\n${reviewReason}` : '';
+  if (normalized === 'NEED_MORE_INFO') {
+    return `Hi,\n\nThank you for reporting this issue to Fundoralit. We need a little more information to continue checking it.\n\nIf it happens again, please send a screenshot, screen recording, or the steps before the issue happened.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  }
+  if (normalized === 'REJECTED_NOT_BUG') {
+    return `Hi,\n\nThank you for reporting this to us. After reviewing your report, we found that this behaviour is currently working as designed.\n\nWe understand it may feel confusing, so we will keep your feedback as a usability improvement reference for future updates.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  }
+  if (normalized === 'REJECTED_NOT_REPRODUCIBLE') {
+    return `Hi,\n\nThank you for helping us check this issue. We reviewed your report, but we were not able to reproduce it with the information currently provided.\n\nIf the issue happens again, please send a screenshot, screen recording, or the steps before the error happened so we can investigate further.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  }
+  if (normalized === 'DUPLICATE') {
+    return `Hi,\n\nThank you for reporting this issue. We found that this issue has already been reported and is currently under review.\n\nYour report still helps us understand that more users are affected, so we have linked it to the existing issue record.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  }
+  if (normalized === 'CREDIT_APPLIED' || normalized === 'CREDIT_GRANTED') {
+    const expiry = serviceCreditExpiresAt ? ` Your Pro service credit is valid until ${formatDate(serviceCreditExpiresAt)}.` : '';
+    return `Hi,\n\nThank you for reporting a verified issue in Fundoralit.\n\nAs appreciation for helping us improve the experience, we have added ${creditDays || 'extra'} Pro service credit day(s) to your account.${expiry}\n\nIf your subscription is managed by Google Play, the updated renewal date may take a short while to appear after backend verification.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  }
+  if (normalized === 'VERIFIED' || normalized === 'CREDIT_ELIGIBLE') {
+    return `Hi,\n\nThank you for reporting this issue. We have verified that it is a real issue and our team will work on improving it.\n\nIf the issue is eligible, Pro service credit may be applied after the final admin check.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  }
+  if (normalized === 'CLOSED') {
+    return `Hi,\n\nThank you for sharing this feedback with Fundoralit. We have reviewed and marked it as closed.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  }
+  return `Hi,\n\nThank you for your report. Our team is reviewing it and will update the status after checking.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+}
+
+function openFeedbackReviewModal(item, presetStatus = null) {
+  const status = presetStatus || String(item.status || 'REVIEWING').toUpperCase();
+  const bugLevel = String(item.bugLevel || item.severity || (isFeedbackBug(item) ? 'MEDIUM' : 'NONE')).toUpperCase();
+  const affectsProFeature = asBoolean(item.affectsProFeature, ['PRO_FEATURE', 'PAYMENT'].includes(String(item.affectedArea || '').toUpperCase()));
+  const suggestedCreditDays = calculateSuggestedCreditDays({ type: item.type, status, bugLevel, affectsProFeature });
+  state.modal = {
+    kind: 'feedbackReview',
+    id: item.id,
+    item,
+    title: 'Review feedback report',
+    status,
+    bugLevel,
+    affectedArea: String(item.affectedArea || (affectsProFeature ? 'PRO_FEATURE' : 'FREE_FEATURE')).toUpperCase(),
+    affectsProFeature,
+    notifyUser: true,
+    reviewReason: item.reviewReason || '',
+    reviewEvidence: item.reviewEvidence || '',
+    suggestedCreditDays,
+  };
+  render();
+}
+
+function openFeedbackCreditModal(item) {
+  const suggested = Math.max(1, getItemSuggestedCreditDays(item) || 1);
+  state.modal = {
+    kind: 'feedbackCredit',
+    id: item.id,
+    item,
+    title: 'Grant Pro service credit',
+    creditDays: Number(item.finalCreditDays || suggested),
+    suggestedCreditDays: suggested,
+    reason: item.creditReason || item.reviewReason || buildCreditReason(item),
+    notifyUser: true,
+  };
+  render();
+}
+
+function buildCreditReason(item) {
+  const level = String(item.bugLevel || item.severity || 'verified').toLowerCase();
+  const module = item.module || 'Fundoralit';
+  return `Verified ${level} issue affecting ${module}.`;
+}
+
+async function submitFeedbackReviewModal() {
+  if (!state.modal?.id) return;
+  const status = String(state.modal.status || '').toUpperCase();
+  if (!status) {
+    setMessage('Please select a review status.', true);
+    return;
+  }
+  if (['VERIFIED', 'CREDIT_ELIGIBLE', 'CREDIT_GRANTED', 'CREDIT_APPLIED'].includes(status) && !state.modal.reviewEvidence.trim()) {
+    setMessage('Please add review evidence before verifying an issue.', true);
+    return;
+  }
+  const body = {
+    status,
+    bugLevel: state.modal.bugLevel || 'NONE',
+    affectedArea: state.modal.affectedArea || 'OTHER',
+    affectsProFeature: Boolean(state.modal.affectsProFeature),
+    reviewReason: String(state.modal.reviewReason || '').trim() || null,
+    reviewEvidence: String(state.modal.reviewEvidence || '').trim() || null,
+    notifyUser: Boolean(state.modal.notifyUser),
+  };
+  await performPatchAction(API_PATHS.feedback.review(state.modal.id), 'Feedback review updated.', body);
+}
+
+async function submitFeedbackCreditModal() {
+  if (!state.modal?.id) return;
+  const creditDays = Number(state.modal.creditDays);
+  if (!Number.isFinite(creditDays) || creditDays < 1) {
+    setMessage('Credit days must be at least 1.', true);
+    return;
+  }
+  if (creditDays > 14 && !confirm('Credit is above 14 days. Continue only if backend policy allows this.')) return;
+  const body = {
+    creditDays,
+    reason: String(state.modal.reason || '').trim() || buildCreditReason(state.modal.item || {}),
+    notifyUser: Boolean(state.modal.notifyUser),
+  };
+  state.loading = true;
+  state.error = '';
+  render();
+  try {
+    await api(API_PATHS.feedback.serviceCredit(state.modal.id), { method: 'POST', body });
+    setMessage('Service credit request submitted. Check provider status after refresh.');
+    state.modal = null;
+    await loadData();
+  } catch (error) {
+    setMessage(error.message || 'Failed to grant service credit.', true);
+    state.loading = false;
+    render();
+  }
+}
+
+
 function renderFeedbackItem(item) {
   const status = String(item.status || 'OPEN').toUpperCase();
   const isClosed = status === 'CLOSED';
+  const isCreditApplied = status === 'CREDIT_APPLIED' || getProviderActionStatus(item) === 'GOOGLE_PLAY_DEFER_APPLIED';
   const debugText = safeJson(item.debugJson);
+  const suggestedCredit = getItemSuggestedCreditDays(item);
+  const providerStatus = getProviderActionStatus(item);
+  const canGrantCredit = isPositiveCreditStatus(status) && !isCreditApplied;
+  const statusHelper = STATUS_COPY[status]?.helper || '';
+  const decisionChips = [
+    item.bugLevel || item.severity ? `Level: ${item.bugLevel || item.severity}` : null,
+    item.affectedArea ? `Area: ${item.affectedArea}` : null,
+    item.affectsProFeature !== undefined ? `Affects Pro: ${asBoolean(item.affectsProFeature) ? 'Yes' : 'No'}` : null,
+    suggestedCredit ? `Suggested credit: ${suggestedCredit} day(s)` : null,
+    providerStatus ? `Provider: ${providerStatus}` : null,
+  ].filter(Boolean);
+
   return renderCollapsibleItem({
     title: `${item.type || '-'} · ${item.module || '-'}`,
     subtitle: item.issue || item.userEmail || extractEmailFromDebugJson(item.debugJson) || 'Feedback report',
-    statusNode: el('span', { class: getStatusClass(status), text: status }),
+    statusNode: el('span', { class: getStatusClass(status), text: getStatusLabel(status) }),
     children: [
+      el('div', { class: 'workflow-strip' }, [
+        el('strong', { text: statusHelper || 'Review this report and choose the next action.' }),
+        el('span', { text: getCreditStatusHint(item) }),
+      ]),
+      decisionChips.length ? el('div', { class: 'chip-row' }, decisionChips.map((text) => el('span', { class: 'chip', text }))) : null,
       el('p', { class: 'item-desc', text: item.description || '-' }),
       renderMetaGrid([
-        ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail || extractEmailFromDebugJson(item.debugJson)], ['Severity', item.severity],
-        ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
+        ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail || extractEmailFromDebugJson(item.debugJson)], ['Type', item.type],
+        ['Module', item.module], ['Original Severity', item.severity], ['Bug Level', item.bugLevel], ['Affected Area', item.affectedArea],
+        ['Affects Pro Feature', item.affectsProFeature === undefined ? '-' : (asBoolean(item.affectsProFeature) ? 'Yes' : 'No')],
+        ['Eligible For Credit', item.eligibleForCredit === undefined ? '-' : (asBoolean(item.eligibleForCredit) ? 'Yes' : 'No')],
+        ['Suggested Credit Days', item.suggestedCreditDays ?? suggestedCredit], ['Final Credit Days', item.finalCreditDays], ['Credit Policy', item.creditPolicy],
+        ['Provider Action', providerStatus || '-'], ['Provider Error', item.providerActionError], ['Service Credit Expires', formatDate(item.serviceCreditExpiresAt)],
+        ['Review Reason', item.reviewReason], ['Review Evidence', item.reviewEvidence], ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
         ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
       ]),
       item.screenshotUrl ? el('a', { href: item.screenshotUrl, target: '_blank', rel: 'noopener noreferrer' }, [
         el('img', { class: 'img-preview', src: item.screenshotUrl, alt: 'Feedback screenshot' }),
       ]) : el('p', { class: 'muted', text: 'No screenshot attached.' }),
       el('details', { class: 'nested-details' }, [el('summary', { text: 'Debug JSON' }), el('pre', { text: debugText })]),
-      el('div', { class: 'actions' }, [
+      el('div', { class: 'actions feedback-actions' }, [
         isClosed
           ? el('button', { class: 'btn success small', text: 'Reopen', onclick: () => patchAction(API_PATHS.feedback.reopen(item.id), 'Feedback reopened.') })
-          : el('button', { class: 'btn danger small', text: 'Close', onclick: () => openCloseModal('feedback', item) }),
+          : el('button', { class: 'btn small', text: status === 'OPEN' ? 'Start review' : 'Review decision', onclick: () => openFeedbackReviewModal(item, status === 'OPEN' ? 'REVIEWING' : status) }),
+        !isClosed ? el('button', { class: 'btn success small', text: 'Verify issue', onclick: () => openFeedbackReviewModal(item, 'VERIFIED') }) : null,
+        !isClosed ? el('button', { class: 'btn ghost small', text: 'Need info', onclick: () => openFeedbackReviewModal(item, 'NEED_MORE_INFO') }) : null,
+        !isClosed ? el('button', { class: 'btn ghost small', text: 'Reject / Duplicate', onclick: () => openFeedbackReviewModal(item, 'REJECTED_NOT_REPRODUCIBLE') }) : null,
+        canGrantCredit ? el('button', { class: 'btn secondary small', text: 'Grant credit', onclick: () => openFeedbackCreditModal(item) }) : null,
+        !isClosed ? el('button', { class: 'btn danger small', text: 'Close final', onclick: () => openCloseModal('feedback', item) }) : null,
       ]),
     ],
   });
@@ -1011,8 +1289,15 @@ function renderPagination() {
 }
 
 
-function renderCloseModal() {
+
+function renderAdminModal() {
   if (!state.modal) return null;
+  if (state.modal.kind === 'feedbackReview') return renderFeedbackReviewModal();
+  if (state.modal.kind === 'feedbackCredit') return renderFeedbackCreditModal();
+  return renderCloseModal();
+}
+
+function renderCloseModal() {
   const title = state.modal.title || 'Close item';
   const bodyText = el('textarea', {
     rows: '6',
@@ -1057,6 +1342,137 @@ function renderCloseModal() {
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
         el('button', { class: 'btn danger', text: state.loading ? 'Closing...' : 'Close / Solve', disabled: state.loading, onclick: submitCloseModal }),
+      ]),
+    ]),
+  ]);
+}
+
+function renderFeedbackReviewModal() {
+  const modal = state.modal;
+  const statusSelect = select(FEEDBACK_STATUS_OPTIONS, modal.status, (value) => {
+    modal.status = value;
+    modal.suggestedCreditDays = calculateSuggestedCreditDays({ type: modal.item?.type, status: value, bugLevel: modal.bugLevel, affectsProFeature: modal.affectsProFeature });
+    render();
+  });
+  const levelSelect = select(BUG_LEVEL_OPTIONS, modal.bugLevel, (value) => {
+    modal.bugLevel = value;
+    modal.suggestedCreditDays = calculateSuggestedCreditDays({ type: modal.item?.type, status: modal.status, bugLevel: value, affectsProFeature: modal.affectsProFeature });
+    render();
+  });
+  const areaSelect = select(AFFECTED_AREA_OPTIONS, modal.affectedArea, (value) => {
+    modal.affectedArea = value;
+    if (['PRO_FEATURE', 'PAYMENT', 'DATA'].includes(value)) modal.affectsProFeature = true;
+    modal.suggestedCreditDays = calculateSuggestedCreditDays({ type: modal.item?.type, status: modal.status, bugLevel: modal.bugLevel, affectsProFeature: modal.affectsProFeature });
+    render();
+  });
+  const affectsPro = el('input', { type: 'checkbox' });
+  affectsPro.checked = Boolean(modal.affectsProFeature);
+  affectsPro.addEventListener('change', () => {
+    modal.affectsProFeature = affectsPro.checked;
+    modal.suggestedCreditDays = calculateSuggestedCreditDays({ type: modal.item?.type, status: modal.status, bugLevel: modal.bugLevel, affectsProFeature: modal.affectsProFeature });
+    render();
+  });
+  const notify = el('input', { type: 'checkbox' });
+  notify.checked = Boolean(modal.notifyUser);
+  notify.addEventListener('change', () => { modal.notifyUser = notify.checked; });
+
+  const reason = el('textarea', { rows: '4', placeholder: 'Explain the decision in admin-friendly wording. This may be used by backend email template if supported.' });
+  reason.value = modal.reviewReason || '';
+  reason.addEventListener('input', () => { modal.reviewReason = reason.value; });
+  const evidence = el('textarea', { rows: '4', placeholder: 'Example: Reproduced on Android 14. Pro Analysis wrong month result with wallet filter enabled.' });
+  evidence.value = modal.reviewEvidence || '';
+  evidence.addEventListener('input', () => { modal.reviewEvidence = evidence.value; });
+
+  const preview = buildReviewUserMessagePreview({
+    status: modal.status,
+    creditDays: modal.suggestedCreditDays,
+    reviewReason: modal.reviewReason,
+  });
+
+  return el('div', { class: 'modal-backdrop', onclick: (event) => { if (event.target.classList.contains('modal-backdrop')) closeModal(); } }, [
+    el('section', { class: 'modal-card modal-card-wide', role: 'dialog', 'aria-modal': 'true' }, [
+      el('div', { class: 'modal-head' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Feedback review' }), el('h2', { text: 'Review decision' })]),
+        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+      ]),
+      el('div', { class: 'modal-body' }, [
+        el('div', { class: 'workflow-strip' }, [
+          el('strong', { text: 'Use status code + bug level. Backend will send the correct friendly message for each status.' }),
+          el('span', { text: 'For verified non-Pro feature bugs, the suggested credit is still 1 day as appreciation.' }),
+        ]),
+        renderMetaGrid([
+          ['Feedback ID', modal.id],
+          ['User Email', modal.item?.userEmail || extractEmailFromDebugJson(modal.item?.debugJson)],
+          ['Type', modal.item?.type],
+          ['Module', modal.item?.module],
+        ]),
+        el('div', { class: 'form-grid two' }, [
+          el('div', { class: 'field' }, [el('label', { text: 'Review status' }), statusSelect, el('small', { class: 'field-help', text: STATUS_COPY[modal.status]?.helper || '' })]),
+          el('div', { class: 'field' }, [el('label', { text: 'Bug level' }), levelSelect, el('small', { class: 'field-help', text: 'Used by backend policy to suggest compensation.' })]),
+          el('div', { class: 'field' }, [el('label', { text: 'Affected area' }), areaSelect]),
+          el('label', { class: 'check-row' }, [affectsPro, el('span', { text: 'Affects Pro feature / paid entitlement' })]),
+        ]),
+        el('div', { class: 'credit-summary' }, [
+          el('span', { text: 'Suggested credit' }),
+          el('strong', { text: `${modal.suggestedCreditDays || 0} day(s)` }),
+          el('p', { text: modal.suggestedCreditDays ? 'Final eligibility and monthly cap are still enforced by backend.' : 'No service credit suggested for this decision.' }),
+        ]),
+        el('div', { class: 'field' }, [el('label', { text: 'Review reason' }), reason]),
+        el('div', { class: 'field' }, [el('label', { text: 'Evidence / proof for audit' }), evidence]),
+        el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user with the matching status message' })]),
+        el('details', { class: 'default-preview', open: true }, [el('summary', { text: 'User message preview' }), el('pre', { text: preview })]),
+      ]),
+      el('div', { class: 'modal-actions' }, [
+        el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
+        el('button', { class: 'btn', text: state.loading ? 'Saving...' : 'Save review', disabled: state.loading, onclick: submitFeedbackReviewModal }),
+      ]),
+    ]),
+  ]);
+}
+
+function renderFeedbackCreditModal() {
+  const modal = state.modal;
+  const daysInput = el('input', { type: 'number', min: '1', max: '14', step: '1', value: modal.creditDays || modal.suggestedCreditDays || 1 });
+  daysInput.addEventListener('input', () => { modal.creditDays = Number(daysInput.value); });
+  const reason = el('textarea', { rows: '4', placeholder: 'Reason shown in audit/email, e.g. Verified Pro Analysis issue affecting paid feature.' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const notify = el('input', { type: 'checkbox' });
+  notify.checked = Boolean(modal.notifyUser);
+  notify.addEventListener('change', () => { modal.notifyUser = notify.checked; });
+  const providerStatus = getProviderActionStatus(modal.item || {});
+  const preview = buildReviewUserMessagePreview({
+    status: 'CREDIT_APPLIED',
+    creditDays: modal.creditDays || modal.suggestedCreditDays,
+    serviceCreditExpiresAt: modal.item?.serviceCreditExpiresAt,
+    reviewReason: modal.reason,
+  });
+
+  return el('div', { class: 'modal-backdrop', onclick: (event) => { if (event.target.classList.contains('modal-backdrop')) closeModal(); } }, [
+    el('section', { class: 'modal-card', role: 'dialog', 'aria-modal': 'true' }, [
+      el('div', { class: 'modal-head' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Service credit' }), el('h2', { text: 'Grant Pro service credit' })]),
+        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+      ]),
+      el('div', { class: 'modal-body' }, [
+        el('div', { class: 'workflow-strip warning' }, [
+          el('strong', { text: 'Backend will enforce eligibility, monthly cap, and Google Play defer result.' }),
+          el('span', { text: 'If Google Play defer is pending, UI/email should say processing, not completed.' }),
+        ]),
+        renderMetaGrid([
+          ['Feedback ID', modal.id],
+          ['User Email', modal.item?.userEmail || extractEmailFromDebugJson(modal.item?.debugJson)],
+          ['Suggested Days', modal.suggestedCreditDays],
+          ['Current Provider Status', providerStatus || 'Not requested yet'],
+        ]),
+        el('div', { class: 'field' }, [el('label', { text: 'Final credit days' }), daysInput, el('small', { class: 'field-help', text: 'Recommended: use backend suggestion unless there is a clear reason.' })]),
+        el('div', { class: 'field' }, [el('label', { text: 'Credit reason' }), reason]),
+        el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user after backend confirms credit action' })]),
+        el('details', { class: 'default-preview', open: true }, [el('summary', { text: 'Credit email/message preview' }), el('pre', { text: preview })]),
+      ]),
+      el('div', { class: 'modal-actions' }, [
+        el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
+        el('button', { class: 'btn secondary', text: state.loading ? 'Granting...' : 'Grant credit', disabled: state.loading, onclick: submitFeedbackCreditModal }),
       ]),
     ]),
   ]);
@@ -1108,7 +1524,7 @@ function render() {
   renderAuth();
   clear(mainContent);
   mainContent.appendChild(state.user ? renderSignedIn() : renderSignedOut());
-  const modal = renderCloseModal();
+  const modal = renderAdminModal();
   if (modal) mainContent.appendChild(modal);
 }
 
