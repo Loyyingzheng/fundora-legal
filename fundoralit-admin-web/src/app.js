@@ -601,6 +601,30 @@ function normalizeAnalyticsRows(response) {
   return value.rows || value.cohorts || value.content || value.data || [];
 }
 
+
+function renderInfoHint(text, options = {}) {
+  const cleanText = String(text || '').trim();
+  if (!cleanText) return null;
+  const label = options.label || 'More information';
+  const title = options.title || '';
+  return el('details', { class: `info-hint ${options.compact ? 'compact' : ''}`.trim() }, [
+    el('summary', { 'aria-label': label, title: label }, [
+      el('span', { class: 'info-icon', 'aria-hidden': 'true', text: 'i' }),
+    ]),
+    el('div', { class: 'info-popover', role: 'note' }, [
+      title ? el('strong', { text: title }) : null,
+      el('p', { text: cleanText }),
+    ]),
+  ]);
+}
+
+function renderInlineInfoLabel(text, infoText) {
+  return el('span', { class: 'inline-info-label' }, [
+    el('span', { text }),
+    renderInfoHint(infoText, { compact: true, label: `${text} information` }),
+  ]);
+}
+
 function renderNotice() {
   const nodes = [];
   if (state.error) nodes.push(el('div', { class: 'error', text: state.error }));
@@ -681,7 +705,10 @@ function renderAnalyticsToolbar() {
       ]),
     ]),
     state.analyticsRangeNotice ? el('p', { class: 'analytics-range-notice', text: state.analyticsRangeNotice }) : null,
-    el('p', { class: 'analytics-range-help', text: 'Selected range affects Active users, New users, feature adoption, funnel, invites, and Smart Capture sections. DAU, WAU, and MAU use today-based rolling windows.' }),
+    el('div', { class: 'compact-help-row' }, [
+      el('span', { class: 'muted', text: 'Date range applies to this dashboard.' }),
+      renderInfoHint('Selected range affects Active users, New users, feature adoption, funnel, invites, and Smart Capture sections. DAU, WAU, and MAU use today-based rolling windows.', { compact: true, label: 'Date range details' }),
+    ]),
   ]);
 }
 
@@ -690,21 +717,26 @@ function renderAnalyticsHero() {
     el('div', { class: 'analytics-section-head' }, [
       el('div', {}, [
         el('p', { class: 'eyebrow', text: 'Growth Analytics' }),
-        el('h2', { text: 'Track whether Fundoralit users return, invite others, and convert to paid plans.' }),
-        el('p', { class: 'muted', text: 'View aggregated metrics for retention, funnel conversion, feature adoption, invites, and Smart Capture performance without exposing any user-level or financial details.' }),
+        el('div', { class: 'section-title-row' }, [
+          el('h2', { text: 'Track product growth and core feature usage.' }),
+          renderInfoHint('View aggregated metrics for retention, funnel conversion, feature adoption, invites, and Smart Capture performance without exposing user-level financial details.', { label: 'Growth Analytics details' }),
+        ]),
       ]),
     ]),
     renderAnalyticsToolbar(),
-    el('p', { class: 'analytics-note', text: 'This dashboard shows privacy-safe usage metrics only. It must not display exact amounts, merchant names, notes, receipt text, notification text, or user financial content.' }),
+    el('div', { class: 'privacy-note' }, [
+      el('span', { text: 'Privacy-safe metrics only' }),
+      renderInfoHint('This dashboard must not display exact amounts, merchant names, notes, receipt text, notification text, or user financial content.', { compact: true, label: 'Privacy details' }),
+    ]),
   ]);
 }
 
 function renderAnalyticsSection(title, subtitle, children) {
   return el('section', { class: 'analytics-section card' }, [
     el('div', { class: 'analytics-section-head' }, [
-      el('div', {}, [
+      el('div', { class: 'section-title-row' }, [
         el('h3', { text: title }),
-        subtitle ? el('p', { class: 'muted', text: subtitle }) : null,
+        subtitle ? renderInfoHint(subtitle, { compact: true, label: `${title} details` }) : null,
       ]),
     ]),
     el('div', {}, children),
@@ -727,11 +759,13 @@ function getAnalyticsToneForMetric(value, target, higherIsBetter = true) {
 function renderAnalyticsCard(label, value, hint = '', tone = '', meta = '') {
   return el('article', { class: `analytics-card ${tone || ''}`.trim() }, [
     el('div', { class: 'analytics-card-main' }, [
-      el('span', { class: 'analytics-card-label', text: label }),
+      el('span', { class: 'analytics-card-label' }, [
+        el('span', { text: label }),
+        hint ? renderInfoHint(hint, { compact: true, label: `${label} details` }) : null,
+      ]),
       el('strong', { text: value }),
       meta ? el('span', { class: 'analytics-card-meta', text: meta }) : null,
     ]),
-    hint ? el('p', { class: 'analytics-note', text: hint }) : null,
   ]);
 }
 
@@ -746,13 +780,15 @@ function renderAnalyticsProgress(label, value, target, suffix = '', hint = '') {
   const tone = getAnalyticsToneForMetric(metric, threshold);
   return el('article', { class: `analytics-target-card ${tone}`.trim() }, [
     el('div', { class: 'analytics-target-head' }, [
-      el('span', { class: 'analytics-card-label', text: label }),
+      el('span', { class: 'analytics-card-label' }, [
+        el('span', { text: label }),
+        hint ? renderInfoHint(hint, { compact: true, label: `${label} target details` }) : null,
+      ]),
       el('strong', { text: `${display} / ${targetValue}` }),
     ]),
     el('div', { class: 'analytics-progress-track' }, [
       el('div', { class: 'analytics-progress-fill', style: `width: ${ratio}%` }),
     ]),
-    hint ? el('p', { class: 'analytics-note', text: hint }) : null,
   ]);
 }
 
@@ -944,9 +980,9 @@ function renderFeedbackToolbar() {
     el('div', {}, [el('label', { text: 'Status' }), status]),
     el('div', {}, [el('label', { text: 'Module' }), module]),
     el('div', {}, [el('label', { text: 'Type' }), type]),
-    el('div', { class: 'toolbar-help wide' }, [
-      el('strong', { text: 'Service credit workflow' }),
-      el('span', { text: 'Review → select bug level → backend suggests credit → admin confirms. Different statuses trigger different user-friendly backend messages.' }),
+    el('div', { class: 'toolbar-context wide' }, [
+      el('span', { text: 'Service credit workflow' }),
+      renderInfoHint('Review → select bug level → backend suggests credit → admin confirms. Different statuses trigger different user-friendly backend messages.', { compact: true, label: 'Service credit workflow details' }),
     ]),
     el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
@@ -1208,9 +1244,9 @@ function renderFeedbackItem(item) {
     subtitle: item.issue || item.userEmail || extractEmailFromDebugJson(item.debugJson) || 'Feedback report',
     statusNode: el('span', { class: getStatusClass(status), text: getStatusLabel(status) }),
     children: [
-      el('div', { class: 'workflow-strip' }, [
-        el('strong', { text: statusHelper || 'Review this report and choose the next action.' }),
-        el('span', { text: getCreditStatusHint(item) }),
+      el('div', { class: 'compact-guidance' }, [
+        el('strong', { text: getStatusLabel(status) }),
+        renderInfoHint(`${statusHelper || 'Review this report and choose the next action.'} ${getCreditStatusHint(item)}`, { compact: true, label: 'Status and credit guidance' }),
       ]),
       decisionChips.length ? el('div', { class: 'chip-row' }, decisionChips.map((text) => el('span', { class: 'chip', text }))) : null,
       hasUnresolvedCreditAction ? el('div', { class: 'notice warning inline-notice', text: 'Service credit is not fully resolved yet. Do not close this feedback until Google Play defer is applied or the credit issue is resolved.' }) : null,
@@ -1413,9 +1449,9 @@ function renderFeedbackReviewModal() {
         el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
-        el('div', { class: 'workflow-strip' }, [
-          el('strong', { text: 'Use status code + bug level. Backend will send the correct friendly message for each status.' }),
-          el('span', { text: 'For verified non-Pro feature bugs, the suggested credit is still 1 day as appreciation.' }),
+        el('div', { class: 'compact-guidance' }, [
+          el('strong', { text: 'Review policy' }),
+          renderInfoHint('Use status code + bug level. Backend will send the correct friendly message for each status. For verified non-Pro feature bugs, the suggested credit is still 1 day as appreciation.', { compact: true, label: 'Review policy details' }),
         ]),
         renderMetaGrid([
           ['Feedback ID', modal.id],
@@ -1437,7 +1473,7 @@ function renderFeedbackReviewModal() {
         el('div', { class: 'field' }, [el('label', { text: 'Review reason' }), reason]),
         el('div', { class: 'field' }, [el('label', { text: 'Evidence / proof for audit' }), evidence]),
         el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user with the matching status message' })]),
-        el('details', { class: 'default-preview', open: true }, [el('summary', { text: 'User message preview' }), el('pre', { text: preview })]),
+        el('details', { class: 'default-preview' }, [el('summary', { text: 'User message preview' }), el('pre', { text: preview })]),
       ]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
@@ -1472,9 +1508,9 @@ function renderFeedbackCreditModal() {
         el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
-        el('div', { class: 'workflow-strip warning' }, [
-          el('strong', { text: 'Backend will enforce eligibility, monthly cap, and Google Play defer result.' }),
-          el('span', { text: 'If Google Play defer is pending, UI/email should say processing, not completed.' }),
+        el('div', { class: 'compact-guidance warning' }, [
+          el('strong', { text: 'Credit safety' }),
+          renderInfoHint('Backend will enforce eligibility, monthly cap, and Google Play defer result. If Google Play defer is pending, UI/email should say processing, not completed.', { compact: true, label: 'Credit safety details' }),
         ]),
         renderMetaGrid([
           ['Feedback ID', modal.id],
@@ -1485,7 +1521,7 @@ function renderFeedbackCreditModal() {
         el('div', { class: 'field' }, [el('label', { text: 'Final credit days' }), daysInput, el('small', { class: 'field-help', text: 'Recommended: use backend suggestion unless there is a clear reason.' })]),
         el('div', { class: 'field' }, [el('label', { text: 'Credit reason' }), reason]),
         el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user after backend confirms credit action' })]),
-        el('details', { class: 'default-preview', open: true }, [el('summary', { text: 'Credit email/message preview' }), el('pre', { text: preview })]),
+        el('details', { class: 'default-preview' }, [el('summary', { text: 'Credit email/message preview' }), el('pre', { text: preview })]),
       ]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
@@ -1501,7 +1537,10 @@ function renderSignedIn() {
 
   if (state.activeTab === 'analytics') {
     children.push(renderAnalyticsDashboard());
-    children.push(el('p', { class: 'footer-note', text: 'Admin changes are limited to the backend endpoints already implemented in Core Backend. Add backend audit logs later if you want stronger production traceability.' }));
+    children.push(el('div', { class: 'footer-note compact-help-row' }, [
+      el('span', { text: 'Admin portal follows backend permissions and available endpoints.' }),
+      renderInfoHint('Only aggregated, admin-safe information should be shown here. Avoid exposing user financial content unless a support flow explicitly requires it.', { compact: true, label: 'Admin portal safety note' }),
+    ]));
     return el('section', { class: 'page-section' }, children);
   }
 
@@ -1524,7 +1563,10 @@ function renderSignedIn() {
   }
 
   children.push(renderPagination());
-  children.push(el('p', { class: 'footer-note', text: 'Admin changes are limited to the backend endpoints already implemented in Core Backend. Add backend audit logs later if you want stronger production traceability.' }));
+  children.push(el('div', { class: 'footer-note compact-help-row' }, [
+      el('span', { text: 'Admin portal follows backend permissions and available endpoints.' }),
+      renderInfoHint('Only aggregated, admin-safe information should be shown here. Avoid exposing user financial content unless a support flow explicitly requires it.', { compact: true, label: 'Admin portal safety note' }),
+    ]));
   return el('section', { class: 'page-section' }, children);
 }
 
