@@ -1648,3 +1648,42 @@ h3 {
     display: none;
   }
 }
+
+.language-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 12px;
+}
+
+.mini-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  border: 1px solid #E2E8F0;
+  background: #F8FAFC;
+  color: #64748B;
+}
+
+.mini-badge.success {
+  border-color: #BBF7D0;
+  background: #F0FDF4;
+  color: #15803D;
+}
+
+.mini-badge.info {
+  border-color: #BFDBFE;
+  background: #EFF6FF;
+  color: #1D4ED8;
+}
+
+.mini-badge.muted {
+  opacity: 0.55;
+}
+
+.language-section > summary {
+  font-weight: 800;
+}

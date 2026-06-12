@@ -63,6 +63,12 @@ const API_PATHS = {
   auditLogs: {
     list: '/api/admin/audit-logs',
   },
+  announcements: {
+    list: '/api/admin/announcements',
+    create: '/api/admin/announcements',
+    update: (id) => `/api/admin/announcements/${encodeURIComponent(id)}`,
+    disable: (id) => `/api/admin/announcements/${encodeURIComponent(id)}/disable`,
+  },
 };
 
 function toLocalDateString(date) {
@@ -190,6 +196,100 @@ const state = {
 const authBox = document.getElementById('authBox');
 const mainContent = document.getElementById('mainContent');
 
+
+const ADMIN_ENUMS = {
+  featureLimitPeriods: ['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'],
+  featureFlagTargetPlans: ['', 'ALL', 'FREE', 'PRO'],
+  productPolicyPlatforms: ['', 'ALL', 'ANDROID', 'IOS', 'WEB'],
+  announcementTypes: ['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE'],
+  announcementDisplayModes: ['BANNER', 'MODAL'],
+  announcementTargetPlans: ['ALL', 'FREE', 'PRO'],
+  announcementTargetPlatforms: ['ALL', 'ANDROID', 'IOS', 'WEB'],
+};
+
+const ADMIN_LIMITS = {
+  auditReasonMax: 500,
+  descriptionMax: 500,
+  resetTimezoneMax: 80,
+  featureLimitMax: 1000000,
+  usageCountMax: 1000000,
+  announcementPriorityMax: 999,
+  announcementTitleMax: 160,
+  announcementMessageMax: 4000,
+  announcementCtaLabelMax: 80,
+  announcementCtaActionMax: 160,
+  productPolicyJsonMax: 50000,
+  minAppVersionMax: 40,
+  platformMax: 20,
+};
+
+function normalizedTrim(value) {
+  return String(value ?? '').trim();
+}
+
+function blankToNull(value) {
+  const text = normalizedTrim(value);
+  return text ? text : null;
+}
+
+function validationError(message) {
+  setMessage(message, true);
+  render();
+  return false;
+}
+
+function requireAuditReason(reason, actionLabel = 'this admin change') {
+  const text = normalizedTrim(reason);
+  if (!text) return { ok: false, message: `Please enter an audit reason before saving ${actionLabel}.` };
+  if (text.length > ADMIN_LIMITS.auditReasonMax) return { ok: false, message: `Audit reason must be ${ADMIN_LIMITS.auditReasonMax} characters or less.` };
+  return { ok: true, value: text };
+}
+
+function requireMaxLength(value, label, max, { required = false } = {}) {
+  const text = normalizedTrim(value);
+  if (required && !text) return { ok: false, message: `${label} is required.` };
+  if (text.length > max) return { ok: false, message: `${label} must be ${max} characters or less.` };
+  return { ok: true, value: text };
+}
+
+function parseWholeNumber(value, label, { required = true, min = 0, max = Number.MAX_SAFE_INTEGER, allowEmpty = false } = {}) {
+  const text = normalizedTrim(value);
+  if (!text) {
+    if (allowEmpty) return { ok: true, value: null };
+    if (!required) return { ok: true, value: null };
+    return { ok: false, message: `${label} is required.` };
+  }
+  if (!/^-?\d+$/.test(text)) return { ok: false, message: `${label} must be a whole number.` };
+  const number = Number(text);
+  if (!Number.isSafeInteger(number) || number < min || number > max) {
+    return { ok: false, message: `${label} must be between ${min} and ${max}.` };
+  }
+  return { ok: true, value: number };
+}
+
+function requireOneOf(value, allowed, label, { allowEmpty = false } = {}) {
+  const text = normalizedTrim(value).toUpperCase();
+  if (!text && allowEmpty) return { ok: true, value: '' };
+  if (!allowed.includes(text)) return { ok: false, message: `${label} has an invalid value.` };
+  return { ok: true, value: text };
+}
+
+function parseOptionalDateTime(value, label) {
+  const text = normalizedTrim(value);
+  if (!text) return { ok: true, value: null, time: null };
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return { ok: false, message: `${label} is not a valid date/time.` };
+  return { ok: true, value: date.toISOString(), time: date.getTime() };
+}
+
+function validateVersionText(value, label) {
+  const text = normalizedTrim(value);
+  if (!text) return { ok: true, value: null };
+  if (text.length > ADMIN_LIMITS.minAppVersionMax) return { ok: false, message: `${label} must be ${ADMIN_LIMITS.minAppVersionMax} characters or less.` };
+  if (!/^[0-9A-Za-z._+-]+$/.test(text)) return { ok: false, message: `${label} can only contain letters, numbers, dot, underscore, plus, and hyphen.` };
+  return { ok: true, value: text };
+}
+
 const FEEDBACK_STATUS_OPTIONS = [
   'OPEN',
   'REVIEWING',
@@ -248,6 +348,7 @@ const NAV_GROUPS = [
   {
     title: 'Operations',
     items: [
+      { id: 'announcements', label: 'Announcements', helper: 'Remote notices', description: 'Create user-facing app notices without shipping a new app version.', info: 'Use announcements for maintenance, updates, or important messages. Keep copy short; details are hidden in the app until users choose to read or act.' },
       { id: 'premium', label: 'Reward Surveys', helper: 'Trial reward', description: 'Review feedback-trial reward surveys and related service-credit workflows.', info: 'Use this section to verify survey submissions and keep reward decisions traceable.' },
       { id: 'review', label: 'Review Prompts', helper: 'Store prompt', description: 'Monitor app review prompt eligibility and outcomes.', info: 'Review prompt data helps tune rating prompts without showing private finance content.' },
       { id: 'featureAnalytics', label: 'Feature Analytics', helper: 'Summary events', description: 'See aggregated feature interaction summaries for UX and dashboard improvements.', info: 'This is summary analytics only. It should not contain raw click streams, merchant names, payees, OCR text, or notification content.' },
@@ -549,6 +650,11 @@ async function loadAdminControlData() {
     state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
     return;
   }
+  if (state.activeTab === 'announcements') {
+    response = await api(API_PATHS.announcements.list);
+    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    return;
+  }
   if (state.activeTab === 'usage') {
     const counters = await api(API_PATHS.usage.list, {
       params: { userEmail: filters.userEmail, featureKey: filters.featureKey, periodKey: filters.periodKey },
@@ -807,7 +913,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['featureLimits', 'featureFlags', 'productPolicies', 'usage', 'featureAnalytics', 'auditLogs'].includes(tab);
+  return ['featureLimits', 'featureFlags', 'productPolicies', 'usage', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 
@@ -1560,6 +1666,7 @@ function renderAdminModal() {
   if (state.modal.kind === 'featureFlagEdit') return renderFeatureFlagModal();
   if (state.modal.kind === 'productPolicyEdit') return renderProductPolicyModal();
   if (state.modal.kind === 'usageAdjust') return renderUsageAdjustModal();
+  if (state.modal.kind === 'announcementEdit') return renderAnnouncementModal();
   return renderCloseModal();
 }
 
@@ -1814,18 +1921,21 @@ function openFeatureLimitModal(item) {
 
 async function submitFeatureLimitModal() {
   const modal = state.modal;
-  const limitText = String(modal.limitCount ?? '').trim();
-  const limitCount = limitText === '' ? null : Number(limitText);
-  if (limitText !== '' && (!Number.isFinite(limitCount) || limitCount < 0)) {
-    setMessage('Limit must be empty for unlimited or a non-negative number.', true); render(); return;
-  }
-  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  const limit = parseWholeNumber(modal.limitCount, 'Limit count', { allowEmpty: true, min: 0, max: ADMIN_LIMITS.featureLimitMax });
+  if (!limit.ok) return validationError(limit.message);
+  const period = requireOneOf(modal.periodType || 'NONE', ADMIN_ENUMS.featureLimitPeriods, 'Period type');
+  if (!period.ok) return validationError(period.message);
+  const description = requireMaxLength(modal.description, 'Description', ADMIN_LIMITS.descriptionMax);
+  if (!description.ok) return validationError(description.message);
+  const reason = requireAuditReason(modal.reason, 'this feature limit update');
+  if (!reason.ok) return validationError(reason.message);
+
   await performPatchAction(API_PATHS.featureLimits.update(modal.id), 'Feature limit updated.', {
-    limitCount,
-    periodType: modal.periodType || 'NONE',
+    limitCount: limit.value,
+    periodType: period.value,
     enabled: Boolean(modal.enabled),
-    description: String(modal.description || '').trim() || null,
-    reason: String(modal.reason || '').trim(),
+    description: description.value || null,
+    reason: reason.value,
   });
 }
 
@@ -1881,16 +1991,24 @@ function openFeatureFlagModal(item) {
 
 async function submitFeatureFlagModal() {
   const modal = state.modal;
-  const rollout = Number(modal.rolloutPercentage);
-  if (!Number.isFinite(rollout) || rollout < 0 || rollout > 100) { setMessage('Rollout must be between 0 and 100.', true); render(); return; }
-  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  const rollout = parseWholeNumber(modal.rolloutPercentage, 'Rollout percentage', { min: 0, max: 100 });
+  if (!rollout.ok) return validationError(rollout.message);
+  const targetPlan = requireOneOf(modal.targetPlan || '', ADMIN_ENUMS.featureFlagTargetPlans, 'Target plan', { allowEmpty: true });
+  if (!targetPlan.ok) return validationError(targetPlan.message);
+  const minVersion = validateVersionText(modal.minAppVersion, 'Min app version');
+  if (!minVersion.ok) return validationError(minVersion.message);
+  const description = requireMaxLength(modal.description, 'Description', ADMIN_LIMITS.descriptionMax);
+  if (!description.ok) return validationError(description.message);
+  const reason = requireAuditReason(modal.reason, 'this feature flag update');
+  if (!reason.ok) return validationError(reason.message);
+
   await performPatchAction(API_PATHS.featureFlags.update(modal.id), 'Feature flag updated.', {
     enabled: Boolean(modal.enabled),
-    rolloutPercentage: rollout,
-    targetPlan: String(modal.targetPlan || '').trim() || null,
-    minAppVersion: String(modal.minAppVersion || '').trim() || null,
-    description: String(modal.description || '').trim() || null,
-    reason: String(modal.reason || '').trim(),
+    rolloutPercentage: rollout.value,
+    targetPlan: targetPlan.value || null,
+    minAppVersion: minVersion.value,
+    description: description.value || null,
+    reason: reason.value,
   });
 }
 
@@ -1955,15 +2073,24 @@ function openProductPolicyModal(item) {
 
 async function submitProductPolicyModal() {
   const modal = state.modal;
+  const jsonText = normalizedTrim(modal.valueJson || '{}');
+  if (jsonText.length > ADMIN_LIMITS.productPolicyJsonMax) return validationError(`Policy JSON must be ${ADMIN_LIMITS.productPolicyJsonMax} characters or less.`);
   let valueJson;
-  try { valueJson = parseJsonInput(modal.valueJson, {}); } catch (error) { setMessage(`Invalid JSON: ${error.message}`, true); render(); return; }
-  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  try { valueJson = parseJsonInput(jsonText, {}); } catch (error) { return validationError(`Invalid JSON: ${error.message}`); }
+  if (!valueJson || typeof valueJson !== 'object' || Array.isArray(valueJson)) return validationError('Policy JSON must be a JSON object.');
+  const platform = requireOneOf(modal.platform || '', ADMIN_ENUMS.productPolicyPlatforms, 'Platform', { allowEmpty: true });
+  if (!platform.ok) return validationError(platform.message);
+  const minVersion = validateVersionText(modal.minAppVersion, 'Min app version');
+  if (!minVersion.ok) return validationError(minVersion.message);
+  const reason = requireAuditReason(modal.reason, 'this product policy update');
+  if (!reason.ok) return validationError(reason.message);
+
   await performPatchAction(API_PATHS.productPolicies.update(modal.id), 'Product policy updated.', {
     enabled: Boolean(modal.enabled),
-    platform: String(modal.platform || '').trim() || null,
-    minAppVersion: String(modal.minAppVersion || '').trim() || null,
-    valueJson,
-    reason: String(modal.reason || '').trim(),
+    platform: platform.value || null,
+    minAppVersion: minVersion.value,
+    value: valueJson,
+    reason: reason.value,
   });
 }
 
@@ -2019,18 +2146,23 @@ function openUsageAdjustModal(item) {
 
 async function submitUsageAdjustModal() {
   const modal = state.modal;
-  const newUsedCount = Number(modal.newUsedCount);
-  if (!Number.isFinite(newUsedCount) || newUsedCount < 0) { setMessage('New used count must be zero or more.', true); render(); return; }
-  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  const newUsed = parseWholeNumber(modal.newUsedCount, 'New used count', { min: 0, max: ADMIN_LIMITS.usageCountMax });
+  if (!newUsed.ok) return validationError(newUsed.message);
+  if (!normalizedTrim(modal.userEmail) && !normalizedTrim(modal.userId)) return validationError('User email or user ID is required for a usage adjustment.');
+  if (!normalizedTrim(modal.featureKey)) return validationError('Feature key is required for a usage adjustment.');
+  if (!normalizedTrim(modal.periodKey)) return validationError('Period key is required for a usage adjustment.');
+  const reason = requireAuditReason(modal.reason, 'this usage adjustment');
+  if (!reason.ok) return validationError(reason.message);
+
   state.loading = true; state.error = ''; render();
   try {
     await api(API_PATHS.usage.adjust, { method: 'POST', body: {
-      userEmail: modal.userEmail || null,
-      userId: modal.userId || null,
-      featureKey: modal.featureKey,
-      periodKey: modal.periodKey,
-      newUsedCount,
-      reason: String(modal.reason || '').trim(),
+      email: blankToNull(modal.userEmail),
+      userId: blankToNull(modal.userId),
+      featureKey: normalizedTrim(modal.featureKey),
+      periodKey: normalizedTrim(modal.periodKey),
+      newUsedCount: newUsed.value,
+      reason: reason.value,
     } });
     setMessage('Usage counter adjusted.');
     state.modal = null;
@@ -2119,6 +2251,271 @@ function renderAuditItem(item) {
   });
 }
 
+function renderAnnouncementToolbar() {
+  return renderControlToolbar([
+    el('button', { class: 'btn', text: 'Create announcement', onclick: () => openAnnouncementModal(null) }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ]);
+}
+
+function getAnnouncementStatus(item) {
+  if (!item.enabled) return { text: 'Disabled', tone: 'closed' };
+  const now = Date.now();
+  const start = item.startAt || item.start_at ? new Date(item.startAt || item.start_at).getTime() : null;
+  const end = item.endAt || item.end_at ? new Date(item.endAt || item.end_at).getTime() : null;
+  if (start && start > now) return { text: 'Scheduled', tone: 'info' };
+  if (end && end < now) return { text: 'Expired', tone: 'neutral' };
+  return { text: 'Active', tone: 'success' };
+}
+
+function hasTextValue(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function renderAnnouncementLanguageBadges(item) {
+  const hasEn = hasTextValue(item.titleEn || item.title_en) && hasTextValue(item.messageEn || item.message_en);
+  const hasZh = hasTextValue(item.titleZh || item.title_zh) || hasTextValue(item.messageZh || item.message_zh);
+  const hasMs = hasTextValue(item.titleMs || item.title_ms) || hasTextValue(item.messageMs || item.message_ms);
+  return el('div', { class: 'language-badges' }, [
+    el('span', { class: `mini-badge ${hasEn ? 'success' : 'neutral'}`, text: 'EN' }),
+    el('span', { class: `mini-badge ${hasZh ? 'info' : 'muted'}`, text: '中文' }),
+    el('span', { class: `mini-badge ${hasMs ? 'info' : 'muted'}`, text: 'MS' }),
+  ]);
+}
+
+function renderAnnouncementItem(item) {
+  const status = getAnnouncementStatus(item);
+  const title = item.titleEn || item.title_en || item.title || 'Announcement';
+  const type = item.type || 'INFO';
+  const target = `${item.targetPlan || item.target_plan || 'ALL'} · ${item.targetPlatform || item.target_platform || 'ALL'}`;
+  return renderCollapsibleItem({
+    title,
+    subtitle: `${type} · ${target}`,
+    statusNode: el('span', { class: `badge ${status.tone}`, text: status.text }),
+    children: [
+      renderAnnouncementLanguageBadges(item),
+      renderMetaGrid([
+        ['Type', type], ['Display', item.displayMode || item.display_mode || 'BANNER'], ['Priority', item.priority ?? 0],
+        ['Target Plan', item.targetPlan || item.target_plan], ['Target Platform', item.targetPlatform || item.target_platform],
+        ['Start', formatDate(item.startAt || item.start_at)], ['End', formatDate(item.endAt || item.end_at)],
+        ['Dismissible', item.dismissible === false ? 'No' : 'Yes'], ['Enabled', item.enabled ? 'Yes' : 'No'],
+        ['Created', formatDate(item.createdAt || item.created_at)], ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      el('details', { class: 'nested-details' }, [
+        el('summary', { text: 'Localized message copy' }),
+        renderMetaGrid([
+          ['Title EN', item.titleEn || item.title_en], ['Message EN', item.messageEn || item.message_en],
+          ['Title ZH', item.titleZh || item.title_zh], ['Message ZH', item.messageZh || item.message_zh],
+          ['Title MS', item.titleMs || item.title_ms], ['Message MS', item.messageMs || item.message_ms],
+          ['CTA EN', item.ctaLabelEn || item.cta_label_en], ['CTA ZH', item.ctaLabelZh || item.cta_label_zh], ['CTA MS', item.ctaLabelMs || item.cta_label_ms], ['CTA Action', item.ctaAction || item.cta_action],
+        ]),
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openAnnouncementModal(item) }),
+        item.enabled ? el('button', { class: 'btn danger small', text: 'Disable', onclick: () => disableAnnouncement(item) }) : null,
+      ]),
+    ],
+  });
+}
+
+function openAnnouncementModal(item) {
+  state.modal = {
+    kind: 'announcementEdit',
+    id: item?.id || null,
+    item,
+    titleEn: item?.titleEn || item?.title_en || '',
+    titleZh: item?.titleZh || item?.title_zh || '',
+    titleMs: item?.titleMs || item?.title_ms || '',
+    messageEn: item?.messageEn || item?.message_en || '',
+    messageZh: item?.messageZh || item?.message_zh || '',
+    messageMs: item?.messageMs || item?.message_ms || '',
+    type: item?.type || 'INFO',
+    displayMode: item?.displayMode || item?.display_mode || 'BANNER',
+    priority: item?.priority ?? 0,
+    targetPlan: item?.targetPlan || item?.target_plan || 'ALL',
+    targetPlatform: item?.targetPlatform || item?.target_platform || 'ALL',
+    startAt: item?.startAt || item?.start_at || '',
+    endAt: item?.endAt || item?.end_at || '',
+    dismissible: item?.dismissible !== false,
+    enabled: item?.enabled !== false,
+    ctaLabelEn: item?.ctaLabelEn || item?.cta_label_en || '',
+    ctaLabelZh: item?.ctaLabelZh || item?.cta_label_zh || '',
+    ctaLabelMs: item?.ctaLabelMs || item?.cta_label_ms || '',
+    ctaAction: item?.ctaAction || item?.cta_action || '',
+    reason: '',
+  };
+  render();
+}
+
+async function disableAnnouncement(item) {
+  const input = window.prompt('Enter audit reason for disabling this announcement:');
+  if (input === null) return;
+  const reason = requireAuditReason(input, 'this announcement disable action');
+  if (!reason.ok) return validationError(reason.message);
+  if (!window.confirm('Disable this announcement now? The app will prune matching local dismissed IDs on the next active-announcement fetch.')) return;
+  state.loading = true; render();
+  try {
+    await api(API_PATHS.announcements.disable(item.id), { method: 'POST', body: { reason: reason.value } });
+    setMessage('Announcement disabled. App local dismissed IDs will be pruned on the next active-announcement fetch.');
+    await loadData();
+  } catch (error) {
+    setMessage(error.message || 'Failed to disable announcement.', true);
+    state.loading = false; render();
+  }
+}
+
+function renderAnnouncementModal() {
+  const modal = state.modal;
+  const textInput = (key, label, placeholder = '') => {
+    const input = el('input', { value: modal[key] || '', placeholder });
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: 'field' }, [el('label', { text: label }), input]);
+  };
+  const textArea = (key, label) => {
+    const input = el('textarea', { rows: key === 'messageEn' ? '4' : '3' });
+    input.value = modal[key] || '';
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: 'field' }, [el('label', { text: label }), input]);
+  };
+  const type = select(['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE'], modal.type, (value) => { modal.type = value; });
+  const display = select(['BANNER', 'MODAL'], modal.displayMode, (value) => { modal.displayMode = value; });
+  const plan = select(['ALL', 'FREE', 'PRO'], modal.targetPlan, (value) => { modal.targetPlan = value; });
+  const platform = select(['ALL', 'ANDROID', 'IOS', 'WEB'], modal.targetPlatform, (value) => { modal.targetPlatform = value; });
+  const priority = el('input', { type: 'number', min: '0', value: modal.priority ?? 0 });
+  priority.addEventListener('input', () => { modal.priority = priority.value; });
+  const startAt = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.startAt) });
+  startAt.addEventListener('input', () => { modal.startAt = startAt.value; });
+  const endAt = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.endAt) });
+  endAt.addEventListener('input', () => { modal.endAt = endAt.value; });
+  const dismissible = el('input', { type: 'checkbox' }); dismissible.checked = Boolean(modal.dismissible); dismissible.addEventListener('change', () => { modal.dismissible = dismissible.checked; });
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  return renderControlModal(modal.id ? 'Edit announcement' : 'Create announcement', 'Announcement', [
+    renderPolicySafetyNote('Banner is best for normal updates. Modal should be reserved for maintenance or critical notices. The app only stores dismissed announcement IDs locally, not announcement content.'),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Type' }), type]),
+      el('div', { class: 'field' }, [el('label', { text: 'Display mode' }), display]),
+      el('div', { class: 'field' }, [el('label', { text: 'Target plan' }), plan]),
+      el('div', { class: 'field' }, [el('label', { text: 'Target platform' }), platform]),
+      el('div', { class: 'field' }, [el('label', { text: 'Priority' }), priority]),
+      el('div', { class: 'field' }, [el('label', { text: 'Start at' }), startAt]),
+      el('div', { class: 'field' }, [el('label', { text: 'End at' }), endAt]),
+    ]),
+    el('div', { class: 'form-grid two' }, [
+      el('label', { class: 'check-row' }, [dismissible, el('span', { text: 'Dismissible' })]),
+      el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+    ]),
+    el('details', { class: 'nested-details language-section', open: true }, [
+      el('summary', { text: 'English content · required' }),
+      renderPolicySafetyNote('English title and message are required. Chinese and Malay will fall back to English if left empty.'),
+      textInput('titleEn', 'Title EN'),
+      textArea('messageEn', 'Message EN'),
+      textInput('ctaLabelEn', 'CTA label EN'),
+    ]),
+    el('details', { class: 'nested-details language-section' }, [
+      el('summary', { text: '中文内容 · optional' }),
+      renderPolicySafetyNote('如果留空，App 会显示 English 版本。'),
+      textInput('titleZh', 'Title ZH'),
+      textArea('messageZh', 'Message ZH'),
+      textInput('ctaLabelZh', 'CTA label ZH'),
+    ]),
+    el('details', { class: 'nested-details language-section' }, [
+      el('summary', { text: 'Malay content · optional' }),
+      renderPolicySafetyNote('Fallback to English if Malay copy is left empty.'),
+      textInput('titleMs', 'Title MS'),
+      textArea('messageMs', 'Message MS'),
+      textInput('ctaLabelMs', 'CTA label MS'),
+    ]),
+    el('details', { class: 'nested-details' }, [
+      el('summary', { text: 'Optional CTA action' }),
+      textInput('ctaAction', 'CTA action', 'open_smart_capture_review'),
+    ]),
+    textArea('reason', 'Audit reason'),
+  ], submitAnnouncementModal, true);
+}
+
+function toDateTimeLocalValue(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16);
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDateTimeLocalValue(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+async function submitAnnouncementModal() {
+  const modal = state.modal;
+  const titleEn = requireMaxLength(modal.titleEn, 'English title', ADMIN_LIMITS.announcementTitleMax, { required: true });
+  if (!titleEn.ok) return validationError(titleEn.message);
+  const messageEn = requireMaxLength(modal.messageEn, 'English message', ADMIN_LIMITS.announcementMessageMax, { required: true });
+  if (!messageEn.ok) return validationError(messageEn.message);
+  const titleZh = requireMaxLength(modal.titleZh, 'Chinese title', ADMIN_LIMITS.announcementTitleMax);
+  if (!titleZh.ok) return validationError(titleZh.message);
+  const titleMs = requireMaxLength(modal.titleMs, 'Malay title', ADMIN_LIMITS.announcementTitleMax);
+  if (!titleMs.ok) return validationError(titleMs.message);
+  const messageZh = requireMaxLength(modal.messageZh, 'Chinese message', ADMIN_LIMITS.announcementMessageMax);
+  if (!messageZh.ok) return validationError(messageZh.message);
+  const messageMs = requireMaxLength(modal.messageMs, 'Malay message', ADMIN_LIMITS.announcementMessageMax);
+  if (!messageMs.ok) return validationError(messageMs.message);
+
+  const type = requireOneOf(modal.type, ADMIN_ENUMS.announcementTypes, 'Announcement type');
+  if (!type.ok) return validationError(type.message);
+  const displayMode = requireOneOf(modal.displayMode, ADMIN_ENUMS.announcementDisplayModes, 'Display mode');
+  if (!displayMode.ok) return validationError(displayMode.message);
+  const targetPlan = requireOneOf(modal.targetPlan, ADMIN_ENUMS.announcementTargetPlans, 'Target plan');
+  if (!targetPlan.ok) return validationError(targetPlan.message);
+  const targetPlatform = requireOneOf(modal.targetPlatform, ADMIN_ENUMS.announcementTargetPlatforms, 'Target platform');
+  if (!targetPlatform.ok) return validationError(targetPlatform.message);
+  const priority = parseWholeNumber(modal.priority, 'Priority', { min: 0, max: ADMIN_LIMITS.announcementPriorityMax });
+  if (!priority.ok) return validationError(priority.message);
+
+  const startAt = parseOptionalDateTime(modal.startAt, 'Start time');
+  if (!startAt.ok) return validationError(startAt.message);
+  const endAt = parseOptionalDateTime(modal.endAt, 'End time');
+  if (!endAt.ok) return validationError(endAt.message);
+  if (startAt.time !== null && endAt.time !== null && startAt.time > endAt.time) return validationError('Start time cannot be later than end time.');
+
+  const ctaLabelEn = requireMaxLength(modal.ctaLabelEn, 'CTA label EN', ADMIN_LIMITS.announcementCtaLabelMax);
+  if (!ctaLabelEn.ok) return validationError(ctaLabelEn.message);
+  const ctaLabelZh = requireMaxLength(modal.ctaLabelZh, 'CTA label ZH', ADMIN_LIMITS.announcementCtaLabelMax);
+  if (!ctaLabelZh.ok) return validationError(ctaLabelZh.message);
+  const ctaLabelMs = requireMaxLength(modal.ctaLabelMs, 'CTA label MS', ADMIN_LIMITS.announcementCtaLabelMax);
+  if (!ctaLabelMs.ok) return validationError(ctaLabelMs.message);
+  const ctaAction = requireMaxLength(modal.ctaAction, 'CTA action', ADMIN_LIMITS.announcementCtaActionMax);
+  if (!ctaAction.ok) return validationError(ctaAction.message);
+  if (ctaAction.value && !ctaLabelEn.value) return validationError('CTA label EN is required when CTA action is provided.');
+  if (!ctaAction.value && (ctaLabelEn.value || ctaLabelZh.value || ctaLabelMs.value)) return validationError('CTA action is required when any CTA label is provided.');
+
+  const reason = requireAuditReason(modal.reason, modal.id ? 'this announcement update' : 'this announcement creation');
+  if (!reason.ok) return validationError(reason.message);
+
+  state.loading = true; state.error = ''; render();
+  const body = {
+    titleEn: titleEn.value, titleZh: titleZh.value || null, titleMs: titleMs.value || null,
+    messageEn: messageEn.value, messageZh: messageZh.value || null, messageMs: messageMs.value || null,
+    type: type.value, displayMode: displayMode.value, priority: priority.value,
+    targetPlan: targetPlan.value, targetPlatform: targetPlatform.value,
+    startAt: startAt.value, endAt: endAt.value,
+    dismissible: Boolean(modal.dismissible), enabled: Boolean(modal.enabled),
+    ctaLabelEn: ctaLabelEn.value || null, ctaLabelZh: ctaLabelZh.value || null, ctaLabelMs: ctaLabelMs.value || null,
+    ctaAction: ctaAction.value || null, reason: reason.value,
+  };
+  try {
+    await api(modal.id ? API_PATHS.announcements.update(modal.id) : API_PATHS.announcements.create, { method: modal.id ? 'PATCH' : 'POST', body });
+    setMessage(modal.id ? 'Announcement updated.' : 'Announcement created.');
+    state.modal = null;
+    await loadData();
+  } catch (error) {
+    setMessage(error.message || 'Failed to save announcement.', true);
+    state.loading = false; render();
+  }
+}
+
 function renderAdminControlPage() {
   const items = state.data?.content || [];
   const children = [];
@@ -2151,6 +2548,12 @@ function renderAdminControlPage() {
     children.push(renderFeatureAnalyticsToolbar());
     children.push(el('div', { class: 'privacy-note' }, [el('span', { text: 'Summary counts only' }), renderInfoHint('Use this to understand which features users actually open and confirm, such as Dashboard, Smart Capture, OCR, Group Event, Group Goal, Cloud Backup, and AI Analysis. This should guide UI/UX improvements without sensitive content.', { compact: true, label: 'Analytics privacy details' })]));
     children.push(renderFeatureAnalyticsSummary(state.data?.summary || {}));
+  } else if (state.activeTab === 'announcements') {
+    children.push(renderAdminControlHero('Announcements', 'Create online app notices for updates, maintenance, and important information.', 'Announcements are stored in the core backend. The app fetches active announcements online and only keeps dismissed announcement IDs locally for clean UX.'));
+    children.push(renderAnnouncementToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Keep announcement messages meaningful and short. Use Modal only for important service-impacting notices; normal updates should use Banner.'));
+    children.push(renderControlList(items, renderAnnouncementItem, 'No announcements found.'));
   } else if (state.activeTab === 'auditLogs') {
     children.push(renderAdminControlHero('Audit Logs', 'Review admin changes to policies, flags, limits, usage, version, and support actions.', 'Every control action should leave a reasoned audit trail: who changed it, what changed, before/after values, and when.'));
     children.push(renderAuditToolbar());
@@ -2217,7 +2620,7 @@ function renderFeatureFlagModal() {
   const modal = state.modal;
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
   const rollout = el('input', { type: 'number', min: '0', max: '100', value: modal.rolloutPercentage }); rollout.addEventListener('input', () => { modal.rolloutPercentage = rollout.value; });
-  const targetPlan = el('input', { placeholder: 'Optional plan', value: modal.targetPlan || '' }); targetPlan.addEventListener('input', () => { modal.targetPlan = targetPlan.value; });
+  const targetPlan = select(ADMIN_ENUMS.featureFlagTargetPlans, modal.targetPlan || '', (value) => { modal.targetPlan = value; });
   const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
   const description = el('textarea', { rows: '3' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
   const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
@@ -2237,7 +2640,7 @@ function renderFeatureFlagModal() {
 function renderProductPolicyModal() {
   const modal = state.modal;
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
-  const platform = el('input', { placeholder: 'Optional platform', value: modal.platform || '' }); platform.addEventListener('input', () => { modal.platform = platform.value; });
+  const platform = select(ADMIN_ENUMS.productPolicyPlatforms, modal.platform || '', (value) => { modal.platform = value; });
   const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
   const valueJson = el('textarea', { rows: '12', spellcheck: 'false' }); valueJson.value = modal.valueJson || '{}'; valueJson.addEventListener('input', () => { modal.valueJson = valueJson.value; });
   const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
