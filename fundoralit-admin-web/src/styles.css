@@ -2162,8 +2162,10 @@ h3 {
 
 /* Compact console header + responsive content refinements ------------------- */
 .app-shell {
-  width: min(100% - 32px, 1800px);
-  padding-top: 16px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 0 0 64px;
 }
 
 .app-header.topbar {
@@ -2181,9 +2183,9 @@ h3 {
 }
 
 .app-header .header-title-block {
-  justify-self: center;
-  text-align: center;
-  width: min(680px, 100%);
+  justify-self: start;
+  text-align: left;
+  width: min(760px, 100%);
 }
 
 .app-header .eyebrow {
@@ -2191,7 +2193,7 @@ h3 {
 }
 
 .header-title-row {
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -2313,7 +2315,8 @@ code,
 
 @media (min-width: 1440px) {
   .app-shell {
-    width: min(100% - 48px, 1760px);
+    width: 100%;
+    max-width: none;
   }
 
   .stats-grid {
@@ -2327,8 +2330,9 @@ code,
 
 @media (max-width: 1080px) {
   .app-shell {
-    width: min(100% - 24px, 1200px);
-    padding-top: 12px;
+    width: 100%;
+    max-width: none;
+    padding-top: 0;
   }
 
   .app-header.topbar {
@@ -2355,8 +2359,9 @@ code,
 
 @media (max-width: 760px) {
   .app-shell {
-    width: min(100% - 16px, 760px);
-    padding-top: 8px;
+    width: 100%;
+    max-width: none;
+    padding-top: 0;
   }
 
   .app-header.topbar {
@@ -2458,7 +2463,7 @@ code,
   width: 100% !important;
   max-width: none !important;
   margin: 0 !important;
-  padding: 16px 0 64px !important;
+  padding: 0 0 64px !important;
 }
 
 .app-header.topbar {
@@ -2467,6 +2472,15 @@ code,
   border-radius: 0 !important;
   border-left: 0 !important;
   border-right: 0 !important;
+}
+
+.app-header .header-title-block {
+  justify-self: start !important;
+  text-align: left !important;
+}
+
+.app-header .header-title-row {
+  justify-content: flex-start !important;
 }
 
 #mainContent,
@@ -2516,13 +2530,13 @@ body,
 @media (max-width: 1080px) {
   .app-shell {
     width: 100% !important;
-    padding-top: 12px !important;
+    padding-top: 0 !important;
   }
 }
 
 @media (max-width: 480px) {
   .app-shell {
     width: 100% !important;
-    padding-top: 8px !important;
+    padding-top: 0 !important;
   }
 }
