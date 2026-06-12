@@ -191,6 +191,7 @@ const state = {
     action: '',
     targetType: '',
   },
+  navOpen: false,
 };
 
 const authBox = document.getElementById('authBox');
@@ -363,8 +364,29 @@ function getActiveNavItem(tab = state.activeTab) {
   return NAV_ITEMS.find((item) => item.id === tab) || NAV_ITEMS[0];
 }
 
+function openNavigation() {
+  state.navOpen = true;
+  render();
+}
+
+function closeNavigation() {
+  if (!state.navOpen) return;
+  state.navOpen = false;
+  render();
+}
+
+function toggleNavigation() {
+  state.navOpen = !state.navOpen;
+  render();
+}
+
 function setActiveTab(tabId) {
-  if (state.activeTab === tabId) return;
+  const changed = state.activeTab !== tabId;
+  state.navOpen = false;
+  if (!changed) {
+    render();
+    return;
+  }
   state.activeTab = tabId;
   state.page = 0;
   state.data = null;
@@ -811,13 +833,25 @@ function renderAuth() {
 }
 
 function renderSidebar() {
-  return el('aside', { class: 'admin-sidebar', 'aria-label': 'Admin navigation' }, [
+  return el('aside', {
+    class: `admin-sidebar ${state.navOpen ? 'open' : ''}`,
+    'aria-label': 'Admin navigation',
+    'aria-hidden': state.navOpen ? 'false' : 'true',
+    inert: state.navOpen ? null : '',
+  }, [
     el('div', { class: 'sidebar-brand' }, [
       el('span', { class: 'sidebar-logo', 'aria-hidden': 'true', text: 'F' }),
       el('div', {}, [
         el('strong', { text: 'Admin Control' }),
         el('span', { text: 'Fundoralit' }),
       ]),
+      el('button', {
+        class: 'sidebar-close',
+        type: 'button',
+        'aria-label': 'Close navigation',
+        text: '×',
+        onclick: closeNavigation,
+      }),
     ]),
     el('nav', { class: 'sidebar-nav' }, NAV_GROUPS.map((group) => el('section', { class: 'sidebar-group' }, [
       el('p', { class: 'sidebar-group-title', text: group.title }),
@@ -854,6 +888,30 @@ function renderSectionHeader() {
 
 function renderTabs() {
   return renderSidebar();
+}
+
+function renderNavigationBar() {
+  const item = getActiveNavItem();
+  return el('div', { class: 'admin-nav-bar' }, [
+    el('button', {
+      class: 'nav-menu-button',
+      type: 'button',
+      'aria-label': state.navOpen ? 'Close admin navigation' : 'Open admin navigation',
+      'aria-expanded': state.navOpen ? 'true' : 'false',
+      onclick: toggleNavigation,
+    }, [
+      el('span', { class: 'nav-menu-icon', 'aria-hidden': 'true' }, [
+        el('span'),
+        el('span'),
+        el('span'),
+      ]),
+      el('span', { text: 'Menu' }),
+    ]),
+    el('div', { class: 'admin-nav-current' }, [
+      el('span', { class: 'eyebrow', text: item.helper || 'Current section' }),
+      el('strong', { text: item.label }),
+    ]),
+  ]);
 }
 
 function normalizeAnalyticsResponse(response) {
@@ -2733,9 +2791,19 @@ function renderSignedIn() {
 }
 
 function renderAdminShell(children) {
-  return el('section', { class: 'admin-layout' }, [
+  return el('section', { class: `admin-layout ${state.navOpen ? 'nav-open' : ''}` }, [
+    el('button', {
+      class: 'nav-backdrop',
+      type: 'button',
+      tabindex: state.navOpen ? '0' : '-1',
+      'aria-label': 'Close admin navigation',
+      onclick: closeNavigation,
+    }),
     renderSidebar(),
-    el('div', { class: 'admin-main' }, [el('section', { class: 'page-section' }, children)]),
+    el('div', { class: 'admin-main' }, [
+      renderNavigationBar(),
+      el('section', { class: 'page-section' }, children),
+    ]),
   ]);
 }
 
@@ -2791,5 +2859,11 @@ async function boot() {
     render();
   }
 }
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.navOpen) {
+    closeNavigation();
+  }
+});
 
 boot();
