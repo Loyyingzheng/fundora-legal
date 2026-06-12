@@ -223,6 +223,57 @@ const STATUS_COPY = {
   CLOSED: { label: 'Closed', tone: 'closed', helper: 'Finalized.' },
 };
 
+const NAV_GROUPS = [
+  {
+    title: 'Overview',
+    items: [
+      { id: 'feedback', label: 'App Feedback', helper: 'Review user reports', description: 'Review feedback, bug reports, and service credit cases without exposing unnecessary detail.', info: 'Use this area for support triage. Long user messages and credit previews stay collapsed until you need them.' },
+      { id: 'analytics', label: 'Growth Analytics', helper: 'Product metrics', description: 'Understand acquisition, retention, funnel, and feature usage from aggregated backend metrics.', info: 'This dashboard should show aggregated product metrics only. Avoid exposing private financial data.' },
+    ],
+  },
+  {
+    title: 'Product Control',
+    items: [
+      { id: 'featureLimits', label: 'Feature Limits', helper: 'Quota policy', description: 'Control plan limits such as Smart Capture, OCR, presets, wallets, buckets, and group features.', info: 'Change limits carefully. These values affect what free and Pro users can do. Audit reasons are required for policy changes.' },
+      { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
+      { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app should keep local fallbacks if remote policy is unavailable.' },
+    ],
+  },
+  {
+    title: 'User & Usage',
+    items: [
+      { id: 'usage', label: 'Usage & Quota', helper: 'Support lookup', description: 'Check user usage counters, usage events, remaining quota, and safe quota adjustment history.', info: 'Usage views are for support and debugging. Adjustments should be rare and always require an audit reason.' },
+    ],
+  },
+  {
+    title: 'Operations',
+    items: [
+      { id: 'premium', label: 'Reward Surveys', helper: 'Trial reward', description: 'Review feedback-trial reward surveys and related service-credit workflows.', info: 'Use this section to verify survey submissions and keep reward decisions traceable.' },
+      { id: 'review', label: 'Review Prompts', helper: 'Store prompt', description: 'Monitor app review prompt eligibility and outcomes.', info: 'Review prompt data helps tune rating prompts without showing private finance content.' },
+      { id: 'featureAnalytics', label: 'Feature Analytics', helper: 'Summary events', description: 'See aggregated feature interaction summaries for UX and dashboard improvements.', info: 'This is summary analytics only. It should not contain raw click streams, merchant names, payees, OCR text, or notification content.' },
+      { id: 'auditLogs', label: 'Audit Logs', helper: 'Admin changes', description: 'Inspect policy, flag, usage, and admin operation history.', info: 'Before/after JSON stays collapsed by default so the page remains readable. Expand only when auditing a specific change.' },
+    ],
+  },
+];
+
+const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items);
+
+function getActiveNavItem(tab = state.activeTab) {
+  return NAV_ITEMS.find((item) => item.id === tab) || NAV_ITEMS[0];
+}
+
+function setActiveTab(tabId) {
+  if (state.activeTab === tabId) return;
+  state.activeTab = tabId;
+  state.page = 0;
+  state.data = null;
+  state.message = '';
+  state.error = '';
+  state.analyticsError = '';
+  loadData();
+}
+
+
 function normalizeBaseUrl(url) {
   return String(url || '').replace(/\/+$/, '');
 }
@@ -653,39 +704,50 @@ function renderAuth() {
   ]));
 }
 
-function renderTabs() {
-  const tabs = [
-    ['feedback', 'App Feedback', 'Reports'],
-    ['premium', 'Reward Surveys', 'Trial reward'],
-    ['review', 'Review Prompts', 'Store prompt'],
-    ['analytics', 'Growth Analytics', 'Metrics'],
-    ['featureLimits', 'Feature Limits', 'Quota policy'],
-    ['featureFlags', 'Feature Flags', 'Kill switch'],
-    ['productPolicies', 'Product Policy', 'Remote config'],
-    ['usage', 'Usage & Quota', 'Support lookup'],
-    ['featureAnalytics', 'Feature Analytics', 'Summary events'],
-    ['auditLogs', 'Audit Logs', 'Admin changes'],
-  ];
-  return el('nav', { class: 'tabs', 'aria-label': 'Admin sections' }, tabs.map(([id, label, helper]) => el('button', {
-    class: `tab ${state.activeTab === id ? 'active' : ''}`,
-    'data-tab': id,
-    'aria-current': state.activeTab === id ? 'page' : null,
-    onclick: () => {
-      state.activeTab = id;
-      state.page = 0;
-      state.data = null;
-      state.message = '';
-      state.error = '';
-      state.analyticsError = '';
-      loadData();
-    },
-  }, [
-    el('span', { class: 'tab-icon', 'aria-hidden': 'true' }),
-    el('span', { class: 'tab-copy' }, [
-      el('span', { class: 'tab-label', text: label }),
-      el('span', { class: 'tab-helper', text: helper }),
+function renderSidebar() {
+  return el('aside', { class: 'admin-sidebar', 'aria-label': 'Admin navigation' }, [
+    el('div', { class: 'sidebar-brand' }, [
+      el('span', { class: 'sidebar-logo', 'aria-hidden': 'true', text: 'F' }),
+      el('div', {}, [
+        el('strong', { text: 'Admin Control' }),
+        el('span', { text: 'Fundoralit' }),
+      ]),
     ]),
-  ])));
+    el('nav', { class: 'sidebar-nav' }, NAV_GROUPS.map((group) => el('section', { class: 'sidebar-group' }, [
+      el('p', { class: 'sidebar-group-title', text: group.title }),
+      ...group.items.map((item) => el('button', {
+        class: `sidebar-link ${state.activeTab === item.id ? 'active' : ''}`,
+        'aria-current': state.activeTab === item.id ? 'page' : null,
+        onclick: () => setActiveTab(item.id),
+      }, [
+        el('span', { class: 'sidebar-link-mark', 'aria-hidden': 'true' }),
+        el('span', { class: 'sidebar-link-copy' }, [
+          el('span', { class: 'sidebar-link-label', text: item.label }),
+          el('span', { class: 'sidebar-link-helper', text: item.helper }),
+        ]),
+      ])),
+    ]))),
+    el('div', { class: 'sidebar-foot' }, [
+      el('span', { text: 'Compact by default' }),
+      renderInfoHint('Navigation is grouped to keep the content area clean. Detailed notes and JSON stay hidden until an admin opens them.', { compact: true, label: 'Sidebar design note' }),
+    ]),
+  ]);
+}
+
+function renderSectionHeader() {
+  const item = getActiveNavItem();
+  return el('div', { class: 'section-header-card' }, [
+    el('div', {}, [
+      el('p', { class: 'eyebrow', text: item.helper || 'Admin section' }),
+      el('h2', { text: item.label }),
+      item.description ? el('p', { class: 'section-description', text: item.description }) : null,
+    ]),
+    item.info ? renderInfoHint(item.info, { label: `${item.label} details` }) : null,
+  ]);
+}
+
+function renderTabs() {
+  return renderSidebar();
 }
 
 function normalizeAnalyticsResponse(response) {
@@ -2221,7 +2283,7 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
 
 function renderSignedIn() {
   const items = state.data?.content || [];
-  const children = [renderTabs(), ...renderNotice()];
+  const children = [renderSectionHeader(), ...renderNotice()];
 
   if (state.activeTab === 'analytics') {
     children.push(renderAnalyticsDashboard());
@@ -2229,7 +2291,7 @@ function renderSignedIn() {
       el('span', { text: 'Admin portal follows backend permissions and available endpoints.' }),
       renderInfoHint('Only aggregated, admin-safe information should be shown here. Avoid exposing user financial content unless a support flow explicitly requires it.', { compact: true, label: 'Admin portal safety note' }),
     ]));
-    return el('section', { class: 'page-section' }, children);
+    return renderAdminShell(children);
   }
 
   if (isAdminControlTab()) {
@@ -2238,7 +2300,7 @@ function renderSignedIn() {
       el('span', { text: 'Policy changes use backend permissions and audit logs.' }),
       renderInfoHint('Keep controls compact: list first, expand details only when needed, require reason for changes, and avoid exposing user financial content.', { compact: true, label: 'Admin control HCI and privacy note' }),
     ]));
-    return el('section', { class: 'page-section' }, children);
+    return renderAdminShell(children);
   }
 
   if (state.activeTab === 'feedback') children.push(renderFeedbackToolbar());
@@ -2264,7 +2326,14 @@ function renderSignedIn() {
       el('span', { text: 'Admin portal follows backend permissions and available endpoints.' }),
       renderInfoHint('Only aggregated, admin-safe information should be shown here. Avoid exposing user financial content unless a support flow explicitly requires it.', { compact: true, label: 'Admin portal safety note' }),
     ]));
-  return el('section', { class: 'page-section' }, children);
+  return renderAdminShell(children);
+}
+
+function renderAdminShell(children) {
+  return el('section', { class: 'admin-layout' }, [
+    renderSidebar(),
+    el('div', { class: 'admin-main' }, [el('section', { class: 'page-section' }, children)]),
+  ]);
 }
 
 function renderSignedOut() {
