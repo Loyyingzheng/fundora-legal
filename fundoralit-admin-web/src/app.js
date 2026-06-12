@@ -196,6 +196,10 @@ const state = {
 
 const authBox = document.getElementById('authBox');
 const mainContent = document.getElementById('mainContent');
+const headerMenuButton = document.getElementById('headerMenuButton');
+const headerEyebrow = document.getElementById('headerEyebrow');
+const headerTitle = document.getElementById('headerTitle');
+const headerSubtitle = document.getElementById('headerSubtitle');
 
 
 const ADMIN_ENUMS = {
@@ -789,6 +793,32 @@ async function submitCloseModal() {
   await performPatchAction(path, kind === 'rewardSurvey' ? 'Reward survey closed.' : 'Feedback closed.', body);
 }
 
+function renderHeader() {
+  const item = getActiveNavItem();
+  const signedIn = Boolean(state.user);
+
+  if (headerMenuButton) {
+    headerMenuButton.disabled = !signedIn;
+    headerMenuButton.setAttribute('aria-expanded', state.navOpen ? 'true' : 'false');
+    headerMenuButton.setAttribute('aria-label', state.navOpen ? 'Close admin navigation' : 'Open admin navigation');
+    headerMenuButton.classList.toggle('active', state.navOpen);
+  }
+
+  if (headerEyebrow) {
+    headerEyebrow.textContent = signedIn ? (item.helper || 'Admin section') : 'Secure Admin Web';
+  }
+
+  if (headerTitle) {
+    headerTitle.textContent = signedIn ? item.label : 'Fundoralit Admin';
+  }
+
+  if (headerSubtitle) {
+    headerSubtitle.textContent = signedIn
+      ? (item.description || 'Manage Fundoralit admin operations safely.')
+      : 'Feedback, review prompt summary, and premium feedback reward review.';
+  }
+}
+
 function renderAuth() {
   clear(authBox);
   if (!state.auth) {
@@ -819,16 +849,21 @@ function renderAuth() {
     return;
   }
 
-  authBox.appendChild(el('div', { class: 'row space-between' }, [
-    el('div', {}, [
+  authBox.appendChild(el('div', { class: 'header-auth-inline' }, [
+    el('div', { class: 'header-user-copy' }, [
       el('strong', { text: state.user.email || 'Signed in' }),
-      el('div', { class: 'muted', text: 'Backend will verify admin permission.' }),
+      el('span', { text: 'Admin verified by backend' }),
     ]),
     el('button', {
-      class: 'btn ghost small',
-      text: 'Sign out',
+      class: 'header-logout-button',
+      type: 'button',
+      'aria-label': 'Sign out',
+      title: 'Sign out',
       onclick: async () => signOut(state.auth),
-    }),
+    }, [
+      el('span', { 'aria-hidden': 'true', text: '↪' }),
+      el('span', { class: 'logout-text', text: 'Sign out' }),
+    ]),
   ]));
 }
 
@@ -2801,7 +2836,6 @@ function renderAdminShell(children) {
     }),
     renderSidebar(),
     el('div', { class: 'admin-main' }, [
-      renderNavigationBar(),
       el('section', { class: 'page-section' }, children),
     ]),
   ]);
@@ -2817,6 +2851,7 @@ function renderSignedOut() {
 }
 
 function render() {
+  renderHeader();
   renderAuth();
   clear(mainContent);
   mainContent.appendChild(state.user ? renderSignedIn() : renderSignedOut());
@@ -2865,5 +2900,9 @@ document.addEventListener('keydown', (event) => {
     closeNavigation();
   }
 });
+
+if (headerMenuButton) {
+  headerMenuButton.addEventListener('click', toggleNavigation);
+}
 
 boot();

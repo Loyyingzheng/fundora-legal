@@ -1806,3 +1806,317 @@ h3 {
 .language-section > summary {
   font-weight: 800;
 }
+
+/* Unified sticky app header ------------------------------------------------ */
+.app-header.topbar {
+  position: sticky;
+  top: 12px;
+  z-index: 45;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 82px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(221, 229, 226, 0.94);
+  border-radius: 28px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(240, 253, 250, 0.88)),
+    radial-gradient(circle at 8% 0%, rgba(15, 118, 110, 0.10), transparent 34%),
+    radial-gradient(circle at 100% 0%, rgba(245, 158, 11, 0.10), transparent 32%);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(18px);
+}
+
+.app-header.topbar::after,
+.app-header.topbar > div:first-child::after {
+  content: none;
+}
+
+.app-header .header-title-block {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.app-header .eyebrow {
+  margin: 0 0 4px;
+  font-size: 10px;
+}
+
+.app-header h1 {
+  max-width: none;
+  margin: 0;
+  font-size: clamp(22px, 2.4vw, 34px);
+  line-height: 1.05;
+  letter-spacing: -0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-header .subtitle {
+  margin: 5px 0 0;
+  max-width: 900px;
+  color: var(--muted-strong);
+  font-size: 0.92rem;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-menu-button {
+  width: 52px;
+  height: 52px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--primary), #0d9488);
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.18);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease, opacity 0.16s ease;
+}
+
+.header-menu-button:hover:not(:disabled),
+.header-menu-button.active {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 32px rgba(15, 118, 110, 0.22);
+}
+
+.header-menu-button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.header-menu-button:disabled {
+  color: var(--muted);
+  background: var(--card-soft);
+  border-color: var(--border);
+  box-shadow: none;
+  opacity: 0.75;
+}
+
+.header-menu-icon {
+  width: 21px;
+  display: grid;
+  gap: 5px;
+}
+
+.header-menu-icon span {
+  display: block;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.app-header .auth-box {
+  min-width: min(320px, 34vw);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.header-auth-inline {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  min-width: 0;
+}
+
+.header-user-copy {
+  min-width: 0;
+  text-align: right;
+  display: grid;
+  gap: 2px;
+}
+
+.header-user-copy strong {
+  display: block;
+  max-width: 240px;
+  color: var(--heading);
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-user-copy span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.header-logout-button {
+  width: 46px;
+  height: 46px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  color: var(--heading);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: none;
+  transition: transform 0.16s ease, background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+}
+
+.header-logout-button:hover {
+  color: #fff;
+  background: var(--danger);
+  border-color: rgba(220, 38, 38, 0.22);
+  transform: translateY(-1px);
+}
+
+.header-logout-button .logout-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.app-header .login-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(120px, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.app-header .login-grid .field {
+  margin-bottom: 0;
+}
+
+.app-header .login-grid label {
+  display: none;
+}
+
+.app-header .login-grid input {
+  min-height: 42px;
+  border-radius: 14px;
+}
+
+.app-header .login-grid .btn {
+  min-height: 42px;
+  border-radius: 14px;
+  white-space: nowrap;
+}
+
+.admin-layout {
+  margin-top: 0;
+}
+
+.admin-main {
+  display: block;
+}
+
+.admin-nav-bar {
+  display: none;
+}
+
+@media (max-width: 1080px) {
+  .app-header.topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .app-header.topbar > div:first-child {
+    min-height: 0;
+  }
+
+  .app-header .auth-box {
+    width: auto;
+    min-width: 0;
+  }
+
+  .header-user-copy span {
+    display: none;
+  }
+}
+
+@media (max-width: 820px) {
+  .app-header.topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    top: 8px;
+    gap: 10px;
+    padding: 10px;
+    border-radius: 22px;
+  }
+
+  .header-menu-button {
+    width: 46px;
+    height: 46px;
+    border-radius: 16px;
+  }
+
+  .app-header h1 {
+    font-size: clamp(20px, 5.4vw, 28px);
+  }
+
+  .app-header .subtitle {
+    display: none;
+  }
+
+  .header-user-copy {
+    display: none;
+  }
+
+  .app-header .auth-box {
+    min-width: auto;
+  }
+
+  .app-header .login-grid {
+    grid-template-columns: 1fr;
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(100% + 10px);
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: var(--shadow);
+  }
+}
+
+@media (max-width: 480px) {
+  .app-shell {
+    width: min(100% - 16px, var(--content-max));
+    padding-top: 8px;
+  }
+
+  .app-header.topbar {
+    min-height: 66px;
+    border-radius: 20px;
+  }
+
+  .app-header .eyebrow {
+    display: none;
+  }
+
+  .header-menu-button,
+  .header-logout-button {
+    width: 42px;
+    height: 42px;
+    border-radius: 15px;
+  }
+
+  .header-menu-icon {
+    width: 19px;
+    gap: 4px;
+  }
+}

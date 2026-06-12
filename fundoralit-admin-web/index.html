@@ -10,11 +10,18 @@
 <body>
   <noscript>This admin panel requires JavaScript.</noscript>
   <div id="app" class="app-shell">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Secure Admin Web</p>
-        <h1>Fundoralit Admin</h1>
-        <p class="subtitle">Feedback, review prompt summary, and premium feedback reward review.</p>
+    <header class="topbar app-header" aria-label="Fundoralit admin header">
+      <button id="headerMenuButton" class="header-menu-button" type="button" aria-label="Open admin navigation" aria-expanded="false">
+        <span class="header-menu-icon" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
+      </button>
+      <div class="header-title-block">
+        <p class="eyebrow" id="headerEyebrow">Secure Admin Web</p>
+        <h1 id="headerTitle">Fundoralit Admin</h1>
+        <p class="subtitle" id="headerSubtitle">Feedback, review prompt summary, and premium feedback reward review.</p>
       </div>
       <div class="auth-box" id="authBox"></div>
     </header>
