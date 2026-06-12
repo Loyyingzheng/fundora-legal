@@ -1860,6 +1860,35 @@ h3 {
   text-overflow: ellipsis;
 }
 
+.header-title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-info-slot {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+}
+
+.header-info-slot:empty {
+  display: none;
+}
+
+.header-info-slot .info-hint summary {
+  width: 36px;
+  height: 36px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.header-info-slot .info-popover {
+  right: 0;
+  left: auto;
+}
+
 .app-header .subtitle {
   margin: 5px 0 0;
   max-width: 900px;
@@ -2106,6 +2135,16 @@ h3 {
 
   .app-header .eyebrow {
     display: none;
+  }
+
+  .header-title-row {
+    gap: 6px;
+  }
+
+  .header-info-slot .info-hint summary {
+    width: 34px;
+    height: 34px;
+    border-radius: 13px;
   }
 
   .header-menu-button,

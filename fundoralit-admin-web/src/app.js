@@ -200,6 +200,7 @@ const headerMenuButton = document.getElementById('headerMenuButton');
 const headerEyebrow = document.getElementById('headerEyebrow');
 const headerTitle = document.getElementById('headerTitle');
 const headerSubtitle = document.getElementById('headerSubtitle');
+const headerInfoSlot = document.getElementById('headerInfoSlot');
 
 
 const ADMIN_ENUMS = {
@@ -816,6 +817,16 @@ function renderHeader() {
     headerSubtitle.textContent = signedIn
       ? (item.description || 'Manage Fundoralit admin operations safely.')
       : 'Feedback, review prompt summary, and premium feedback reward review.';
+  }
+
+  if (headerInfoSlot) {
+    clear(headerInfoSlot);
+    if (signedIn && item.info) {
+      headerInfoSlot.appendChild(renderInfoHint(item.info, {
+        compact: true,
+        label: `${item.label} details`,
+      }));
+    }
   }
 }
 
@@ -2779,7 +2790,7 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
 
 function renderSignedIn() {
   const items = state.data?.content || [];
-  const children = [renderSectionHeader(), ...renderNotice()];
+  const children = [...renderNotice()];
 
   if (state.activeTab === 'analytics') {
     children.push(renderAnalyticsDashboard());
