@@ -2448,3 +2448,81 @@ code,
     border-radius: 18px;
   }
 }
+
+/* Full-bleed responsive layout refinement ----------------------------------
+   Keep the compact header style, but remove the outer page gutter so the
+   header, filter toolbar, cards, and content panels can reach the viewport edge.
+   Cards keep their own internal padding, so the UI stays readable while avoiding
+   the visible right-side gap on wide screens. */
+.app-shell {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 16px 0 64px !important;
+}
+
+.app-header.topbar {
+  width: 100% !important;
+  margin: 0 0 16px !important;
+  border-radius: 0 !important;
+  border-left: 0 !important;
+  border-right: 0 !important;
+}
+
+#mainContent,
+.admin-layout,
+.admin-main,
+.page-section {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+.page-section {
+  padding: 0 !important;
+}
+
+.toolbar,
+.card,
+.item,
+.list,
+.stats-grid,
+.analytics-hero,
+.analytics-section,
+.analytics-toolbar-shell,
+.footer-note,
+.pagination,
+.admin-control-page {
+  width: 100% !important;
+  max-width: none !important;
+}
+
+/* Avoid accidental horizontal overflow while keeping tables scrollable inside
+   their own wrappers. */
+body,
+#app,
+#mainContent,
+.admin-layout,
+.admin-main,
+.page-section {
+  overflow-x: hidden;
+}
+
+.table-wrap,
+.data-table-wrap,
+.audit-table-wrap {
+  overflow-x: auto;
+}
+
+@media (max-width: 1080px) {
+  .app-shell {
+    width: 100% !important;
+    padding-top: 12px !important;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-shell {
+    width: 100% !important;
+    padding-top: 8px !important;
+  }
+}
