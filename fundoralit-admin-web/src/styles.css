@@ -2159,3 +2159,292 @@ h3 {
     gap: 4px;
   }
 }
+
+/* Compact console header + responsive content refinements ------------------- */
+.app-shell {
+  width: min(100% - 32px, 1800px);
+  padding-top: 16px;
+}
+
+.app-header.topbar {
+  top: 0;
+  min-height: 58px;
+  margin-bottom: 16px;
+  padding: 8px 14px;
+  border-radius: 0 0 18px 18px;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+}
+
+.app-header .header-title-block {
+  justify-self: center;
+  text-align: center;
+  width: min(680px, 100%);
+}
+
+.app-header .eyebrow {
+  display: none;
+}
+
+.header-title-row {
+  justify-content: center;
+  gap: 8px;
+}
+
+.app-header h1 {
+  font-size: clamp(18px, 1.35vw, 24px);
+  letter-spacing: -0.03em;
+}
+
+.app-header .subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--muted);
+}
+
+.header-menu-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+}
+
+.header-menu-icon {
+  width: 19px;
+  gap: 4px;
+}
+
+.header-info-slot .info-hint summary {
+  width: 30px;
+  height: 30px;
+  border-radius: 12px;
+}
+
+.app-header .auth-box {
+  min-width: 0;
+}
+
+.header-auth-inline {
+  gap: 10px;
+}
+
+.header-user-copy strong {
+  max-width: min(260px, 22vw);
+  font-size: 12px;
+}
+
+.header-user-copy span {
+  font-size: 10px;
+}
+
+.header-logout-button {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+}
+
+.admin-main,
+.page-section,
+.card,
+.analytics-section,
+.analytics-hero,
+.item {
+  min-width: 0;
+}
+
+.toolbar,
+.analytics-toolbar {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.toolbar .wide {
+  grid-column: span 2;
+}
+
+.stats-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.analytics-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.analytics-target-grid,
+.analytics-funnel-grid,
+.admin-control-grid,
+.policy-grid,
+.usage-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.item-head,
+.analytics-section-head,
+.modal-head,
+.space-between {
+  min-width: 0;
+}
+
+.item-head > *,
+.analytics-section-head > *,
+.modal-head > *,
+.space-between > * {
+  min-width: 0;
+}
+
+.table-wrap,
+.data-table-wrap,
+.audit-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+pre,
+code,
+.item-title,
+.muted,
+.meta-value {
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 1440px) {
+  .app-shell {
+    width: min(100% - 48px, 1760px);
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  }
+
+  .analytics-grid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  }
+}
+
+@media (max-width: 1080px) {
+  .app-shell {
+    width: min(100% - 24px, 1200px);
+    padding-top: 12px;
+  }
+
+  .app-header.topbar {
+    border-radius: 0 0 16px 16px;
+  }
+
+  .app-header .header-title-block {
+    justify-self: stretch;
+    text-align: left;
+  }
+
+  .header-title-row {
+    justify-content: flex-start;
+  }
+
+  .app-header .subtitle {
+    max-width: 100%;
+  }
+
+  .toolbar .wide {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    width: min(100% - 16px, 760px);
+    padding-top: 8px;
+  }
+
+  .app-header.topbar {
+    top: 0;
+    min-height: 56px;
+    gap: 8px;
+    padding: 7px 9px;
+    border-radius: 0 0 14px 14px;
+  }
+
+  .header-menu-button,
+  .header-logout-button {
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+  }
+
+  .app-header h1 {
+    font-size: clamp(17px, 5vw, 22px);
+  }
+
+  .app-header .subtitle {
+    display: none;
+  }
+
+  .header-info-slot .info-hint summary {
+    width: 28px;
+    height: 28px;
+    border-radius: 11px;
+  }
+
+  .toolbar,
+  .analytics-toolbar,
+  .stats-grid,
+  .analytics-grid,
+  .analytics-target-grid,
+  .analytics-funnel-grid,
+  .admin-control-grid,
+  .policy-grid,
+  .usage-grid,
+  .meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .item-head,
+  .analytics-section-head,
+  .space-between {
+    align-items: stretch;
+  }
+
+  .item-head > .row,
+  .analytics-section-head > .row,
+  .space-between > .row {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-shell {
+    width: min(100% - 10px, 480px);
+  }
+
+  .app-header.topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding-inline: 7px;
+  }
+
+  .header-title-row {
+    gap: 5px;
+  }
+
+  .app-header h1 {
+    font-size: 17px;
+  }
+
+  .header-info-slot .info-hint summary {
+    width: 26px;
+    height: 26px;
+  }
+
+  .header-user-copy {
+    display: none;
+  }
+
+  .card,
+  .item,
+  .analytics-section,
+  .analytics-hero {
+    border-radius: 18px;
+  }
+}
