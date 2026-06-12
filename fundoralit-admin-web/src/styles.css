@@ -2572,3 +2572,48 @@ body,
     width: min(88vw, 360px) !important;
   }
 }
+
+/* Content breathing room refinement ----------------------------------------
+   Keep the header/drawer flush, but give the main content a small responsive
+   gutter so filters, cards, lists, and tables do not stick to the viewport edge. */
+:root {
+  --page-content-gutter: clamp(10px, 1.15vw, 18px);
+}
+
+#mainContent,
+.admin-layout,
+.admin-main {
+  box-sizing: border-box !important;
+}
+
+#mainContent,
+.admin-main {
+  padding-left: var(--page-content-gutter) !important;
+  padding-right: var(--page-content-gutter) !important;
+}
+
+.page-section {
+  box-sizing: border-box !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.toolbar,
+.card,
+.item,
+.list,
+.stats-grid,
+.analytics-hero,
+.analytics-section,
+.analytics-toolbar-shell,
+.footer-note,
+.pagination,
+.admin-control-page {
+  box-sizing: border-box !important;
+}
+
+@media (max-width: 520px) {
+  :root {
+    --page-content-gutter: 10px;
+  }
+}
