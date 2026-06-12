@@ -203,7 +203,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--primary); box-sh
   top: 0;
   z-index: 20;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 10px;
   padding: 10px;
   margin: 4px 0 2px;
@@ -1021,4 +1021,379 @@ pre { background: #0f172a; color: #dbeafe; border-radius: 14px; padding: 12px; o
     left: 0;
   }
   .toolbar-context { width: 100%; }
+}
+
+
+/* Professional UI polish for Growth Analytics */
+:root {
+  --heading: #0b1220;
+  --text: #182235;
+  --muted: #667085;
+  --muted-strong: #475467;
+  --border: #d8e2df;
+  --border-strong: #c6d2ce;
+  --shadow-sm: 0 10px 28px rgba(15, 23, 42, 0.055);
+  --shadow: 0 20px 48px rgba(15, 23, 42, 0.12);
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1 {
+  max-width: 980px;
+  font-size: clamp(30px, 3.6vw, 48px);
+  line-height: 1.04;
+  letter-spacing: -0.042em;
+  font-weight: 850;
+}
+
+h2 {
+  letter-spacing: -0.034em;
+  font-weight: 850;
+}
+
+h3 {
+  font-weight: 850;
+}
+
+.subtitle,
+.analytics-section-head p,
+.analytics-note,
+.footer-note {
+  color: var(--muted-strong);
+  font-weight: 500;
+}
+
+.card,
+.item,
+.analytics-section,
+.analytics-hero,
+.analytics-card,
+.analytics-target-card {
+  border-color: rgba(216, 226, 223, 0.95);
+}
+
+.analytics-hero {
+  overflow: visible;
+  border-radius: 30px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(248, 252, 250, 0.94)),
+    radial-gradient(circle at 92% 6%, rgba(15, 118, 110, 0.10), transparent 34%);
+}
+
+.analytics-hero::after {
+  z-index: 0;
+  opacity: 0.85;
+}
+
+.analytics-hero .analytics-section-head,
+.analytics-toolbar-shell,
+.analytics-section,
+.analytics-card,
+.analytics-target-card {
+  isolation: isolate;
+}
+
+.analytics-hero h2 {
+  font-size: clamp(28px, 3vw, 42px);
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+  font-weight: 850;
+}
+
+.analytics-toolbar-shell {
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(14px);
+}
+
+.privacy-note {
+  min-height: 42px;
+  padding: 9px 12px;
+  border-color: rgba(20, 184, 166, 0.22);
+  background: linear-gradient(180deg, rgba(240, 253, 250, 0.96), rgba(236, 253, 245, 0.94));
+  color: #0f5f59;
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: -0.005em;
+}
+
+.analytics-section {
+  overflow: visible;
+  border-radius: 26px;
+}
+
+.analytics-section-head {
+  align-items: flex-start;
+}
+
+.analytics-section-head h3 {
+  font-size: clamp(18px, 1.8vw, 23px);
+  line-height: 1.16;
+  letter-spacing: -0.028em;
+}
+
+.analytics-grid {
+  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
+}
+
+.analytics-card,
+.analytics-target-card {
+  overflow: visible;
+  min-height: 142px;
+  border-radius: 24px;
+  padding: 18px 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(249, 251, 250, 0.96));
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.055);
+}
+
+.analytics-card::after,
+.analytics-target-card::after {
+  z-index: 0;
+  opacity: 0.75;
+}
+
+.analytics-card-label {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  color: #4b5b6f;
+  font-size: 0.92rem;
+  font-weight: 800;
+  line-height: 1.34;
+  letter-spacing: -0.01em;
+}
+
+.analytics-card strong,
+.analytics-target-card strong {
+  font-size: clamp(26px, 2.5vw, 34px);
+  font-weight: 850;
+  letter-spacing: -0.045em;
+}
+
+.analytics-card-meta {
+  color: #667085;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.inline-info-label {
+  align-items: center;
+}
+
+.info-hint {
+  flex: 0 0 auto;
+  z-index: 20;
+}
+
+.info-hint summary {
+  width: 30px;
+  height: 30px;
+  border-color: rgba(15, 118, 110, 0.36);
+  background: rgba(255, 255, 255, 0.96);
+  color: #0f766e;
+}
+
+.info-hint.compact summary {
+  width: 26px;
+  height: 26px;
+}
+
+.info-icon {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.info-popover {
+  z-index: 1000;
+  top: calc(100% + 10px);
+  right: 0;
+  width: max-content;
+  min-width: 240px;
+  max-width: min(340px, calc(100vw - 48px));
+  padding: 12px 14px;
+  border: 1px solid rgba(216, 226, 223, 0.96);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 22px 54px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(12px);
+}
+
+.info-popover::before {
+  content: "";
+  position: absolute;
+  top: -6px;
+  right: 12px;
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  border-left: 1px solid rgba(216, 226, 223, 0.96);
+  border-top: 1px solid rgba(216, 226, 223, 0.96);
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.info-popover strong {
+  color: #0b1220;
+  font-size: 12.5px;
+  font-weight: 850;
+  letter-spacing: -0.01em;
+}
+
+.info-popover p {
+  color: #526071;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.55;
+}
+
+.analytics-hero .analytics-section-head .info-popover,
+.analytics-section-head .info-popover {
+  right: auto;
+  left: 0;
+}
+
+.analytics-hero .analytics-section-head .info-popover::before,
+.analytics-section-head .info-popover::before {
+  right: auto;
+  left: 12px;
+}
+
+.analytics-card:nth-child(3n) .info-popover,
+.analytics-target-card:nth-child(3n) .info-popover {
+  right: 0;
+  left: auto;
+}
+
+.analytics-card:nth-child(3n) .info-popover::before,
+.analytics-target-card:nth-child(3n) .info-popover::before {
+  right: 12px;
+  left: auto;
+}
+
+.info-hint[open] summary {
+  color: #075e59;
+  border-color: rgba(15, 118, 110, 0.55);
+  background: #ecfdf5;
+  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.10);
+}
+
+@media (max-width: 760px) {
+  h1 { font-size: clamp(30px, 10vw, 42px); }
+  .analytics-hero h2 { font-size: clamp(26px, 9vw, 36px); }
+  .analytics-grid { grid-template-columns: 1fr; }
+  .analytics-card-label { align-items: flex-start; }
+  .info-popover,
+  .analytics-hero .analytics-section-head .info-popover,
+  .analytics-section-head .info-popover {
+    left: 0;
+    right: auto;
+    max-width: calc(100vw - 40px);
+  }
+  .info-popover::before,
+  .analytics-hero .analytics-section-head .info-popover::before,
+  .analytics-section-head .info-popover::before {
+    left: 12px;
+    right: auto;
+  }
+}
+
+
+/* Admin control center */
+.admin-control-page {
+  display: grid;
+  gap: 16px;
+}
+.admin-control-hero {
+  display: grid;
+  gap: 10px;
+}
+.control-subtitle {
+  max-width: 860px;
+  margin: 0;
+  line-height: 1.55;
+}
+.control-toolbar {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  align-items: end;
+  gap: 12px;
+}
+.control-toolbar .btn {
+  width: 100%;
+}
+.compact-actions {
+  margin-top: 4px;
+}
+.policy-shortcut-grid,
+.control-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.policy-shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--card-soft);
+}
+.policy-shortcut strong {
+  font-size: 13px;
+  color: var(--heading);
+}
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: #fff;
+}
+.admin-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+.admin-table th,
+.admin-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  font-size: 13px;
+  vertical-align: top;
+}
+.admin-table th {
+  color: var(--muted-strong);
+  background: var(--card-soft);
+  font-weight: 850;
+}
+.admin-table tr:last-child td {
+  border-bottom: 0;
+}
+.audit-json-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.compact-empty {
+  padding: 18px;
+  min-height: auto;
+}
+.modal-card textarea[spellcheck="false"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12.5px;
+}
+@media (max-width: 760px) {
+  .control-toolbar { grid-template-columns: 1fr; }
+  .policy-shortcut-grid,
+  .control-dashboard-grid,
+  .audit-json-grid { grid-template-columns: 1fr; }
 }

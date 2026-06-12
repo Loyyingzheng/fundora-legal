@@ -40,6 +40,29 @@ const API_PATHS = {
     invites: '/api/analytics/admin/invites',
     smartCapture: '/api/analytics/admin/smart-capture',
   },
+  featureLimits: {
+    list: '/api/admin/feature-limits',
+    update: (id) => `/api/admin/feature-limits/${encodeURIComponent(id)}`,
+  },
+  featureFlags: {
+    list: '/api/admin/feature-flags',
+    update: (id) => `/api/admin/feature-flags/${encodeURIComponent(id)}`,
+  },
+  productPolicies: {
+    list: '/api/admin/product-policies',
+    update: (id) => `/api/admin/product-policies/${encodeURIComponent(id)}`,
+  },
+  usage: {
+    list: '/api/admin/usage',
+    events: '/api/admin/usage/events',
+    adjust: '/api/admin/usage/adjust',
+  },
+  featureInteractions: {
+    summary: '/api/admin/analytics/feature-interactions/summary',
+  },
+  auditLogs: {
+    list: '/api/admin/audit-logs',
+  },
 };
 
 function toLocalDateString(date) {
@@ -152,6 +175,16 @@ const state = {
   },
   analyticsLoading: false,
   analyticsError: '',
+  adminFilters: {
+    featureKey: '',
+    plan: '',
+    userEmail: '',
+    periodKey: '',
+    dateFrom: daysAgoDateString(29),
+    dateTo: todayDateString(),
+    action: '',
+    targetType: '',
+  },
 };
 
 const authBox = document.getElementById('authBox');
@@ -339,6 +372,10 @@ async function loadData() {
       await loadAnalyticsData();
       return;
     }
+    if (isAdminControlTab()) {
+      await loadAdminControlData();
+      return;
+    }
 
     let response;
     if (state.activeTab === 'feedback') {
@@ -435,6 +472,64 @@ async function loadAnalyticsData() {
   state.loading = false;
   render();
 }
+
+
+async function loadAdminControlData() {
+  const filters = state.adminFilters;
+  let response;
+  if (state.activeTab === 'featureLimits') {
+    response = await api(API_PATHS.featureLimits.list, {
+      params: { featureKey: filters.featureKey, plan: filters.plan },
+    });
+    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    return;
+  }
+  if (state.activeTab === 'featureFlags') {
+    response = await api(API_PATHS.featureFlags.list, {
+      params: { flagKey: filters.featureKey, targetPlan: filters.plan },
+    });
+    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    return;
+  }
+  if (state.activeTab === 'productPolicies') {
+    response = await api(API_PATHS.productPolicies.list, {
+      params: { policyKey: filters.featureKey },
+    });
+    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    return;
+  }
+  if (state.activeTab === 'usage') {
+    const counters = await api(API_PATHS.usage.list, {
+      params: { userEmail: filters.userEmail, featureKey: filters.featureKey, periodKey: filters.periodKey },
+    });
+    const events = filters.userEmail || filters.featureKey || filters.periodKey
+      ? await api(API_PATHS.usage.events, { params: { userEmail: filters.userEmail, featureKey: filters.featureKey, periodKey: filters.periodKey } }).catch(() => [])
+      : [];
+    state.data = {
+      content: normalizeAdminListResponse(counters),
+      events: normalizeAdminListResponse(events),
+      page: 0,
+      size: 100,
+      totalElements: normalizeAdminListResponse(counters).length,
+      totalPages: 1,
+    };
+    return;
+  }
+  if (state.activeTab === 'featureAnalytics') {
+    response = await api(API_PATHS.featureInteractions.summary, {
+      params: { from: filters.dateFrom, to: filters.dateTo, featureKey: filters.featureKey },
+    });
+    state.data = { content: [], summary: normalizeAdminObjectResponse(response), page: 0, size: 100, totalElements: 0, totalPages: 1 };
+    return;
+  }
+  if (state.activeTab === 'auditLogs') {
+    response = await api(API_PATHS.auditLogs.list, {
+      params: { action: filters.action, targetType: filters.targetType, page: state.page, size: state.size },
+    });
+    state.data = unwrapPage(response);
+  }
+}
+
 
 async function patchAction(path, successMessage, body) {
   if (!confirm('Confirm this admin action?')) return;
@@ -561,9 +656,15 @@ function renderAuth() {
 function renderTabs() {
   const tabs = [
     ['feedback', 'App Feedback', 'Reports'],
-    ['premium', 'Reward Review Surveys', 'Trial reward'],
-    ['review', 'Review Prompt Summary', 'Store prompt'],
-    ['analytics', 'Growth Analytics', 'Usage metrics'],
+    ['premium', 'Reward Surveys', 'Trial reward'],
+    ['review', 'Review Prompts', 'Store prompt'],
+    ['analytics', 'Growth Analytics', 'Metrics'],
+    ['featureLimits', 'Feature Limits', 'Quota policy'],
+    ['featureFlags', 'Feature Flags', 'Kill switch'],
+    ['productPolicies', 'Product Policy', 'Remote config'],
+    ['usage', 'Usage & Quota', 'Support lookup'],
+    ['featureAnalytics', 'Feature Analytics', 'Summary events'],
+    ['auditLogs', 'Audit Logs', 'Admin changes'],
   ];
   return el('nav', { class: 'tabs', 'aria-label': 'Admin sections' }, tabs.map(([id, label, helper]) => el('button', {
     class: `tab ${state.activeTab === id ? 'active' : ''}`,
@@ -599,6 +700,52 @@ function normalizeAnalyticsRows(response) {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== 'object') return [];
   return value.rows || value.cohorts || value.content || value.data || [];
+}
+
+
+function normalizeAdminListResponse(response) {
+  const value = normalizeAnalyticsResponse(response);
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== 'object') return [];
+  if (Array.isArray(value.content)) return value.content;
+  if (Array.isArray(value.items)) return value.items;
+  if (Array.isArray(value.rows)) return value.rows;
+  if (Array.isArray(value.data)) return value.data;
+  if (Array.isArray(value.records)) return value.records;
+  return [];
+}
+
+function normalizeAdminObjectResponse(response) {
+  const value = normalizeAnalyticsResponse(response);
+  return value && typeof value === 'object' ? value : {};
+}
+
+function getItemId(item) {
+  return item?.id ?? item?.policyKey ?? item?.flagKey ?? item?.featureKey ?? '';
+}
+
+function humanizeKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  return raw.replace(/[_-]+/g, ' ').replace(/\w/g, (ch) => ch.toUpperCase());
+}
+
+function parseJsonInput(text, fallback = {}) {
+  const raw = String(text || '').trim();
+  if (!raw) return fallback;
+  return JSON.parse(raw);
+}
+
+function compactJson(value) {
+  if (value === undefined || value === null || value === '') return '{}';
+  if (typeof value === 'string') {
+    try { return JSON.stringify(JSON.parse(value), null, 2); } catch (_) { return value; }
+  }
+  try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
+}
+
+function isAdminControlTab(tab = state.activeTab) {
+  return ['featureLimits', 'featureFlags', 'productPolicies', 'usage', 'featureAnalytics', 'auditLogs'].includes(tab);
 }
 
 
@@ -1347,6 +1494,10 @@ function renderAdminModal() {
   if (!state.modal) return null;
   if (state.modal.kind === 'feedbackReview') return renderFeedbackReviewModal();
   if (state.modal.kind === 'feedbackCredit') return renderFeedbackCreditModal();
+  if (state.modal.kind === 'featureLimitEdit') return renderFeatureLimitModal();
+  if (state.modal.kind === 'featureFlagEdit') return renderFeatureFlagModal();
+  if (state.modal.kind === 'productPolicyEdit') return renderProductPolicyModal();
+  if (state.modal.kind === 'usageAdjust') return renderUsageAdjustModal();
   return renderCloseModal();
 }
 
@@ -1531,6 +1682,543 @@ function renderFeedbackCreditModal() {
   ]);
 }
 
+
+function renderAdminControlHero(title, subtitle, infoText, actions = []) {
+  return el('section', { class: 'admin-control-hero card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Operations Control' }), el('h2', { text: title })]),
+      renderInfoHint(infoText, { label: `${title} details` }),
+    ]),
+    subtitle ? el('p', { class: 'muted control-subtitle', text: subtitle }) : null,
+    actions.length ? el('div', { class: 'actions compact-actions' }, actions) : null,
+  ]);
+}
+
+function renderControlToolbar(children) {
+  return el('div', { class: 'toolbar control-toolbar' }, children);
+}
+
+function renderFeatureLimitToolbar() {
+  const feature = el('input', { placeholder: 'Filter feature key', value: state.adminFilters.featureKey || '' });
+  feature.addEventListener('input', () => { state.adminFilters.featureKey = feature.value.trim(); });
+  const plan = select(['', 'FREE', 'PRO'], state.adminFilters.plan, (value) => { state.adminFilters.plan = value; });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Feature key' }), feature]),
+    el('div', {}, [el('label', { text: 'Plan' }), plan]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ]);
+}
+
+function renderFeatureLimitItem(item) {
+  const id = getItemId(item);
+  const enabled = item.enabled !== false;
+  const limit = item.limitCount ?? item.limit_count;
+  const plan = item.plan || '-';
+  const period = item.periodType || item.period_type || 'NONE';
+  const title = `${item.featureKey || item.feature_key || id} · ${plan}`;
+  const subtitle = limit === null || limit === undefined ? `${period} · Unlimited` : `${period} · Limit ${limit}`;
+  return renderCollapsibleItem({
+    title,
+    subtitle,
+    statusNode: el('span', { class: `badge ${enabled ? 'success' : 'danger'}`, text: enabled ? 'Enabled' : 'Disabled' }),
+    children: [
+      renderMetaGrid([
+        ['Feature key', item.featureKey || item.feature_key], ['Plan', plan], ['Limit', limit === null || limit === undefined ? 'Unlimited' : limit],
+        ['Period', period], ['Reset timezone', item.resetTimezone || item.reset_timezone], ['Description', item.description],
+        ['Updated', formatDate(item.updatedAt || item.updated_at)], ['Updated By', item.updatedBy || item.updated_by],
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn small', text: 'Edit limit', onclick: () => openFeatureLimitModal(item) }),
+      ]),
+    ],
+  });
+}
+
+function openFeatureLimitModal(item) {
+  state.modal = {
+    kind: 'featureLimitEdit',
+    id: getItemId(item),
+    item,
+    title: 'Edit feature limit',
+    limitCount: item.limitCount ?? item.limit_count ?? '',
+    periodType: item.periodType || item.period_type || 'NONE',
+    enabled: item.enabled !== false,
+    description: item.description || '',
+    reason: '',
+  };
+  render();
+}
+
+async function submitFeatureLimitModal() {
+  const modal = state.modal;
+  const limitText = String(modal.limitCount ?? '').trim();
+  const limitCount = limitText === '' ? null : Number(limitText);
+  if (limitText !== '' && (!Number.isFinite(limitCount) || limitCount < 0)) {
+    setMessage('Limit must be empty for unlimited or a non-negative number.', true); render(); return;
+  }
+  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  await performPatchAction(API_PATHS.featureLimits.update(modal.id), 'Feature limit updated.', {
+    limitCount,
+    periodType: modal.periodType || 'NONE',
+    enabled: Boolean(modal.enabled),
+    description: String(modal.description || '').trim() || null,
+    reason: String(modal.reason || '').trim(),
+  });
+}
+
+function renderFeatureFlagToolbar() {
+  const feature = el('input', { placeholder: 'Filter flag key', value: state.adminFilters.featureKey || '' });
+  feature.addEventListener('input', () => { state.adminFilters.featureKey = feature.value.trim(); });
+  const plan = select(['', 'FREE', 'PRO'], state.adminFilters.plan, (value) => { state.adminFilters.plan = value; });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Flag key' }), feature]),
+    el('div', {}, [el('label', { text: 'Target plan' }), plan]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ]);
+}
+
+function renderFeatureFlagItem(item) {
+  const id = getItemId(item);
+  const enabled = item.enabled !== false;
+  const rollout = item.rolloutPercentage ?? item.rollout_percentage ?? 100;
+  return renderCollapsibleItem({
+    title: item.flagKey || item.flag_key || id,
+    subtitle: `${rollout}% rollout${item.targetPlan || item.target_plan ? ` · ${item.targetPlan || item.target_plan}` : ''}`,
+    statusNode: el('span', { class: `badge ${enabled ? 'success' : 'danger'}`, text: enabled ? 'Enabled' : 'Disabled' }),
+    children: [
+      renderMetaGrid([
+        ['Flag key', item.flagKey || item.flag_key], ['Enabled', enabled ? 'Yes' : 'No'], ['Rollout %', rollout],
+        ['Target plan', item.targetPlan || item.target_plan], ['Min app version', item.minAppVersion || item.min_app_version],
+        ['Description', item.description], ['Updated', formatDate(item.updatedAt || item.updated_at)], ['Updated By', item.updatedBy || item.updated_by],
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: enabled ? 'btn danger small' : 'btn success small', text: enabled ? 'Disable' : 'Enable', onclick: () => openFeatureFlagModal(item) }),
+        el('button', { class: 'btn ghost small', text: 'Edit rollout', onclick: () => openFeatureFlagModal(item) }),
+      ]),
+    ],
+  });
+}
+
+function openFeatureFlagModal(item) {
+  state.modal = {
+    kind: 'featureFlagEdit',
+    id: getItemId(item),
+    item,
+    title: 'Edit feature flag',
+    enabled: item.enabled !== false,
+    rolloutPercentage: Number(item.rolloutPercentage ?? item.rollout_percentage ?? 100),
+    targetPlan: item.targetPlan || item.target_plan || '',
+    minAppVersion: item.minAppVersion || item.min_app_version || '',
+    description: item.description || '',
+    reason: '',
+  };
+  render();
+}
+
+async function submitFeatureFlagModal() {
+  const modal = state.modal;
+  const rollout = Number(modal.rolloutPercentage);
+  if (!Number.isFinite(rollout) || rollout < 0 || rollout > 100) { setMessage('Rollout must be between 0 and 100.', true); render(); return; }
+  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  await performPatchAction(API_PATHS.featureFlags.update(modal.id), 'Feature flag updated.', {
+    enabled: Boolean(modal.enabled),
+    rolloutPercentage: rollout,
+    targetPlan: String(modal.targetPlan || '').trim() || null,
+    minAppVersion: String(modal.minAppVersion || '').trim() || null,
+    description: String(modal.description || '').trim() || null,
+    reason: String(modal.reason || '').trim(),
+  });
+}
+
+function renderProductPolicyToolbar() {
+  const policy = el('input', { placeholder: 'Filter policy key', value: state.adminFilters.featureKey || '' });
+  policy.addEventListener('input', () => { state.adminFilters.featureKey = policy.value.trim(); });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Policy key' }), policy]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ]);
+}
+
+function renderProductPolicyItem(item) {
+  const id = getItemId(item);
+  const enabled = item.enabled !== false;
+  const key = item.policyKey || item.policy_key || id;
+  const value = item.valueJson ?? item.value_json ?? item.value ?? {};
+  return renderCollapsibleItem({
+    title: humanizeKey(key),
+    subtitle: key,
+    statusNode: el('span', { class: `badge ${enabled ? 'success' : 'danger'}`, text: enabled ? 'Enabled' : 'Disabled' }),
+    children: [
+      el('div', { class: 'compact-guidance' }, [
+        el('strong', { text: 'Policy scope' }),
+        renderInfoHint(getProductPolicyHint(key), { compact: true, label: 'Policy details' }),
+      ]),
+      renderMetaGrid([
+        ['Policy key', key], ['Platform', item.platform], ['Min app version', item.minAppVersion || item.min_app_version],
+        ['Updated', formatDate(item.updatedAt || item.updated_at)], ['Updated By', item.updatedBy || item.updated_by],
+      ]),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'View JSON value' }), el('pre', { text: compactJson(value) })]),
+      el('div', { class: 'actions' }, [el('button', { class: 'btn small', text: 'Edit policy', onclick: () => openProductPolicyModal(item) })]),
+    ],
+  });
+}
+
+function getProductPolicyHint(key) {
+  const normalized = String(key || '').toLowerCase();
+  if (normalized.includes('smart_capture')) return 'Controls Smart Capture parser thresholds, review policy, internal transfer handling, and future provider profile versions. Do not store raw notification text here.';
+  if (normalized.includes('cloud')) return 'Controls backup/recovery kill switches and safe restore defaults. Use carefully because restore behavior affects user data safety.';
+  if (normalized.includes('group')) return 'Controls cloud collaboration limits such as participants, expenses, receipt uploads, retention, and invite behavior.';
+  if (normalized.includes('copy') || normalized.includes('announcement')) return 'Controls remote user-facing copy such as maintenance, quota reached, and feature disabled messages.';
+  if (normalized.includes('classifier') || normalized.includes('ml')) return 'Future local model policy only. Do not enable model-driven behavior without enough labeled samples and a safe fallback.';
+  return 'Backend-controlled product configuration used by the mobile app when available, with local fallback in the app.';
+}
+
+function openProductPolicyModal(item) {
+  state.modal = {
+    kind: 'productPolicyEdit',
+    id: getItemId(item),
+    item,
+    title: 'Edit product policy',
+    enabled: item.enabled !== false,
+    platform: item.platform || '',
+    minAppVersion: item.minAppVersion || item.min_app_version || '',
+    valueJson: compactJson(item.valueJson ?? item.value_json ?? item.value ?? {}),
+    reason: '',
+  };
+  render();
+}
+
+async function submitProductPolicyModal() {
+  const modal = state.modal;
+  let valueJson;
+  try { valueJson = parseJsonInput(modal.valueJson, {}); } catch (error) { setMessage(`Invalid JSON: ${error.message}`, true); render(); return; }
+  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  await performPatchAction(API_PATHS.productPolicies.update(modal.id), 'Product policy updated.', {
+    enabled: Boolean(modal.enabled),
+    platform: String(modal.platform || '').trim() || null,
+    minAppVersion: String(modal.minAppVersion || '').trim() || null,
+    valueJson,
+    reason: String(modal.reason || '').trim(),
+  });
+}
+
+function renderUsageToolbar() {
+  const email = el('input', { placeholder: 'User email', value: state.adminFilters.userEmail || '' });
+  email.addEventListener('input', () => { state.adminFilters.userEmail = email.value.trim(); });
+  const feature = el('input', { placeholder: 'Feature key', value: state.adminFilters.featureKey || '' });
+  feature.addEventListener('input', () => { state.adminFilters.featureKey = feature.value.trim(); });
+  const period = el('input', { placeholder: 'Period key, e.g. 2026-W24', value: state.adminFilters.periodKey || '' });
+  period.addEventListener('input', () => { state.adminFilters.periodKey = period.value.trim(); });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'User email' }), email]),
+    el('div', {}, [el('label', { text: 'Feature key' }), feature]),
+    el('div', {}, [el('label', { text: 'Period' }), period]),
+    el('button', { class: 'btn', text: 'Search', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ]);
+}
+
+function renderUsageItem(item) {
+  const used = item.usedCount ?? item.used_count ?? 0;
+  const limit = item.limitCount ?? item.limit_count;
+  const unlimited = item.unlimited || limit === null || limit === undefined;
+  const remaining = unlimited ? 'Unlimited' : (item.remaining ?? Math.max(0, Number(limit) - Number(used || 0)));
+  return renderCollapsibleItem({
+    title: `${item.featureKey || item.feature_key || '-'} · ${item.periodKey || item.period_key || '-'}`,
+    subtitle: item.userEmail || item.user_email || item.userId || item.user_id || 'Usage counter',
+    statusNode: el('span', { class: `badge ${unlimited || Number(remaining) > 0 ? 'success' : 'danger'}`, text: unlimited ? 'Unlimited' : `${remaining} left` }),
+    children: [
+      renderMetaGrid([
+        ['User Email', item.userEmail || item.user_email], ['User ID', item.userId || item.user_id], ['Feature', item.featureKey || item.feature_key],
+        ['Period', item.periodKey || item.period_key], ['Used', used], ['Limit', unlimited ? 'Unlimited' : limit], ['Remaining', remaining], ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      el('div', { class: 'actions' }, [el('button', { class: 'btn ghost small', text: 'Adjust usage', onclick: () => openUsageAdjustModal(item) })]),
+    ],
+  });
+}
+
+function openUsageAdjustModal(item) {
+  state.modal = {
+    kind: 'usageAdjust',
+    title: 'Adjust usage counter',
+    item,
+    userEmail: item.userEmail || item.user_email || '',
+    userId: item.userId || item.user_id || '',
+    featureKey: item.featureKey || item.feature_key || '',
+    periodKey: item.periodKey || item.period_key || '',
+    newUsedCount: item.usedCount ?? item.used_count ?? 0,
+    reason: '',
+  };
+  render();
+}
+
+async function submitUsageAdjustModal() {
+  const modal = state.modal;
+  const newUsedCount = Number(modal.newUsedCount);
+  if (!Number.isFinite(newUsedCount) || newUsedCount < 0) { setMessage('New used count must be zero or more.', true); render(); return; }
+  if (!String(modal.reason || '').trim()) { setMessage('Please enter an audit reason.', true); render(); return; }
+  state.loading = true; state.error = ''; render();
+  try {
+    await api(API_PATHS.usage.adjust, { method: 'POST', body: {
+      userEmail: modal.userEmail || null,
+      userId: modal.userId || null,
+      featureKey: modal.featureKey,
+      periodKey: modal.periodKey,
+      newUsedCount,
+      reason: String(modal.reason || '').trim(),
+    } });
+    setMessage('Usage counter adjusted.');
+    state.modal = null;
+    await loadData();
+  } catch (error) {
+    setMessage(error.message || 'Failed to adjust usage.', true);
+    state.loading = false; render();
+  }
+}
+
+function renderUsageEvents(events) {
+  if (!events?.length) return el('div', { class: 'card empty-state compact-empty' }, [el('strong', { text: 'No usage events loaded.' }), el('p', { class: 'muted', text: 'Search by user, feature, or period to inspect idempotent save events.' })]);
+  return renderAnalyticsSection('Usage event history', 'Idempotency events for save/quota operations. Sensitive payloads are not shown.', [
+    el('div', { class: 'table-wrap' }, [el('table', { class: 'admin-table' }, [
+      el('thead', {}, [el('tr', {}, ['Feature', 'Period', 'Client Event ID', 'Amount', 'Created'].map((h) => el('th', { text: h })))]),
+      el('tbody', {}, events.slice(0, 50).map((event) => el('tr', {}, [
+        el('td', { text: event.featureKey || event.feature_key || '-' }),
+        el('td', { text: event.periodKey || event.period_key || '-' }),
+        el('td', { text: event.clientEventId || event.client_event_id || '-' }),
+        el('td', { text: event.amount ?? '-' }),
+        el('td', { text: formatDate(event.createdAt || event.created_at) }),
+      ]))),
+    ])]),
+  ]);
+}
+
+function renderFeatureAnalyticsToolbar() {
+  const feature = el('input', { placeholder: 'Optional feature key', value: state.adminFilters.featureKey || '' });
+  feature.addEventListener('input', () => { state.adminFilters.featureKey = feature.value.trim(); });
+  const from = el('input', { type: 'date', value: state.adminFilters.dateFrom, max: todayDateString() });
+  from.addEventListener('change', () => { state.adminFilters.dateFrom = from.value; });
+  const to = el('input', { type: 'date', value: state.adminFilters.dateTo, max: todayDateString() });
+  to.addEventListener('change', () => { state.adminFilters.dateTo = to.value; });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'From' }), from]),
+    el('div', {}, [el('label', { text: 'To' }), to]),
+    el('div', {}, [el('label', { text: 'Feature' }), feature]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+  ]);
+}
+
+function renderFeatureAnalyticsSummary(summary) {
+  const data = summary || {};
+  const topFeatures = data.topFeatures || data.features || [];
+  const topSurfaces = data.topSurfaces || data.surfaces || [];
+  const topActions = data.topActions || data.actions || [];
+  const trend = data.dailyTrend || data.trend || [];
+  return el('div', { class: 'control-dashboard-grid' }, [
+    renderAnalyticsCard('Total interactions', formatMetricValue(data.totalCount ?? data.total ?? 0), 'Summarized product interactions only.'),
+    renderAnalyticsCard('Unique users', formatMetricValue(data.uniqueUserCount ?? data.uniqueUsers ?? 0), 'Approximate user count if backend provides it.'),
+    renderAnalyticsMiniTable('Top features', topFeatures.slice(0, 8).map((row) => [row.featureKey || row.key || row.name || '-', formatMetricValue(row.count ?? row.total ?? 0)])),
+    renderAnalyticsMiniTable('Top surfaces', topSurfaces.slice(0, 8).map((row) => [row.surfaceKey || row.key || row.name || '-', formatMetricValue(row.count ?? row.total ?? 0)])),
+    renderAnalyticsMiniTable('Top actions', topActions.slice(0, 8).map((row) => [row.actionKey || row.key || row.name || '-', formatMetricValue(row.count ?? row.total ?? 0)])),
+    renderAnalyticsMiniTable('Daily trend', trend.slice(0, 14).map((row) => [row.dateKey || row.date || '-', formatMetricValue(row.count ?? row.total ?? 0)])),
+  ]);
+}
+
+function renderAuditToolbar() {
+  const action = el('input', { placeholder: 'Action', value: state.adminFilters.action || '' });
+  action.addEventListener('input', () => { state.adminFilters.action = action.value.trim(); });
+  const target = el('input', { placeholder: 'Target type', value: state.adminFilters.targetType || '' });
+  target.addEventListener('input', () => { state.adminFilters.targetType = target.value.trim(); });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Action' }), action]),
+    el('div', {}, [el('label', { text: 'Target type' }), target]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => { state.page = 0; loadData(); } }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ]);
+}
+
+function renderAuditItem(item) {
+  return renderCollapsibleItem({
+    title: item.action || '-',
+    subtitle: `${item.targetType || item.target_type || '-'} · ${item.adminEmail || item.admin_email || 'Admin'}`,
+    statusNode: el('span', { class: 'badge neutral', text: formatDate(item.createdAt || item.created_at) }),
+    children: [
+      renderMetaGrid([
+        ['Admin', item.adminEmail || item.admin_email], ['Action', item.action], ['Target Type', item.targetType || item.target_type],
+        ['Target ID', item.targetId || item.target_id], ['Reason', item.reason], ['Created', formatDate(item.createdAt || item.created_at)],
+      ]),
+      el('div', { class: 'audit-json-grid' }, [
+        el('details', { class: 'nested-details' }, [el('summary', { text: 'Before JSON' }), el('pre', { text: compactJson(item.beforeJson || item.before_json) })]),
+        el('details', { class: 'nested-details' }, [el('summary', { text: 'After JSON' }), el('pre', { text: compactJson(item.afterJson || item.after_json) })]),
+      ]),
+    ],
+  });
+}
+
+function renderAdminControlPage() {
+  const items = state.data?.content || [];
+  const children = [];
+
+  if (state.activeTab === 'featureLimits') {
+    children.push(renderAdminControlHero('Feature Limits', 'Control quota, preset, wallet, dashboard, and collaboration limits from backend policy.', 'Use this page for limits such as Smart Capture 20/week, OCR 20/month, expense presets, wallet slots, group limits, and dashboard history. Changes are audited and should keep local app fallback compatibility.'));
+    children.push(renderFeatureLimitToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Limit changes affect user entitlement and quota. Use empty limit for unlimited only when backend supports it.'));
+    children.push(renderControlList(items, renderFeatureLimitItem, 'No feature limits found.'));
+  } else if (state.activeTab === 'featureFlags') {
+    children.push(renderAdminControlHero('Feature Flags', 'Remote kill switches for Smart Capture, OCR, cloud, collaboration, and future features.', 'Flags should be used to safely disable risky features without a new app release. Avoid enabling experimental features such as income auto-save unless the app has strict safety checks.'));
+    children.push(renderFeatureFlagToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Disabling a feature should hide or block entry points safely. It should not delete local user data.'));
+    children.push(renderControlList(items, renderFeatureFlagItem, 'No feature flags found.'));
+  } else if (state.activeTab === 'productPolicies') {
+    children.push(renderAdminControlHero('Product Policy', 'Edit backend-controlled JSON policies such as Smart Capture parser, cloud recovery, group features, and remote copy.', 'Keep policy JSON compact. Details are hidden by default to avoid a noisy operations page. Do not store raw notification text, receipt text, merchant names, or user financial content.'));
+    children.push(renderProductPolicyToolbar());
+    children.push(renderPolicyShortcutGrid());
+    children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
+  } else if (state.activeTab === 'usage') {
+    children.push(renderAdminControlHero('Usage & Quota', 'Support lookup for user usage counters and idempotent save events.', 'Use this to debug OCR or Smart Capture quota issues. Adjustments require an audit reason and should be rare.'));
+    children.push(renderUsageToolbar());
+    children.push(renderStats(items));
+    children.push(renderControlList(items, renderUsageItem, 'Search a user or feature to view usage counters.'));
+    children.push(renderUsageEvents(state.data?.events || []));
+  } else if (state.activeTab === 'featureAnalytics') {
+    children.push(renderAdminControlHero('Feature Analytics', 'Privacy-safe product interaction summaries for UI/UX decisions.', 'The app uploads daily aggregated counts only. It must not upload click-by-click raw events, transaction text, notification text, OCR text, payee, merchant, or expense note.'));
+    children.push(renderFeatureAnalyticsToolbar());
+    children.push(el('div', { class: 'privacy-note' }, [el('span', { text: 'Summary counts only' }), renderInfoHint('Use this to understand which features users actually open and confirm, such as Dashboard, Smart Capture, OCR, Group Event, Group Goal, Cloud Backup, and AI Analysis. This should guide UI/UX improvements without sensitive content.', { compact: true, label: 'Analytics privacy details' })]));
+    children.push(renderFeatureAnalyticsSummary(state.data?.summary || {}));
+  } else if (state.activeTab === 'auditLogs') {
+    children.push(renderAdminControlHero('Audit Logs', 'Review admin changes to policies, flags, limits, usage, version, and support actions.', 'Every control action should leave a reasoned audit trail: who changed it, what changed, before/after values, and when.'));
+    children.push(renderAuditToolbar());
+    children.push(renderStats(items));
+    children.push(renderControlList(items, renderAuditItem, 'No audit logs found.'));
+    children.push(renderPagination());
+  }
+
+  if (state.loading && !items.length && state.activeTab !== 'featureAnalytics') {
+    children.push(el('div', { class: 'card empty-state' }, [el('strong', { text: 'Loading control data...' }), el('p', { class: 'muted', text: 'Please wait.' })]));
+  }
+
+  return el('div', { class: 'admin-control-page' }, children);
+}
+
+function renderPolicySafetyNote(text) {
+  return el('div', { class: 'compact-guidance' }, [
+    el('strong', { text: 'Safety note' }),
+    renderInfoHint(text, { compact: true, label: 'Safety details' }),
+  ]);
+}
+
+function renderPolicyShortcutGrid() {
+  const shortcuts = [
+    ['Smart Capture Policy', 'Parser thresholds, review-only income, marketing/internal-transfer handling, provider profile version.'],
+    ['Cloud Backup Policy', 'Backup/restore kill switches, safe recovery default, destructive restore guard.'],
+    ['Group Features Policy', 'Group event/goal limits, receipt uploads, retention, invite expiry, offline queue size.'],
+    ['Remote Copy Policy', 'Maintenance banner, announcement, quota reached, paywall, and feature disabled copy.'],
+    ['Classifier Policy', 'Future local ML model version and confidence threshold. Keep disabled until enough labeled samples exist.'],
+  ];
+  return el('div', { class: 'policy-shortcut-grid' }, shortcuts.map(([title, info]) => el('article', { class: 'policy-shortcut' }, [
+    el('strong', { text: title }),
+    renderInfoHint(info, { compact: true, label: `${title} details` }),
+  ])));
+}
+
+function renderControlList(items, renderer, emptyText) {
+  if (state.loading && !items.length) return el('div', { class: 'card empty-state' }, [el('strong', { text: 'Loading...' })]);
+  if (!items.length) return el('div', { class: 'card empty-state compact-empty' }, [el('strong', { text: emptyText || 'No records found.' })]);
+  return el('div', { class: 'list' }, items.map(renderer));
+}
+
+function renderFeatureLimitModal() {
+  const modal = state.modal;
+  const limit = el('input', { type: 'number', min: '0', placeholder: 'Empty = unlimited', value: modal.limitCount ?? '' });
+  limit.addEventListener('input', () => { modal.limitCount = limit.value; });
+  const period = select(['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'], modal.periodType || 'NONE', (value) => { modal.periodType = value; });
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const description = el('textarea', { rows: '3' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal('Edit feature limit', 'Feature Limit', [
+    renderMetaGrid([['Feature', modal.item?.featureKey || modal.item?.feature_key], ['Plan', modal.item?.plan]]),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Limit count' }), limit, el('small', { class: 'field-help', text: 'Leave empty for unlimited when supported.' })]),
+      el('div', { class: 'field' }, [el('label', { text: 'Period type' }), period]),
+    ]),
+    el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+    el('div', { class: 'field' }, [el('label', { text: 'Description' }), description]),
+    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+  ], submitFeatureLimitModal);
+}
+
+function renderFeatureFlagModal() {
+  const modal = state.modal;
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const rollout = el('input', { type: 'number', min: '0', max: '100', value: modal.rolloutPercentage }); rollout.addEventListener('input', () => { modal.rolloutPercentage = rollout.value; });
+  const targetPlan = el('input', { placeholder: 'Optional plan', value: modal.targetPlan || '' }); targetPlan.addEventListener('input', () => { modal.targetPlan = targetPlan.value; });
+  const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
+  const description = el('textarea', { rows: '3' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal('Edit feature flag', 'Feature Flag', [
+    renderMetaGrid([['Flag', modal.item?.flagKey || modal.item?.flag_key]]),
+    el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Rollout percentage' }), rollout]),
+      el('div', { class: 'field' }, [el('label', { text: 'Target plan' }), targetPlan]),
+      el('div', { class: 'field' }, [el('label', { text: 'Min app version' }), minVersion]),
+    ]),
+    el('div', { class: 'field' }, [el('label', { text: 'Description' }), description]),
+    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+  ], submitFeatureFlagModal);
+}
+
+function renderProductPolicyModal() {
+  const modal = state.modal;
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const platform = el('input', { placeholder: 'Optional platform', value: modal.platform || '' }); platform.addEventListener('input', () => { modal.platform = platform.value; });
+  const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
+  const valueJson = el('textarea', { rows: '12', spellcheck: 'false' }); valueJson.value = modal.valueJson || '{}'; valueJson.addEventListener('input', () => { modal.valueJson = valueJson.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal('Edit product policy', 'Product Policy', [
+    renderMetaGrid([['Policy', modal.item?.policyKey || modal.item?.policy_key]]),
+    el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Platform' }), platform]),
+      el('div', { class: 'field' }, [el('label', { text: 'Min app version' }), minVersion]),
+    ]),
+    el('div', { class: 'field' }, [el('label', { text: 'Policy JSON' }), valueJson, el('small', { class: 'field-help', text: 'Keep JSON compact and avoid sensitive user data.' })]),
+    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+  ], submitProductPolicyModal, true);
+}
+
+function renderUsageAdjustModal() {
+  const modal = state.modal;
+  const newUsed = el('input', { type: 'number', min: '0', value: modal.newUsedCount }); newUsed.addEventListener('input', () => { modal.newUsedCount = newUsed.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required reason, e.g. Correct duplicate local sync after support verification.' }); reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal('Adjust usage counter', 'Usage Support', [
+    renderMetaGrid([['User', modal.userEmail || modal.userId], ['Feature', modal.featureKey], ['Period', modal.periodKey]]),
+    el('div', { class: 'field' }, [el('label', { text: 'New used count' }), newUsed]),
+    el('div', { class: 'compact-guidance warning' }, [el('strong', { text: 'Audit required' }), renderInfoHint('Usage adjustments affect quota and should only be used after support verification. They are not a normal product operation.', { compact: true, label: 'Usage adjustment details' })]),
+    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+  ], submitUsageAdjustModal);
+}
+
+function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = false) {
+  return el('div', { class: 'modal-backdrop', onclick: (event) => { if (event.target.classList.contains('modal-backdrop')) closeModal(); } }, [
+    el('section', { class: `modal-card ${wide ? 'modal-card-wide' : ''}`.trim(), role: 'dialog', 'aria-modal': 'true' }, [
+      el('div', { class: 'modal-head' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: eyebrow }), el('h2', { text: title })]),
+        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+      ]),
+      el('div', { class: 'modal-body' }, bodyChildren),
+      el('div', { class: 'modal-actions' }, [
+        el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
+        el('button', { class: 'btn', text: state.loading ? 'Saving...' : 'Save changes', disabled: state.loading, onclick: submitHandler }),
+      ]),
+    ]),
+  ]);
+}
+
 function renderSignedIn() {
   const items = state.data?.content || [];
   const children = [renderTabs(), ...renderNotice()];
@@ -1540,6 +2228,15 @@ function renderSignedIn() {
     children.push(el('div', { class: 'footer-note compact-help-row' }, [
       el('span', { text: 'Admin portal follows backend permissions and available endpoints.' }),
       renderInfoHint('Only aggregated, admin-safe information should be shown here. Avoid exposing user financial content unless a support flow explicitly requires it.', { compact: true, label: 'Admin portal safety note' }),
+    ]));
+    return el('section', { class: 'page-section' }, children);
+  }
+
+  if (isAdminControlTab()) {
+    children.push(renderAdminControlPage());
+    children.push(el('div', { class: 'footer-note compact-help-row' }, [
+      el('span', { text: 'Policy changes use backend permissions and audit logs.' }),
+      renderInfoHint('Keep controls compact: list first, expand details only when needed, require reason for changes, and avoid exposing user financial content.', { compact: true, label: 'Admin control HCI and privacy note' }),
     ]));
     return el('section', { class: 'page-section' }, children);
   }
