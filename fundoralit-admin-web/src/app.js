@@ -770,14 +770,10 @@ function buildDefaultCloseMessage(kind, item) {
   const target = kind === 'rewardSurvey' ? 'feedback reward review' : 'feedback report';
   const issue = item.issue || item.futureUsageIntent || item.module || 'your submission';
   return [
-    `Hi,`,
+    `Case closed`,
     ``,
-    `Thank you for sharing ${target} with Fundoralit.`,
-    `We have reviewed and marked it as solved/closed.`,
+    `Thanks for sharing this ${target} with Fundoralit. We reviewed it and marked the case as closed.`,
     issue ? `Reference: ${issue}` : '',
-    ``,
-    `Best regards,`,
-    `Fundoralit Support`,
   ].filter(Boolean).join('\n');
 }
 
@@ -1496,12 +1492,30 @@ function getProviderActionStatus(item) {
 function getCreditStatusHint(item) {
   const providerStatus = getProviderActionStatus(item);
   if (providerStatus === 'GOOGLE_PLAY_DEFER_PENDING') return 'Google Play renewal extension is being processed. Do not tell the user it is completed yet.';
-  if (providerStatus === 'GOOGLE_PLAY_DEFER_APPLIED') return 'Google Play renewal date has been extended for this credit.';
-  if (providerStatus === 'GOOGLE_PLAY_DEFER_FAILED') return 'Google Play defer failed. Ask backend/support to check credential, purchase token, or retry later.';
-  if (item?.serviceCreditExpiresAt) return `Service credit expires ${formatDate(item.serviceCreditExpiresAt)}.`;
+  if (providerStatus === 'GOOGLE_PLAY_DEFER_APPLIED' || item?.serviceCreditExpiresAt) return 'Pro service credit has been applied. If Notify user in app is enabled, the user will see an in-app reward message.';
+  if (providerStatus === 'GOOGLE_PLAY_DEFER_FAILED') return 'Google Play defer failed. Do not send a completed reward message.';
   return 'No service credit action recorded yet.';
 }
 
+
+
+function firstMeaningfulValue(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue;
+    if (String(value).trim() === '') continue;
+    return value;
+  }
+  return '';
+}
+
+function getUserNotificationSnapshot(item = {}) {
+  return {
+    status: firstMeaningfulValue(item.userNotificationStatus, item.notificationStatus, item.latestUserNotificationStatus, item.lastNotifyStatus),
+    createdAt: firstMeaningfulValue(item.userNotificationCreatedAt, item.notificationCreatedAt, item.lastNotifiedAt),
+    readAt: firstMeaningfulValue(item.userNotificationReadAt, item.notificationReadAt),
+    dismissedAt: firstMeaningfulValue(item.userNotificationDismissedAt, item.notificationDismissedAt),
+  };
+}
 
 function feedbackHasUnresolvedCreditAction(item) {
   const status = String(item?.status || '').toUpperCase();
@@ -1519,30 +1533,48 @@ function feedbackHasUnresolvedCreditAction(item) {
 
 function buildReviewUserMessagePreview({ status, creditDays, serviceCreditExpiresAt, reviewReason }) {
   const normalized = String(status || 'REVIEWING').toUpperCase();
-  const reasonLine = reviewReason ? `\n\nReview note:\n${reviewReason}` : '';
+  const reasonLine = reviewReason ? `
+
+Review note: ${reviewReason}` : '';
   if (normalized === 'NEED_MORE_INFO') {
-    return `Hi,\n\nThank you for reporting this issue to Fundoralit. We need a little more information to continue checking it.\n\nIf it happens again, please send a screenshot, screen recording, or the steps before the issue happened.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+    return `We need a little more information
+
+Thanks for reporting this. Please send a screenshot, screen recording, or the steps before the issue happened so we can continue checking it.${reasonLine}`;
   }
   if (normalized === 'REJECTED_NOT_BUG') {
-    return `Hi,\n\nThank you for reporting this to us. After reviewing your report, we found that this behaviour is currently working as designed.\n\nWe understand it may feel confusing, so we will keep your feedback as a usability improvement reference for future updates.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+    return `Thanks for the feedback
+
+We reviewed your report and found the behaviour is currently working as designed. We’ll keep it as usability feedback for future improvements.${reasonLine}`;
   }
   if (normalized === 'REJECTED_NOT_REPRODUCIBLE') {
-    return `Hi,\n\nThank you for helping us check this issue. We reviewed your report, but we were not able to reproduce it with the information currently provided.\n\nIf the issue happens again, please send a screenshot, screen recording, or the steps before the error happened so we can investigate further.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+    return `Thanks for helping us check this issue
+
+We reviewed your report, but we were not able to reproduce it with the information currently provided. If the issue happens again, please send a screenshot, screen recording, or the steps before the error happened so we can investigate further.${reasonLine}`;
   }
   if (normalized === 'DUPLICATE') {
-    return `Hi,\n\nThank you for reporting this issue. We found that this issue has already been reported and is currently under review.\n\nYour report still helps us understand that more users are affected, so we have linked it to the existing issue record.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+    return `Thanks for reporting this issue
+
+We found this issue has already been reported and is currently under review. Your report still helps us understand that more users are affected.${reasonLine}`;
   }
   if (normalized === 'CREDIT_APPLIED' || normalized === 'CREDIT_GRANTED') {
-    const expiry = serviceCreditExpiresAt ? ` Your Pro service credit is valid until ${formatDate(serviceCreditExpiresAt)}.` : '';
-    return `Hi,\n\nThank you for reporting a verified issue in Fundoralit.\n\nAs appreciation for helping us improve the experience, we have added ${creditDays || 'extra'} Pro service credit day(s) to your account.${expiry}\n\nIf your subscription is managed by Google Play, the updated renewal date may take a short while to appear after backend verification.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+    const expiry = serviceCreditExpiresAt ? ` Your Pro access is valid until ${formatDate(serviceCreditExpiresAt)}.` : '';
+    return `Thank you for helping us improve Fundoralit
+
+We added ${creditDays || 'extra'} day(s) of Pro service credit as an appreciation gift.${expiry}${reasonLine}`;
   }
   if (normalized === 'VERIFIED' || normalized === 'CREDIT_ELIGIBLE') {
-    return `Hi,\n\nThank you for reporting this issue. We have verified that it is a real issue and our team will work on improving it.\n\nIf the issue is eligible, Pro service credit may be applied after the final admin check.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+    return `Thanks for reporting this issue
+
+We verified it and will use it to improve Fundoralit. If eligible, a Pro service credit may be applied after the final admin check.${reasonLine}`;
   }
   if (normalized === 'CLOSED') {
-    return `Hi,\n\nThank you for sharing this feedback with Fundoralit. We have reviewed and marked it as closed.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+    return `Thanks for sharing this feedback
+
+We reviewed it and marked the case as closed.${reasonLine}`;
   }
-  return `Hi,\n\nThank you for your report. Our team is reviewing it and will update the status after checking.${reasonLine}\n\nBest regards,\nFundoralit Support`;
+  return `Thanks for your report
+
+Our team is reviewing it and will update the status after checking.${reasonLine}`;
 }
 
 function openFeedbackReviewModal(item, presetStatus = null) {
@@ -1647,6 +1679,7 @@ function renderFeedbackItem(item) {
   const debugText = safeJson(item.debugJson);
   const suggestedCredit = getItemSuggestedCreditDays(item);
   const providerStatus = getProviderActionStatus(item);
+  const userNotification = getUserNotificationSnapshot(item);
   const canGrantCredit = isPositiveCreditStatus(status) && !isCreditApplied;
   const hasUnresolvedCreditAction = feedbackHasUnresolvedCreditAction(item);
   const statusHelper = STATUS_COPY[status]?.helper || '';
@@ -1677,6 +1710,8 @@ function renderFeedbackItem(item) {
         ['Eligible For Credit', item.eligibleForCredit === undefined ? '-' : (asBoolean(item.eligibleForCredit) ? 'Yes' : 'No')],
         ['Suggested Credit Days', item.suggestedCreditDays ?? suggestedCredit], ['Final Credit Days', item.finalCreditDays], ['Credit Policy', item.creditPolicy],
         ['Provider Action', providerStatus || '-'], ['Provider Error', item.providerActionError], ['Service Credit Expires', formatDate(item.serviceCreditExpiresAt)],
+        ['User Notification Status', userNotification.status], ['User Notification Created', formatDate(userNotification.createdAt)],
+        ['User Notification Read', formatDate(userNotification.readAt)], ['User Notification Dismissed', formatDate(userNotification.dismissedAt)],
         ['Review Reason', item.reviewReason], ['Review Evidence', item.reviewEvidence], ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
         ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
       ]),
@@ -1778,7 +1813,7 @@ function renderCloseModal() {
   const title = state.modal.title || 'Close item';
   const bodyText = el('textarea', {
     rows: '6',
-    placeholder: 'Optional. Add a personal update for the user. Leave empty to use the backend default email template only.',
+    placeholder: 'Optional. Add a personal update for the user. Leave empty to use the backend default in-app message only.',
   });
   bodyText.value = state.modal.adminReplyMessage || '';
   bodyText.addEventListener('input', () => { state.modal.adminReplyMessage = bodyText.value; });
@@ -1797,23 +1832,23 @@ function renderCloseModal() {
         el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
-        el('p', { class: 'muted', text: 'This action will mark the item as closed/solved. The backend should generate the safe default email format. Your message below is optional and will be included only if the backend supports it.' }),
+        el('p', { class: 'muted', text: 'This action will mark the item as closed/solved. When Notify user in app is enabled, the backend should generate a safe user-specific in-app message. Your message below is optional and will be included only if the backend supports it.' }),
         renderMetaGrid([
           ['Target ID', state.modal.id],
           ['User Email', state.modal.userEmail || 'Backend will resolve if available'],
-          ['Notify User', state.modal.notifyUser ? 'Yes' : 'No'],
+          ['Notify User In App', state.modal.notifyUser ? 'Yes' : 'No'],
         ]),
         el('div', { class: 'field' }, [
-          el('label', { text: 'Optional developer reply message' }),
+          el('label', { text: 'Optional in-app reply message' }),
           bodyText,
         ]),
         el('details', { class: 'default-preview' }, [
-          el('summary', { text: 'Default email preview' }),
+          el('summary', { text: 'Default in-app message preview' }),
           el('pre', { text: state.modal.defaultPreview || '' }),
         ]),
         el('label', { class: 'check-row' }, [
           notify,
-          el('span', { text: 'Notify user by email when backend email notification is enabled' }),
+          el('span', { text: 'Notify user in app' }),
         ]),
       ]),
       el('div', { class: 'modal-actions' }, [
@@ -1853,7 +1888,7 @@ function renderFeedbackReviewModal() {
   notify.checked = Boolean(modal.notifyUser);
   notify.addEventListener('change', () => { modal.notifyUser = notify.checked; });
 
-  const reason = el('textarea', { rows: '4', placeholder: 'Explain the decision in admin-friendly wording. This may be used by backend email template if supported.' });
+  const reason = el('textarea', { rows: '4', placeholder: 'Explain the decision in admin-friendly wording. This may be used by the backend in-app message if supported.' });
   reason.value = modal.reviewReason || '';
   reason.addEventListener('input', () => { modal.reviewReason = reason.value; });
   const evidence = el('textarea', { rows: '4', placeholder: 'Example: Reproduced on Android 14. Pro Analysis wrong month result with wallet filter enabled.' });
@@ -1896,8 +1931,9 @@ function renderFeedbackReviewModal() {
         ]),
         el('div', { class: 'field' }, [el('label', { text: 'Review reason' }), reason]),
         el('div', { class: 'field' }, [el('label', { text: 'Evidence / proof for audit' }), evidence]),
-        el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user with the matching status message' })]),
-        el('details', { class: 'default-preview' }, [el('summary', { text: 'User message preview' }), el('pre', { text: preview })]),
+        el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user in app' })]),
+        el('small', { class: 'field-help', text: 'Creates an in-app message shown when the user opens Fundoralit. No email/domain is required.' }),
+        el('details', { class: 'default-preview' }, [el('summary', { text: 'In-app message preview' }), el('pre', { text: preview })]),
       ]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
@@ -1911,7 +1947,7 @@ function renderFeedbackCreditModal() {
   const modal = state.modal;
   const daysInput = el('input', { type: 'number', min: '1', max: '14', step: '1', value: modal.creditDays || modal.suggestedCreditDays || 1 });
   daysInput.addEventListener('input', () => { modal.creditDays = Number(daysInput.value); });
-  const reason = el('textarea', { rows: '4', placeholder: 'Reason shown in audit/email, e.g. Verified Pro Analysis issue affecting paid feature.' });
+  const reason = el('textarea', { rows: '4', placeholder: 'Reason saved for audit and optional in-app reward message, e.g. Verified Pro Analysis issue affecting paid feature.' });
   reason.value = modal.reason || '';
   reason.addEventListener('input', () => { modal.reason = reason.value; });
   const notify = el('input', { type: 'checkbox' });
@@ -1934,7 +1970,7 @@ function renderFeedbackCreditModal() {
       el('div', { class: 'modal-body' }, [
         el('div', { class: 'compact-guidance warning' }, [
           el('strong', { text: 'Credit safety' }),
-          renderInfoHint('Backend will enforce eligibility, monthly cap, and Google Play defer result. If Google Play defer is pending, UI/email should say processing, not completed.', { compact: true, label: 'Credit safety details' }),
+          renderInfoHint('Backend will enforce eligibility, monthly cap, and Google Play defer result. If Google Play defer is pending, the app message should say the credit is being processed, not completed.', { compact: true, label: 'Credit safety details' }),
         ]),
         renderMetaGrid([
           ['Feedback ID', modal.id],
@@ -1944,8 +1980,10 @@ function renderFeedbackCreditModal() {
         ]),
         el('div', { class: 'field' }, [el('label', { text: 'Final credit days' }), daysInput, el('small', { class: 'field-help', text: 'Recommended: use backend suggestion unless there is a clear reason.' })]),
         el('div', { class: 'field' }, [el('label', { text: 'Credit reason' }), reason]),
-        el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user after backend confirms credit action' })]),
-        el('details', { class: 'default-preview' }, [el('summary', { text: 'Credit email/message preview' }), el('pre', { text: preview })]),
+        el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user in app' })]),
+        el('small', { class: 'field-help', text: 'When enabled, Fundoralit will show a user-specific in-app message after the backend confirms the reward status. It will not send email.' }),
+        el('small', { class: 'field-help warning-text', text: 'If Google Play defer is still pending, the app message should say the credit is being processed, not completed.' }),
+        el('details', { class: 'default-preview' }, [el('summary', { text: 'Credit in-app message preview' }), el('pre', { text: preview })]),
       ]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
