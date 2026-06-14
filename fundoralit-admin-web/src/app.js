@@ -69,6 +69,12 @@ const API_PATHS = {
     update: (id) => `/api/admin/announcements/${encodeURIComponent(id)}`,
     disable: (id) => `/api/admin/announcements/${encodeURIComponent(id)}/disable`,
   },
+  smartCaptureRules: {
+    candidates: '/api/admin/smart-capture/global-rules/candidates',
+    active: '/api/smart-capture/global-rules/active',
+    approve: (id) => `/api/admin/smart-capture/global-rules/candidates/${encodeURIComponent(id)}/approve`,
+    reject: (id) => `/api/admin/smart-capture/global-rules/candidates/${encodeURIComponent(id)}/reject`,
+  },
 };
 
 function toLocalDateString(date) {
@@ -343,6 +349,7 @@ const NAV_GROUPS = [
       { id: 'featureLimits', label: 'Feature Limits', helper: 'Quota policy', description: 'Control plan limits such as Smart Capture, OCR, presets, wallets, buckets, and group features.', info: 'Change limits carefully. These values affect what free and Pro users can do. Audit reasons are required for policy changes.' },
       { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
       { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app should keep local fallbacks if remote policy is unavailable.' },
+      { id: 'smartCaptureRules', label: 'Smart Capture Rules', helper: 'Manual approval', description: 'Review privacy-safe anonymous Smart Capture rule candidates before activation.', info: 'Only aggregate hashes and counters are shown. No notification text, skeleton text, merchant, payee, payer, counterparty, OCR content, or semantic vectors are stored here.' },
     ],
   },
   {
@@ -675,6 +682,16 @@ async function loadAdminControlData() {
       params: { policyKey: filters.featureKey },
     });
     state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    return;
+  }
+  if (state.activeTab === 'smartCaptureRules') {
+    const [pending, active] = await Promise.all([
+      api(API_PATHS.smartCaptureRules.candidates, { params: { status: 'PENDING' } }),
+      api(API_PATHS.smartCaptureRules.active),
+    ]);
+    const pendingItems = normalizeAdminListResponse(pending);
+    const activePayload = normalizeAdminObjectResponse(active);
+    state.data = { content: pendingItems, activeRules: activePayload.rules || [], page: 0, size: 500, totalElements: pendingItems.length, totalPages: 1 };
     return;
   }
   if (state.activeTab === 'announcements') {
@@ -1013,7 +1030,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['featureLimits', 'featureFlags', 'productPolicies', 'usage', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['featureLimits', 'featureFlags', 'productPolicies', 'smartCaptureRules', 'usage', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 
@@ -2425,6 +2442,69 @@ function renderAnnouncementLanguageBadges(item) {
   ]);
 }
 
+async function decideSmartCaptureCandidate(item, approve) {
+  if (!confirm(`${approve ? 'Approve' : 'Reject'} this global Smart Capture candidate?`)) return;
+  try {
+    state.loading = true;
+    render();
+    await api(
+      approve ? API_PATHS.smartCaptureRules.approve(item.id) : API_PATHS.smartCaptureRules.reject(item.id),
+      { method: 'POST', body: approve ? { rolloutPercentage: 100 } : {} }
+    );
+    setMessage(approve ? 'Global rule approved at 100% rollout.' : 'Candidate rejected for 30 days.');
+    await loadData();
+  } catch (error) {
+    setMessage(error.message || 'Unable to update Smart Capture candidate.', true);
+    state.loading = false;
+    render();
+  }
+}
+
+function renderSmartCaptureRuleCandidate(item) {
+  const distribution = (() => {
+    try { return JSON.parse(item.actionDistributionJson || '{}'); } catch (_) { return {}; }
+  })();
+  return renderCollapsibleItem({
+    title: item.plainSummary || item.ruleCategory || 'Smart Capture candidate',
+    subtitle: `${item.sourcePackageName || '-'} · ${item.patternHash || '-'}`,
+    statusNode: el('span', { class: 'badge warn', text: item.ruleCategory || 'PENDING' }),
+    children: [
+      renderMetaGrid([
+        ['Suggested action', item.suggestedAction],
+        ['Suggested type', item.suggestedFinalType || 'No type change'],
+        ['Samples', item.sampleCount],
+        ['Unique users', item.uniqueUserCount],
+        ['Modification rate', formatPercent(item.modificationRate)],
+        ['Estimated impact', item.estimatedImpact],
+        ['Created', formatDate(item.createdAt)],
+      ]),
+      el('details', { class: 'nested-details' }, [
+        el('summary', { text: 'Aggregate action distribution' }),
+        renderMetaGrid(Object.entries(distribution)),
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn primary small', text: 'Approve 100%', onclick: () => decideSmartCaptureCandidate(item, true) }),
+        el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideSmartCaptureCandidate(item, false) }),
+      ]),
+    ],
+  });
+}
+
+function renderSmartCaptureActiveRule(item) {
+  return renderCollapsibleItem({
+    title: `${item.ruleCategory || 'GLOBAL'} · ${item.finalType || item.action || 'REVIEW'}`,
+    subtitle: `${item.sourcePackageName || '-'} · ${item.patternHash || '-'}`,
+    statusNode: el('span', { class: 'badge success', text: item.status || 'ACTIVE' }),
+    children: [renderMetaGrid([
+      ['Rollout', `${item.rolloutPercentage ?? 100}%`],
+      ['Force review', item.forceReview ? 'Yes' : 'No'],
+      ['Quick action', item.allowQuickAction ? 'Allowed' : 'Disabled'],
+      ['Version', item.version],
+      ['Updated', formatDate(item.updatedAt)],
+    ])],
+  });
+}
+
 function renderAnnouncementItem(item) {
   const status = getAnnouncementStatus(item);
   const title = item.titleEn || item.title_en || item.title || 'Announcement';
@@ -2679,6 +2759,13 @@ function renderAdminControlPage() {
     children.push(renderProductPolicyToolbar());
     children.push(renderPolicyShortcutGrid());
     children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
+  } else if (state.activeTab === 'smartCaptureRules') {
+    children.push(renderAdminControlHero('Smart Capture Rules', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'Candidates contain package names, structural hashes, and aggregate counters only. Semantic fallback is local, same-package, review-only, and cannot reuse blocking rules.'));
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Approval is always manual. Personal exact learning remains higher priority than these global rules.'));
+    children.push(renderControlList(items, renderSmartCaptureRuleCandidate, 'No pending Smart Capture rule candidates.'));
+    children.push(el('h2', { text: 'Active rules' }));
+    children.push(renderControlList(state.data?.activeRules || [], renderSmartCaptureActiveRule, 'No active global Smart Capture rules.'));
   } else if (state.activeTab === 'usage') {
     children.push(renderAdminControlHero('Usage & Quota', 'Support lookup for user usage counters and idempotent save events.', 'Use this to debug OCR or Smart Capture quota issues. Adjustments require an audit reason and should be rare.'));
     children.push(renderUsageToolbar());
