@@ -2270,7 +2270,7 @@ h3 {
 
 .control-toolbar.control-toolbar-inline-single,
 .control-toolbar.control-toolbar-inline-double {
-  align-items: end;
+  align-items: start;
 }
 
 @media (min-width: 901px) {
@@ -2282,9 +2282,10 @@ h3 {
     grid-template-columns: minmax(240px, 1fr) minmax(180px, 220px) repeat(3, minmax(140px, auto));
   }
 
-  .control-toolbar.control-toolbar-inline-single .btn,
-  .control-toolbar.control-toolbar-inline-double .btn {
-    align-self: end;
+  .control-toolbar.control-toolbar-inline-single > .btn,
+  .control-toolbar.control-toolbar-inline-double > .btn {
+    align-self: start;
+    margin-top: 23px;
     white-space: nowrap;
   }
 }
@@ -2293,6 +2294,11 @@ h3 {
   .control-toolbar.control-toolbar-inline-single,
   .control-toolbar.control-toolbar-inline-double {
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+
+  .control-toolbar.control-toolbar-inline-single > .btn,
+  .control-toolbar.control-toolbar-inline-double > .btn {
+    margin-top: 0;
   }
 }
 
