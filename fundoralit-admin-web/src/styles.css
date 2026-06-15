@@ -2714,3 +2714,86 @@ body,
     border-right: 0;
   }
 }
+
+/* Fundoralit brand loading and header logo ------------------------------- */
+.app-header.topbar {
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+}
+
+.header-logo,
+.sidebar-logo,
+.loading-logo,
+.modal-loading-logo {
+  object-fit: contain;
+  display: block;
+}
+
+.header-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.16);
+  background: #06101b;
+}
+
+.sidebar-logo {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  background: #06101b;
+  box-shadow: 0 10px 22px rgba(15, 118, 110, 0.16);
+}
+
+.loading-state {
+  min-height: 190px;
+  align-content: center;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(15, 118, 110, 0.08), transparent 46%),
+    rgba(255, 255, 255, 0.76);
+}
+
+.loading-logo {
+  width: 94px;
+  height: 94px;
+  border-radius: 28px;
+  box-shadow: 0 18px 42px rgba(15, 118, 110, 0.18);
+  margin-bottom: 4px;
+}
+
+.loading-logo.muted-logo {
+  opacity: 0.72;
+  filter: saturate(0.8);
+}
+
+.modal-loading-alert {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-loading-logo {
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  box-shadow: 0 10px 22px rgba(15, 118, 110, 0.14);
+}
+
+.section-helper {
+  margin: -6px 0 4px;
+}
+
+@media (max-width: 720px) {
+  .app-header.topbar {
+    grid-template-columns: auto auto minmax(0, 1fr);
+  }
+
+  .header-logo {
+    width: 42px;
+    height: 42px;
+    border-radius: 14px;
+  }
+
+  .app-header .auth-box {
+    grid-column: 1 / -1;
+  }
+}

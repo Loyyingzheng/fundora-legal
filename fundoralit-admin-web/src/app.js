@@ -11,6 +11,7 @@ import {
 const config = window.FUNDORALIT_ADMIN_CONFIG || {};
 const coreApiBaseUrl = normalizeBaseUrl(config.coreApiBaseUrl || '');
 const firebaseConfig = config.firebase || {};
+const brandLogoSrc = config.brandLogoSrc || './src/assets/fundora-logo.png';
 
 // Centralized admin API path presets.
 // Keep all backend route links here so future backend changes only need one small update.
@@ -59,6 +60,7 @@ const API_PATHS = {
   },
   subscriptionSupport: {
     user: '/api/admin/subscription-support/users',
+    usersList: '/api/admin/subscription-support/users/list',
     requests: '/api/admin/subscription-support/requests',
     create: '/api/admin/subscription-support/requests',
     approve: (id) => `/api/admin/subscription-support/requests/${encodeURIComponent(id)}/approve`,
@@ -195,8 +197,16 @@ const state = {
   },
   analyticsLoading: false,
   analyticsError: '',
+  adminOptions: {
+    featureLimitKeys: [],
+    featureFlagKeys: [],
+    productPolicyKeys: [],
+  },
   adminFilters: {
     featureKey: '',
+    featureLimitKey: '',
+    featureFlagKey: '',
+    productPolicyKey: '',
     plan: '',
     userEmail: '',
     periodKey: '',
@@ -205,6 +215,8 @@ const state = {
     action: '',
     targetType: '',
     subscriptionRequestStatus: '',
+    subscriptionUserTier: '',
+    subscriptionUserStatus: '',
   },
   navOpen: false,
 };
@@ -227,6 +239,8 @@ const ADMIN_ENUMS = {
   announcementTargetPlans: ['ALL', 'FREE', 'PRO'],
   announcementTargetPlatforms: ['ALL', 'ANDROID', 'IOS', 'WEB'],
   subscriptionRequestStatuses: ['', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'APPLY_FAILED'],
+  subscriptionUserTiers: ['', 'FREE', 'PRO'],
+  subscriptionUserStatuses: ['', 'ACTIVE', 'TRIAL', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'CANCELLED', 'EXPIRED', 'EMPTY'],
   subscriptionRequestTypes: ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS', 'CORRECT_TO_PRO', 'CORRECT_TO_FREE'],
 };
 
@@ -333,9 +347,12 @@ function renderFieldError(fieldKey) {
 
 function renderModalNotice() {
   if (state.modal?.loading) {
-    return el('div', { class: 'modal-alert success', role: 'status', 'aria-live': 'polite' }, [
-      el('strong', { text: 'Saving changes...' }),
-      el('p', { text: 'Please wait until the backend confirms the update and the latest data reloads.' }),
+    return el('div', { class: 'modal-alert success modal-loading-alert', role: 'status', 'aria-live': 'polite' }, [
+      el('img', { class: 'modal-loading-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
+      el('div', {}, [
+        el('strong', { text: 'Saving changes...' }),
+        el('p', { text: 'Please wait until the backend confirms the update and the latest data reloads.' }),
+      ]),
     ]);
   }
   if (!state.modal?.error && !state.modal?.message) return null;
@@ -511,6 +528,24 @@ function setActiveTab(tabId) {
 
 function normalizeBaseUrl(url) {
   return String(url || '').replace(/\/+$/, '');
+}
+
+
+function uniqueSortedOptions(values = []) {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function includesFilter(value, filter) {
+  const cleanFilter = String(filter || '').trim().toLowerCase();
+  if (!cleanFilter) return true;
+  return String(value || '').toLowerCase().includes(cleanFilter);
+}
+
+function equalsFilter(value, filter) {
+  const cleanFilter = String(filter || '').trim().toLowerCase();
+  if (!cleanFilter) return true;
+  return String(value || '').trim().toLowerCase() === cleanFilter;
 }
 
 function el(tag, attrs = {}, children = []) {
@@ -764,24 +799,35 @@ async function loadAdminControlData() {
   const filters = state.adminFilters;
   let response;
   if (state.activeTab === 'featureLimits') {
-    response = await api(API_PATHS.featureLimits.list, {
-      params: { featureKey: filters.featureKey, plan: filters.plan },
+    response = await api(API_PATHS.featureLimits.list);
+    const allItems = normalizeAdminListResponse(response);
+    state.adminOptions.featureLimitKeys = uniqueSortedOptions(allItems.map((item) => item.featureKey || item.feature_key));
+    const filteredItems = allItems.filter((item) => {
+      const key = item.featureKey || item.feature_key;
+      const plan = item.plan || '';
+      return equalsFilter(key, filters.featureLimitKey) && equalsFilter(plan, filters.plan);
     });
-    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
     return;
   }
   if (state.activeTab === 'featureFlags') {
-    response = await api(API_PATHS.featureFlags.list, {
-      params: { flagKey: filters.featureKey, targetPlan: filters.plan },
+    response = await api(API_PATHS.featureFlags.list);
+    const allItems = normalizeAdminListResponse(response);
+    state.adminOptions.featureFlagKeys = uniqueSortedOptions(allItems.map((item) => item.flagKey || item.flag_key));
+    const filteredItems = allItems.filter((item) => {
+      const key = item.flagKey || item.flag_key;
+      const targetPlan = item.targetPlan || item.target_plan || '';
+      return equalsFilter(key, filters.featureFlagKey) && equalsFilter(targetPlan, filters.plan);
     });
-    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
     return;
   }
   if (state.activeTab === 'productPolicies') {
-    response = await api(API_PATHS.productPolicies.list, {
-      params: { policyKey: filters.featureKey },
-    });
-    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    response = await api(API_PATHS.productPolicies.list);
+    const allItems = normalizeAdminListResponse(response);
+    state.adminOptions.productPolicyKeys = uniqueSortedOptions(allItems.map((item) => item.policyKey || item.policy_key || getItemId(item)));
+    const filteredItems = allItems.filter((item) => equalsFilter(item.policyKey || item.policy_key || getItemId(item), filters.productPolicyKey));
+    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
     return;
   }
   if (state.activeTab === 'smartCaptureRules') {
@@ -817,19 +863,24 @@ async function loadAdminControlData() {
     return;
   }
   if (state.activeTab === 'subscriptionSupport') {
-    const [requests, user] = await Promise.all([
+    const [requests, users, user] = await Promise.all([
       api(API_PATHS.subscriptionSupport.requests, { params: { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail } }),
+      api(API_PATHS.subscriptionSupport.usersList, { params: { email: filters.userEmail, tier: filters.subscriptionUserTier, status: filters.subscriptionUserStatus } }),
       filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: error.message || 'User not found.' })) : Promise.resolve(null),
     ]);
     const requestPayload = normalizeAdminObjectResponse(requests);
+    const userPayload = normalizeAdminObjectResponse(users);
+    const requestItems = Array.isArray(requestPayload.items) ? requestPayload.items : normalizeAdminListResponse(requests);
+    const subscriptionUsers = Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users);
     state.data = {
-      content: Array.isArray(requestPayload.items) ? requestPayload.items : normalizeAdminListResponse(requests),
+      content: requestItems,
+      subscriptionUsers,
       userSummary: user && !user.lookupError ? normalizeAdminObjectResponse(user) : null,
       lookupError: user?.lookupError || '',
-      permissions: requestPayload.permissions || {},
+      permissions: requestPayload.permissions || userPayload.permissions || {},
       page: 0,
       size: 200,
-      totalElements: Array.isArray(requestPayload.items) ? requestPayload.items.length : normalizeAdminListResponse(requests).length,
+      totalElements: requestItems.length,
       totalPages: 1,
     };
     return;
@@ -1060,7 +1111,7 @@ function renderSidebar() {
     inert: state.navOpen ? null : '',
   }, [
     el('div', { class: 'sidebar-brand' }, [
-      el('span', { class: 'sidebar-logo', 'aria-hidden': 'true', text: 'F' }),
+      el('img', { class: 'sidebar-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
       el('div', {}, [
         el('strong', { text: 'Admin Control' }),
         el('span', { text: 'Fundoralit' }),
@@ -1426,9 +1477,18 @@ function renderAnalyticsBarList(title, items) {
 
 function renderAnalyticsEmptyState() {
   return el('div', { class: 'analytics-empty empty-state' }, [
-    el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }),
+    el('img', { class: 'loading-logo muted-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
     el('h3', { text: 'No analytics data available' }),
     el('p', { class: 'muted', text: 'No analytics data found for this date range. Try a wider date range or confirm mobile tracking is sending events.' }),
+  ]);
+}
+
+
+function renderLoadingState(title = 'Loading admin data...', message = 'Please wait while the latest records are being prepared.') {
+  return el('div', { class: 'card empty-state loading-state', role: 'status', 'aria-live': 'polite' }, [
+    el('img', { class: 'loading-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
+    el('strong', { text: title }),
+    el('p', { class: 'muted', text: message }),
   ]);
 }
 
@@ -1533,7 +1593,7 @@ function renderAnalyticsDashboard() {
 
   const anyData = Object.values(state.analyticsData).some((segment) => segment && (Array.isArray(segment) ? segment.length > 0 : Object.keys(segment).length > 0));
   if (state.analyticsLoading) {
-    return el('div', {}, [renderAnalyticsHero(), el('div', { class: 'card', text: 'Loading analytics data...' })]);
+    return el('div', {}, [renderAnalyticsHero(), renderLoadingState('Loading analytics data...', 'Please wait while all dashboard sections finish loading.')]);
   }
 
   if (!anyData) {
@@ -2211,13 +2271,13 @@ function renderControlToolbar(children) {
 }
 
 function renderFeatureLimitToolbar() {
-  const feature = el('input', { placeholder: 'Filter feature key', value: state.adminFilters.featureKey || '' });
-  feature.addEventListener('input', () => { state.adminFilters.featureKey = feature.value.trim(); });
+  const feature = select(['', ...(state.adminOptions.featureLimitKeys || [])], state.adminFilters.featureLimitKey || '', (value) => { state.adminFilters.featureLimitKey = value; });
   const plan = select(['', 'FREE', 'PRO'], state.adminFilters.plan, (value) => { state.adminFilters.plan = value; });
   return renderControlToolbar([
-    el('div', {}, [el('label', { text: 'Feature key' }), feature]),
+    el('div', {}, [el('label', { text: 'Feature key' }), feature, el('small', { class: 'field-help', text: 'Loaded from backend feature limit keys.' })]),
     el('div', {}, [el('label', { text: 'Plan' }), plan]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.featureLimitKey = ''; state.adminFilters.plan = ''; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
   ]);
 }
@@ -2283,13 +2343,13 @@ async function submitFeatureLimitModal() {
 }
 
 function renderFeatureFlagToolbar() {
-  const feature = el('input', { placeholder: 'Filter flag key', value: state.adminFilters.featureKey || '' });
-  feature.addEventListener('input', () => { state.adminFilters.featureKey = feature.value.trim(); });
-  const plan = select(['', 'FREE', 'PRO'], state.adminFilters.plan, (value) => { state.adminFilters.plan = value; });
+  const feature = select(['', ...(state.adminOptions.featureFlagKeys || [])], state.adminFilters.featureFlagKey || '', (value) => { state.adminFilters.featureFlagKey = value; });
+  const plan = select(['', 'ALL', 'FREE', 'PRO'], state.adminFilters.plan, (value) => { state.adminFilters.plan = value; });
   return renderControlToolbar([
-    el('div', {}, [el('label', { text: 'Flag key' }), feature]),
+    el('div', {}, [el('label', { text: 'Flag key' }), feature, el('small', { class: 'field-help', text: 'Loaded from backend feature flag keys.' })]),
     el('div', {}, [el('label', { text: 'Target plan' }), plan]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.featureFlagKey = ''; state.adminFilters.plan = ''; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
   ]);
 }
@@ -2356,11 +2416,11 @@ async function submitFeatureFlagModal() {
 }
 
 function renderProductPolicyToolbar() {
-  const policy = el('input', { placeholder: 'Filter policy key', value: state.adminFilters.featureKey || '' });
-  policy.addEventListener('input', () => { state.adminFilters.featureKey = policy.value.trim(); });
+  const policy = select(['', ...(state.adminOptions.productPolicyKeys || [])], state.adminFilters.productPolicyKey || '', (value) => { state.adminFilters.productPolicyKey = value; });
   return renderControlToolbar([
-    el('div', {}, [el('label', { text: 'Policy key' }), policy]),
+    el('div', {}, [el('label', { text: 'Policy key' }), policy, el('small', { class: 'field-help', text: 'Loaded from backend product policy keys.' })]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.productPolicyKey = ''; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
   ]);
 }
@@ -2492,13 +2552,60 @@ function normalizeSubscriptionRequestItem(item = {}) {
 function renderSubscriptionSupportToolbar() {
   const email = el('input', { placeholder: 'Search user email', value: state.adminFilters.userEmail || '' });
   email.addEventListener('input', () => { state.adminFilters.userEmail = email.value.trim(); });
-  const status = select(ADMIN_ENUMS.subscriptionRequestStatuses, state.adminFilters.subscriptionRequestStatus || '', (value) => { state.adminFilters.subscriptionRequestStatus = value; });
+  const tier = select(ADMIN_ENUMS.subscriptionUserTiers, state.adminFilters.subscriptionUserTier || '', (value) => { state.adminFilters.subscriptionUserTier = value; });
+  const userStatus = select(ADMIN_ENUMS.subscriptionUserStatuses, state.adminFilters.subscriptionUserStatus || '', (value) => { state.adminFilters.subscriptionUserStatus = value; });
+  const requestStatus = select(ADMIN_ENUMS.subscriptionRequestStatuses, state.adminFilters.subscriptionRequestStatus || '', (value) => { state.adminFilters.subscriptionRequestStatus = value; });
   return renderControlToolbar([
     el('div', {}, [el('label', { text: 'User email' }), email]),
-    el('div', {}, [el('label', { text: 'Request status' }), status]),
+    el('div', {}, [el('label', { text: 'User tier' }), tier]),
+    el('div', {}, [el('label', { text: 'User status' }), userStatus]),
+    el('div', {}, [el('label', { text: 'Request status' }), requestStatus]),
     el('button', { class: 'btn', text: 'Search', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
   ]);
+}
+
+
+function renderSubscriptionUserItem(summary) {
+  const permissions = state.data?.permissions || summary?.permissions || {};
+  const canRequest = permissions.supportAdmin !== false;
+  const status = String(summary?.status || 'UNKNOWN').toUpperCase();
+  const title = summary?.email || summary?.userId || 'Subscription user';
+  return renderCollapsibleItem({
+    title,
+    subtitle: `${summary?.tier || '-'} / ${summary?.status || '-'} · provider ${summary?.provider || '-'}`,
+    statusNode: el('span', { class: getStatusClass(status), text: status }),
+    children: [
+      renderMetaGrid([
+        ['User ID', summary?.userId], ['Email', summary?.email], ['Tier', summary?.tier], ['Status', summary?.status],
+        ['Billing Cycle', summary?.billingCycle], ['Provider', summary?.provider], ['Provider Customer', summary?.providerCustomerId],
+        ['Provider Entitlement', summary?.providerEntitlementId ? 'Stored' : '-'], ['Expires At', formatDate(summary?.expiresAt)], ['Updated', formatDate(summary?.updatedAt)],
+        ['Cancelled At', formatDate(summary?.cancelledAt)], ['Cancellation Effective', formatDate(summary?.cancellationEffectiveAt)],
+        ['Trial Used', summary?.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(summary?.trialExpiresAt)],
+        ['Feedback Trial Used', summary?.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(summary?.feedbackTrialExpiresAt)],
+      ]),
+      el('div', { class: 'actions' }, [
+        canRequest ? el('button', { class: 'btn secondary small', text: 'Request trial', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_TRIAL') }) : null,
+        canRequest ? el('button', { class: 'btn secondary small', text: 'Request compensation days', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_COMPENSATION_DAYS') }) : null,
+        canRequest ? el('button', { class: 'btn ghost small', text: 'Request apply Pro', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_PRO') }) : null,
+        canRequest ? el('button', { class: 'btn danger small', text: 'Request cancel / Free', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_FREE') }) : null,
+      ]),
+    ],
+  });
+}
+
+function renderSubscriptionUserList(users = []) {
+  if (state.loading && !users.length) {
+    return renderLoadingState('Loading subscription users...', 'Please wait while subscription users and support requests finish loading.');
+  }
+  if (!users.length) {
+    return el('div', { class: 'card empty-state compact-empty' }, [
+      el('img', { class: 'loading-logo muted-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
+      el('strong', { text: 'No subscription users found.' }),
+      el('p', { class: 'muted', text: 'Try clearing tier/status filters, or search by the exact email shown in the users table.' }),
+    ]);
+  }
+  return el('div', { class: 'list' }, users.map(renderSubscriptionUserItem));
 }
 
 function renderSubscriptionSupportSummary(summary, permissions = {}) {
@@ -3219,6 +3326,10 @@ function renderAdminControlPage() {
     ]));
     if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
     children.push(renderSubscriptionSupportSummary(state.data?.userSummary, state.data?.permissions || {}));
+    children.push(el('h2', { text: 'Subscription users' }));
+    children.push(el('p', { class: 'muted section-helper', text: 'This list reads users subscription fields directly. Support requests below are only approval records, so an active Pro user will not appear in requests until an admin creates a request.' }));
+    children.push(renderSubscriptionUserList(state.data?.subscriptionUsers || []));
+    children.push(el('h2', { text: 'Support requests' }));
     children.push(renderStats(items));
     children.push(renderControlList(items, renderSubscriptionSupportRequestItem, 'No subscription support requests found.'));
   } else if (state.activeTab === 'featureAnalytics') {
@@ -3241,7 +3352,7 @@ function renderAdminControlPage() {
   }
 
   if (state.loading && !items.length && state.activeTab !== 'featureAnalytics') {
-    children.push(el('div', { class: 'card empty-state' }, [el('strong', { text: 'Loading control data...' }), el('p', { class: 'muted', text: 'Please wait.' })]));
+    children.push(renderLoadingState('Loading control data...', 'Please wait until all required sections finish loading.'));
   }
 
   return el('div', { class: 'admin-control-page' }, children);
@@ -3269,7 +3380,7 @@ function renderPolicyShortcutGrid() {
 }
 
 function renderControlList(items, renderer, emptyText) {
-  if (state.loading && !items.length) return el('div', { class: 'card empty-state' }, [el('strong', { text: 'Loading...' })]);
+  if (state.loading && !items.length) return renderLoadingState('Loading admin data...', 'Please wait while the latest records are being prepared.');
   if (!items.length) return el('div', { class: 'card empty-state compact-empty' }, [el('strong', { text: emptyText || 'No records found.' })]);
   return el('div', { class: 'list' }, items.map(renderer));
 }
@@ -3390,7 +3501,7 @@ function renderSignedIn() {
   children.push(renderStats(items));
 
   if (state.loading && !items.length) {
-    children.push(el('div', { class: 'card empty-state' }, [el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }), el('strong', { text: 'Loading admin data...' }), el('p', { class: 'muted', text: 'Please wait while the latest records are being prepared.' })]));
+    children.push(renderLoadingState('Loading admin data...', 'Please wait while the latest records are being prepared.'));
   } else if (!items.length) {
     children.push(el('div', { class: 'card empty-state' }, [el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }), el('strong', { text: 'No records found.' }), el('p', { class: 'muted', text: 'Try another filter or refresh after new submissions are created.' })]));
   } else {
