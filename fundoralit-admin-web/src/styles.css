@@ -2267,6 +2267,35 @@ h3 {
   grid-column: span 2;
 }
 
+
+.control-toolbar.control-toolbar-inline-single,
+.control-toolbar.control-toolbar-inline-double {
+  align-items: end;
+}
+
+@media (min-width: 901px) {
+  .control-toolbar.control-toolbar-inline-single {
+    grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(140px, auto));
+  }
+
+  .control-toolbar.control-toolbar-inline-double {
+    grid-template-columns: minmax(240px, 1fr) minmax(180px, 220px) repeat(3, minmax(140px, auto));
+  }
+
+  .control-toolbar.control-toolbar-inline-single .btn,
+  .control-toolbar.control-toolbar-inline-double .btn {
+    align-self: end;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 900px) {
+  .control-toolbar.control-toolbar-inline-single,
+  .control-toolbar.control-toolbar-inline-double {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+}
+
 .stats-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }

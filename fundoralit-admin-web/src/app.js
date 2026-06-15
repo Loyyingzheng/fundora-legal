@@ -2266,8 +2266,9 @@ function renderAdminControlHero(title, subtitle, infoText, actions = []) {
   ]);
 }
 
-function renderControlToolbar(children) {
-  return el('div', { class: 'toolbar control-toolbar' }, children);
+function renderControlToolbar(children, extraClass = '') {
+  const className = ['toolbar', 'control-toolbar', extraClass].filter(Boolean).join(' ');
+  return el('div', { class: className }, children);
 }
 
 function renderFeatureLimitToolbar() {
@@ -2279,7 +2280,7 @@ function renderFeatureLimitToolbar() {
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.featureLimitKey = ''; state.adminFilters.plan = ''; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
-  ]);
+  ], 'control-toolbar-inline-double');
 }
 
 function renderFeatureLimitItem(item) {
@@ -2351,7 +2352,7 @@ function renderFeatureFlagToolbar() {
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.featureFlagKey = ''; state.adminFilters.plan = ''; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
-  ]);
+  ], 'control-toolbar-inline-double');
 }
 
 function renderFeatureFlagItem(item) {
@@ -2422,7 +2423,7 @@ function renderProductPolicyToolbar() {
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.productPolicyKey = ''; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
-  ]);
+  ], 'control-toolbar-inline-single');
 }
 
 function renderProductPolicyItem(item) {
