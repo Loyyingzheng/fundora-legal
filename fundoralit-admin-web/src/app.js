@@ -812,7 +812,7 @@ async function loadAdminControlData() {
   }
   if (state.activeTab === 'subscriptionSupport') {
     const [requests, user] = await Promise.all([
-      api(API_PATHS.subscriptionSupport.requests, { params: { status: filters.subscriptionRequestStatus } }),
+      api(API_PATHS.subscriptionSupport.requests, { params: { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail } }),
       filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: error.message || 'User not found.' })) : Promise.resolve(null),
     ]);
     const requestPayload = normalizeAdminObjectResponse(requests);
@@ -2432,6 +2432,57 @@ async function submitProductPolicyModal() {
 }
 
 
+
+function parseMaybeJsonObject(value) {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function firstPresent(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return '';
+}
+
+function normalizeSubscriptionRequestItem(item = {}) {
+  const before = parseMaybeJsonObject(item.beforeJson || item.before_json);
+  const after = parseMaybeJsonObject(item.afterJson || item.after_json);
+  const status = String(item.status || item.requestStatus || item.request_status || '').toUpperCase();
+  return {
+    id: item.id,
+    targetUserId: firstPresent(item.targetUserId, item.target_user_id, before.userId, after.userId),
+    targetUserEmail: firstPresent(item.targetUserEmail, item.target_user_email, before.email, after.email),
+    requestType: firstPresent(item.requestType, item.request_type, item.type, item.actionType, item.action_type),
+    status: status || 'PENDING',
+    currentTier: firstPresent(item.currentTier, item.current_tier, before.tier),
+    currentStatus: firstPresent(item.currentStatus, item.current_status, before.status),
+    currentBillingCycle: firstPresent(item.currentBillingCycle, item.current_billing_cycle, before.billingCycle),
+    currentExpiresAt: firstPresent(item.currentExpiresAt, item.current_expires_at, before.expiresAt),
+    requestedTier: firstPresent(item.requestedTier, item.requested_tier, after.tier),
+    requestedStatus: firstPresent(item.requestedStatus, item.requested_status, after.status),
+    requestedBillingCycle: firstPresent(item.requestedBillingCycle, item.requested_billing_cycle, after.billingCycle),
+    requestedExpiresAt: firstPresent(item.requestedExpiresAt, item.requested_expires_at, after.expiresAt),
+    requestedDays: firstPresent(item.requestedDays, item.requested_days),
+    requestedByEmail: firstPresent(item.requestedByEmail, item.requested_by_email),
+    requestedAt: firstPresent(item.requestedAt, item.requested_at),
+    reviewedByEmail: firstPresent(item.reviewedByEmail, item.reviewed_by_email),
+    reviewedAt: firstPresent(item.reviewedAt, item.reviewed_at),
+    applyStatus: firstPresent(item.applyStatus, item.apply_status),
+    reason: firstPresent(item.reason, item.requestReason, item.request_reason),
+    evidenceNote: firstPresent(item.evidenceNote, item.evidence_note),
+    beforeJson: item.beforeJson || item.before_json || before,
+    afterJson: item.afterJson || item.after_json || after,
+  };
+}
+
 function renderSubscriptionSupportToolbar() {
   const email = el('input', { placeholder: 'Search user email', value: state.adminFilters.userEmail || '' });
   email.addEventListener('input', () => { state.adminFilters.userEmail = email.value.trim(); });
@@ -2468,9 +2519,9 @@ function renderSubscriptionSupportSummary(summary, permissions = {}) {
     ]),
     el('div', { class: 'actions' }, [
       canRequest ? el('button', { class: 'btn secondary small', text: 'Request trial', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_TRIAL') }) : null,
-      canRequest ? el('button', { class: 'btn secondary small', text: 'Request compensation', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_COMPENSATION_DAYS') }) : null,
-      canRequest ? el('button', { class: 'btn ghost small', text: 'Correct to Pro', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_PRO') }) : null,
-      canRequest ? el('button', { class: 'btn danger small', text: 'Correct to Free', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_FREE') }) : null,
+      canRequest ? el('button', { class: 'btn secondary small', text: 'Request compensation days', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_COMPENSATION_DAYS') }) : null,
+      canRequest ? el('button', { class: 'btn ghost small', text: 'Request apply Pro', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_PRO') }) : null,
+      canRequest ? el('button', { class: 'btn danger small', text: 'Request cancel / Free', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_FREE') }) : null,
     ]),
   ]);
 }
@@ -2494,29 +2545,35 @@ function openSubscriptionSupportRequestModal(summary, requestType = 'GRANT_COMPE
 }
 
 function renderSubscriptionSupportRequestItem(item) {
-  const status = String(item.status || 'PENDING').toUpperCase();
+  const view = normalizeSubscriptionRequestItem(item);
+  const status = String(view.status || 'PENDING').toUpperCase();
   const permissions = state.data?.permissions || {};
   const canApprove = Boolean(permissions.approverAdmin) && status === 'PENDING';
-  const canCancel = Boolean(permissions.supportAdmin) && status === 'PENDING';
+  const canCancelRequest = Boolean(permissions.supportAdmin) && status === 'PENDING';
+  const titleLeft = view.requestType || 'Subscription support request';
+  const titleRight = view.targetUserEmail || view.targetUserId || 'Unknown user';
+  const hasUsefulDetail = Boolean(view.targetUserEmail || view.currentTier || view.requestedTier || view.reason || view.beforeJson || view.afterJson);
   return renderCollapsibleItem({
-    title: `${item.requestType || item.request_type || '-'} · ${item.targetUserEmail || item.target_user_email || '-'}`,
-    subtitle: `${item.currentTier || item.current_tier || '-'} → ${item.requestedTier || item.requested_tier || '-'} · requested by ${item.requestedByEmail || item.requested_by_email || '-'}`,
+    title: `${titleLeft} · ${titleRight}`,
+    subtitle: `${view.currentTier || '-'} → ${view.requestedTier || '-'} · requested by ${view.requestedByEmail || '-'}`,
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
+      !hasUsefulDetail ? el('div', { class: 'notice warning inline-notice', text: 'This request only returned an ID from the backend/old data. Create a new request from the user search card, or check the backend response shape for this row.' }) : null,
       renderMetaGrid([
-        ['Request ID', item.id], ['User ID', item.targetUserId || item.target_user_id], ['User Email', item.targetUserEmail || item.target_user_email],
-        ['Current Tier', item.currentTier || item.current_tier], ['Current Status', item.currentStatus || item.current_status], ['Current Expiry', formatDate(item.currentExpiresAt || item.current_expires_at)],
-        ['Requested Tier', item.requestedTier || item.requested_tier], ['Requested Status', item.requestedStatus || item.requested_status], ['Requested Billing', item.requestedBillingCycle || item.requested_billing_cycle],
-        ['Requested Expiry', formatDate(item.requestedExpiresAt || item.requested_expires_at)], ['Requested Days', item.requestedDays || item.requested_days],
-        ['Requested By', item.requestedByEmail || item.requested_by_email], ['Requested At', formatDate(item.requestedAt || item.requested_at)],
-        ['Reviewed By', item.reviewedByEmail || item.reviewed_by_email], ['Reviewed At', formatDate(item.reviewedAt || item.reviewed_at)], ['Apply Status', item.applyStatus || item.apply_status],
+        ['Request ID', view.id], ['User ID', view.targetUserId], ['User Email', view.targetUserEmail],
+        ['Current Tier', view.currentTier], ['Current Status', view.currentStatus], ['Current Billing', view.currentBillingCycle], ['Current Expiry', formatDate(view.currentExpiresAt)],
+        ['Requested Tier', view.requestedTier], ['Requested Status', view.requestedStatus], ['Requested Billing', view.requestedBillingCycle],
+        ['Requested Expiry', formatDate(view.requestedExpiresAt)], ['Requested Days', view.requestedDays],
+        ['Requested By', view.requestedByEmail], ['Requested At', formatDate(view.requestedAt)],
+        ['Reviewed By', view.reviewedByEmail], ['Reviewed At', formatDate(view.reviewedAt)], ['Apply Status', view.applyStatus],
       ]),
-      el('details', { class: 'nested-details' }, [el('summary', { text: 'Reason and evidence' }), el('p', { text: item.reason || '-' }), item.evidenceNote || item.evidence_note ? el('pre', { text: item.evidenceNote || item.evidence_note }) : null]),
-      el('details', { class: 'nested-details' }, [el('summary', { text: 'Before / after JSON' }), el('pre', { text: compactJson(item.beforeJson || item.before_json || {}) }), el('pre', { text: compactJson(item.afterJson || item.after_json || {}) })]),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Reason and evidence' }), el('p', { text: view.reason || '-' }), view.evidenceNote ? el('pre', { text: view.evidenceNote }) : null]),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Before / after JSON' }), el('pre', { text: compactJson(view.beforeJson || {}) }), el('pre', { text: compactJson(view.afterJson || {}) })]),
       el('div', { class: 'actions' }, [
-        canApprove ? el('button', { class: 'btn success small', text: 'Approve', onclick: () => openSubscriptionSupportReviewModal(item, 'approve') }) : null,
-        canApprove ? el('button', { class: 'btn danger small', text: 'Reject', onclick: () => openSubscriptionSupportReviewModal(item, 'reject') }) : null,
-        canCancel ? el('button', { class: 'btn ghost small', text: 'Cancel request', onclick: () => performPostAction(API_PATHS.subscriptionSupport.cancel(item.id), 'Subscription support request cancelled.') }) : null,
+        canApprove ? el('button', { class: 'btn success small', text: 'Approve & apply', onclick: () => openSubscriptionSupportReviewModal(item, 'approve') }) : null,
+        canApprove ? el('button', { class: 'btn danger small', text: 'Reject request', onclick: () => openSubscriptionSupportReviewModal(item, 'reject') }) : null,
+        canCancelRequest ? el('button', { class: 'btn ghost small', text: 'Cancel request', onclick: () => performPostAction(API_PATHS.subscriptionSupport.cancel(view.id), 'Subscription support request cancelled.') }) : null,
+        !canApprove && status === 'PENDING' ? el('span', { class: 'muted', text: permissions.approverAdmin ? '' : 'Only subscription approver can approve/apply.' }) : null,
       ]),
     ],
   });
@@ -2575,18 +2632,18 @@ function openSubscriptionSupportReviewModal(item, decision) {
 
 function renderSubscriptionSupportReviewModal() {
   const modal = state.modal;
-  const item = modal.item || {};
+  const item = normalizeSubscriptionRequestItem(modal.item || {});
   const note = el('textarea', { rows: '4', placeholder: modal.decision === 'reject' ? 'Required rejection note.' : 'Optional approval note.', 'data-field-key': 'reviewNote' });
   note.value = modal.reviewNote || ''; note.addEventListener('input', () => { modal.reviewNote = note.value; });
   return renderControlModal(modal.decision === 'approve' ? 'Approve subscription request' : 'Reject subscription request', 'Entitlement Approval', [
     renderPolicySafetyNote('Approve only after verifying payment/support evidence. This action is audited and requester cannot approve their own request.'),
     renderMetaGrid([
-      ['User Email', item.targetUserEmail || item.target_user_email], ['Request Type', item.requestType || item.request_type],
-      ['Current', `${item.currentTier || item.current_tier || '-'} / ${item.currentStatus || item.current_status || '-'}`],
-      ['Requested', `${item.requestedTier || item.requested_tier || '-'} / ${item.requestedStatus || item.requested_status || '-'}`],
-      ['Requested Expiry', formatDate(item.requestedExpiresAt || item.requested_expires_at)], ['Reason', item.reason],
+      ['User Email', item.targetUserEmail], ['Request Type', item.requestType],
+      ['Current', `${item.currentTier || '-'} / ${item.currentStatus || '-'}`],
+      ['Requested', `${item.requestedTier || '-'} / ${item.requestedStatus || '-'}`],
+      ['Requested Expiry', formatDate(item.requestedExpiresAt)], ['Reason', item.reason],
     ]),
-    el('details', { class: 'nested-details' }, [el('summary', { text: 'Before / after preview' }), el('pre', { text: compactJson(item.beforeJson || item.before_json || {}) }), el('pre', { text: compactJson(item.afterJson || item.after_json || {}) })]),
+    el('details', { class: 'nested-details' }, [el('summary', { text: 'Before / after preview' }), el('pre', { text: compactJson(item.beforeJson || {}) }), el('pre', { text: compactJson(item.afterJson || {}) })]),
     el('div', { class: modalFieldClass('reviewNote') }, [el('label', { text: 'Review note' }), note, renderFieldError('reviewNote')]),
   ], submitSubscriptionSupportReviewModal, true);
 }
@@ -3146,6 +3203,9 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'subscriptionSupport') {
     children.push(renderAdminControlHero('Subscription Support', 'Request and approve user entitlement corrections.', 'This page avoids direct one-person edits: support admins create requests, subscription approvers approve/reject, and every applied change is audited.'));
     children.push(renderSubscriptionSupportToolbar());
+    children.push(el('div', { class: 'privacy-note' }, [
+      el('span', { text: 'How to use: search user email → create request → approver opens pending request → Approve & apply. To cancel a user subscription, create “Request cancel / Free”; to cancel an unapproved request, use “Cancel request”.' }),
+    ]));
     if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
     children.push(renderSubscriptionSupportSummary(state.data?.userSummary, state.data?.permissions || {}));
     children.push(renderStats(items));
