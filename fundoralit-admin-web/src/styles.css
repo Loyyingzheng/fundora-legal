@@ -2617,3 +2617,100 @@ body,
     --page-content-gutter: 10px;
   }
 }
+
+/* Admin feedback containment refinement ------------------------------------
+   Modal errors stay inside the modal, field validation is visible beside the
+   field, and modal content scrolls without hiding the header or actions. */
+.modal-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--card);
+}
+
+.modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.modal-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--card);
+}
+
+.modal-alert {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  line-height: 1.45;
+}
+
+.modal-alert strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.modal-alert p {
+  margin: 0;
+}
+
+.modal-alert.error {
+  border: 1px solid #fecaca;
+  background: var(--danger-soft);
+  color: #991b1b;
+}
+
+.modal-alert.success {
+  border: 1px solid #bbf7d0;
+  background: var(--success-soft);
+  color: #166534;
+}
+
+.field.invalid input,
+.field.invalid select,
+.field.invalid textarea {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.12);
+}
+
+.field-error {
+  display: block;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.4;
+}
+
+.info-hint[open] {
+  z-index: 1200;
+}
+
+.modal-card .info-popover {
+  max-width: min(340px, calc(100vw - 56px));
+}
+
+@media (max-width: 760px) {
+  .modal-backdrop {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .modal-card,
+  .modal-card-wide {
+    width: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+}

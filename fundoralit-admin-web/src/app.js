@@ -244,10 +244,91 @@ function blankToNull(value) {
   return text ? text : null;
 }
 
-function validationError(message) {
-  setMessage(message, true);
+function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong. Please try again.') {
+  const status = Number(errorOrMessage?.status || 0);
+  const payload = errorOrMessage?.payload || {};
+  const rawMessage = normalizedTrim(
+    payload.message
+    || payload.error
+    || payload.code
+    || errorOrMessage?.message
+    || errorOrMessage
+    || fallback
+  );
+
+  if (status === 401) return 'Your admin session has expired. Please sign in again before continuing.';
+  if (status === 403) return 'You do not have permission to perform this admin action. Please check whether this account is allowed by the backend admin permission list.';
+  if (status === 404) return 'The selected record could not be found. Please refresh the page and check whether it was already changed or removed.';
+  if (status === 409) return 'This record was changed by another admin or by the backend. Please refresh the latest data before saving again.';
+  if (status === 429) return 'Too many admin requests were sent in a short time. Please wait a moment, then try again.';
+  if (status >= 500) return 'The backend service failed while processing this admin action. Please retry after the service is healthy, or check the backend logs.';
+
+  if (/request failed \(400\)/i.test(rawMessage)) return 'The backend rejected this request because one or more values are invalid. Please check the highlighted fields and try again.';
+  if (/request failed/i.test(rawMessage)) return 'The request could not be completed. Please check the form values and try again.';
+  if (/invalid json/i.test(rawMessage)) return rawMessage.replace(/^Invalid JSON:/i, 'Policy JSON is not valid:');
+  return rawMessage || fallback;
+}
+
+function clearModalFeedback() {
+  if (!state.modal) return;
+  state.modal.error = '';
+  state.modal.message = '';
+  state.modal.fieldErrors = {};
+  state.modal.focusFieldKey = '';
+}
+
+function setModalError(message, fieldKey = '') {
+  if (!state.modal) {
+    setMessage(message, true);
+    return;
+  }
+  const friendlyMessage = toFriendlyErrorMessage(message);
+  state.modal.error = friendlyMessage;
+  state.modal.message = '';
+  state.modal.fieldErrors = fieldKey ? { [fieldKey]: friendlyMessage } : {};
+  state.modal.focusFieldKey = fieldKey || '';
+  render();
+  if (fieldKey) {
+    window.setTimeout(() => {
+      const input = document.querySelector(`[data-field-key="${CSS.escape(fieldKey)}"]`);
+      if (input && typeof input.focus === 'function') input.focus();
+    }, 0);
+  }
+}
+
+function validationError(message, fieldKey = '') {
+  if (state.modal) {
+    setModalError(message, fieldKey);
+    return false;
+  }
+  setMessage(toFriendlyErrorMessage(message), true);
   render();
   return false;
+}
+
+function getModalFieldError(fieldKey) {
+  return fieldKey && state.modal?.fieldErrors ? state.modal.fieldErrors[fieldKey] || '' : '';
+}
+
+function modalFieldClass(fieldKey) {
+  return `field ${getModalFieldError(fieldKey) ? 'invalid' : ''}`.trim();
+}
+
+function renderFieldError(fieldKey) {
+  const message = getModalFieldError(fieldKey);
+  return message ? el('small', { class: 'field-error', text: message }) : null;
+}
+
+function renderModalNotice() {
+  if (!state.modal?.error && !state.modal?.message) return null;
+  const isError = Boolean(state.modal.error);
+  return el('div', {
+    class: `modal-alert ${isError ? 'error' : 'success'}`,
+    role: isError ? 'alert' : 'status',
+  }, [
+    el('strong', { text: isError ? 'Cannot complete this action' : 'Action completed' }),
+    el('p', { text: state.modal.error || state.modal.message }),
+  ]);
 }
 
 function requireAuditReason(reason, actionLabel = 'this admin change') {
@@ -541,7 +622,7 @@ async function api(path, options = {}) {
 
 function setMessage(message, isError = false) {
   state.message = isError ? '' : message;
-  state.error = isError ? message : '';
+  state.error = isError ? toFriendlyErrorMessage(message) : '';
 }
 
 async function loadData() {
@@ -738,8 +819,16 @@ async function patchAction(path, successMessage, body) {
 }
 
 async function performPatchAction(path, successMessage, body) {
-  state.loading = true;
-  state.error = '';
+  const modalRequest = Boolean(state.modal);
+  if (modalRequest) {
+    state.modal.loading = true;
+    state.modal.error = '';
+    state.modal.message = '';
+    state.modal.fieldErrors = {};
+  } else {
+    state.loading = true;
+    state.error = '';
+  }
   render();
   try {
     await api(path, { method: 'PATCH', ...(body !== undefined ? { body } : {}) });
@@ -747,9 +836,14 @@ async function performPatchAction(path, successMessage, body) {
     state.modal = null;
     await loadData();
   } catch (error) {
-    setMessage(error.message || 'Admin action failed.', true);
-    state.loading = false;
-    render();
+    if (modalRequest && state.modal) {
+      state.modal.loading = false;
+      setModalError(error, '');
+    } else {
+      setMessage(error, true);
+      state.loading = false;
+      render();
+    }
   }
 }
 
@@ -1034,12 +1128,25 @@ function isAdminControlTab(tab = state.activeTab) {
 }
 
 
+function closeOtherInfoHints(current) {
+  document.querySelectorAll('.info-hint[open]').forEach((node) => {
+    if (node !== current) node.open = false;
+  });
+}
+
+function closeAllInfoHints() {
+  document.querySelectorAll('.info-hint[open]').forEach((node) => { node.open = false; });
+}
+
 function renderInfoHint(text, options = {}) {
   const cleanText = String(text || '').trim();
   if (!cleanText) return null;
   const label = options.label || 'More information';
   const title = options.title || '';
-  return el('details', { class: `info-hint ${options.compact ? 'compact' : ''}`.trim() }, [
+  return el('details', {
+    class: `info-hint ${options.compact ? 'compact' : ''}`.trim(),
+    ontoggle: (event) => { if (event.currentTarget.open) closeOtherInfoHints(event.currentTarget); },
+  }, [
     el('summary', { 'aria-label': label, title: label }, [
       el('span', { class: 'info-icon', 'aria-hidden': 'true', text: 'i' }),
     ]),
@@ -1640,13 +1747,9 @@ function buildCreditReason(item) {
 async function submitFeedbackReviewModal() {
   if (!state.modal?.id) return;
   const status = String(state.modal.status || '').toUpperCase();
-  if (!status) {
-    setMessage('Please select a review status.', true);
-    return;
-  }
+  if (!status) return validationError('Please select a review status.', 'reviewStatus');
   if (['VERIFIED', 'CREDIT_ELIGIBLE', 'CREDIT_GRANTED', 'CREDIT_APPLIED'].includes(status) && !state.modal.reviewEvidence.trim()) {
-    setMessage('Please add review evidence before verifying an issue.', true);
-    return;
+    return validationError('Please add review evidence before verifying an issue.', 'reviewEvidence');
   }
   const body = {
     status,
@@ -1663,18 +1766,21 @@ async function submitFeedbackReviewModal() {
 async function submitFeedbackCreditModal() {
   if (!state.modal?.id) return;
   const creditDays = Number(state.modal.creditDays);
-  if (!Number.isFinite(creditDays) || creditDays < 1) {
-    setMessage('Credit days must be at least 1.', true);
-    return;
-  }
+  if (!Number.isFinite(creditDays) || creditDays < 1) return validationError('Credit days must be at least 1.', 'creditDays');
   if (creditDays > 14 && !confirm('Credit is above 14 days. Continue only if backend policy allows this.')) return;
   const body = {
     creditDays,
     reason: String(state.modal.reason || '').trim() || buildCreditReason(state.modal.item || {}),
     notifyUser: Boolean(state.modal.notifyUser),
   };
-  state.loading = true;
-  state.error = '';
+  if (state.modal) {
+    state.modal.loading = true;
+    state.modal.error = '';
+    state.modal.fieldErrors = {};
+  } else {
+    state.loading = true;
+    state.error = '';
+  }
   render();
   try {
     await api(API_PATHS.feedback.serviceCredit(state.modal.id), { method: 'POST', body });
@@ -1682,9 +1788,14 @@ async function submitFeedbackCreditModal() {
     state.modal = null;
     await loadData();
   } catch (error) {
-    setMessage(error.message || 'Failed to grant service credit.', true);
-    state.loading = false;
-    render();
+    if (state.modal) {
+      state.modal.loading = false;
+      setModalError(error, '');
+    } else {
+      setMessage(error, true);
+      state.loading = false;
+      render();
+    }
   }
 }
 
@@ -1849,6 +1960,7 @@ function renderCloseModal() {
         el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
+        renderModalNotice(),
         el('p', { class: 'muted', text: 'This action will mark the item as closed/solved. When Notify user in app is enabled, the backend should generate a safe user-specific in-app message. Your message below is optional and will be included only if the backend supports it.' }),
         renderMetaGrid([
           ['Target ID', state.modal.id],
@@ -1870,7 +1982,7 @@ function renderCloseModal() {
       ]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
-        el('button', { class: 'btn danger', text: state.loading ? 'Closing...' : 'Close / Solve', disabled: state.loading, onclick: submitCloseModal }),
+        el('button', { class: 'btn danger', text: (state.modal?.loading || state.loading) ? 'Closing...' : 'Close / Solve', disabled: state.modal?.loading || state.loading, onclick: submitCloseModal }),
       ]),
     ]),
   ]);
@@ -1883,6 +1995,7 @@ function renderFeedbackReviewModal() {
     modal.suggestedCreditDays = calculateSuggestedCreditDays({ type: modal.item?.type, status: value, bugLevel: modal.bugLevel, affectsProFeature: modal.affectsProFeature });
     render();
   });
+  statusSelect.setAttribute('data-field-key', 'reviewStatus');
   const levelSelect = select(BUG_LEVEL_OPTIONS, modal.bugLevel, (value) => {
     modal.bugLevel = value;
     modal.suggestedCreditDays = calculateSuggestedCreditDays({ type: modal.item?.type, status: modal.status, bugLevel: value, affectsProFeature: modal.affectsProFeature });
@@ -1905,10 +2018,10 @@ function renderFeedbackReviewModal() {
   notify.checked = Boolean(modal.notifyUser);
   notify.addEventListener('change', () => { modal.notifyUser = notify.checked; });
 
-  const reason = el('textarea', { rows: '4', placeholder: 'Explain the decision in admin-friendly wording. This may be used by the backend in-app message if supported.' });
+  const reason = el('textarea', { rows: '4', placeholder: 'Explain the decision in admin-friendly wording. This may be used by the backend in-app message if supported.', 'data-field-key': 'reviewReason' });
   reason.value = modal.reviewReason || '';
   reason.addEventListener('input', () => { modal.reviewReason = reason.value; });
-  const evidence = el('textarea', { rows: '4', placeholder: 'Example: Reproduced on Android 14. Pro Analysis wrong month result with wallet filter enabled.' });
+  const evidence = el('textarea', { rows: '4', placeholder: 'Example: Reproduced on Android 14. Pro Analysis wrong month result with wallet filter enabled.', 'data-field-key': 'reviewEvidence' });
   evidence.value = modal.reviewEvidence || '';
   evidence.addEventListener('input', () => { modal.reviewEvidence = evidence.value; });
 
@@ -1925,6 +2038,7 @@ function renderFeedbackReviewModal() {
         el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
+        renderModalNotice(),
         el('div', { class: 'compact-guidance' }, [
           el('strong', { text: 'Review policy' }),
           renderInfoHint('Use status code + bug level. Backend will send the correct friendly message for each status. For verified non-Pro feature bugs, the suggested credit is still 1 day as appreciation.', { compact: true, label: 'Review policy details' }),
@@ -1936,7 +2050,7 @@ function renderFeedbackReviewModal() {
           ['Module', modal.item?.module],
         ]),
         el('div', { class: 'form-grid two' }, [
-          el('div', { class: 'field' }, [el('label', { text: 'Review status' }), statusSelect, el('small', { class: 'field-help', text: STATUS_COPY[modal.status]?.helper || '' })]),
+          el('div', { class: modalFieldClass('reviewStatus') }, [el('label', { text: 'Review status' }), statusSelect, renderFieldError('reviewStatus'), el('small', { class: 'field-help', text: STATUS_COPY[modal.status]?.helper || '' })]),
           el('div', { class: 'field' }, [el('label', { text: 'Bug level' }), levelSelect, el('small', { class: 'field-help', text: 'Used by backend policy to suggest compensation.' })]),
           el('div', { class: 'field' }, [el('label', { text: 'Affected area' }), areaSelect]),
           el('label', { class: 'check-row' }, [affectsPro, el('span', { text: 'Affects Pro feature / paid entitlement' })]),
@@ -1946,15 +2060,15 @@ function renderFeedbackReviewModal() {
           el('strong', { text: `${modal.suggestedCreditDays || 0} day(s)` }),
           el('p', { text: modal.suggestedCreditDays ? 'Final eligibility and monthly cap are still enforced by backend.' : 'No service credit suggested for this decision.' }),
         ]),
-        el('div', { class: 'field' }, [el('label', { text: 'Review reason' }), reason]),
-        el('div', { class: 'field' }, [el('label', { text: 'Evidence / proof for audit' }), evidence]),
+        el('div', { class: modalFieldClass('reviewReason') }, [el('label', { text: 'Review reason' }), reason, renderFieldError('reviewReason')]),
+        el('div', { class: modalFieldClass('reviewEvidence') }, [el('label', { text: 'Evidence / proof for audit' }), evidence, renderFieldError('reviewEvidence')]),
         el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user in app' })]),
         el('small', { class: 'field-help', text: 'Creates an in-app message shown when the user opens Fundoralit. No email/domain is required.' }),
         el('details', { class: 'default-preview' }, [el('summary', { text: 'In-app message preview' }), el('pre', { text: preview })]),
       ]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
-        el('button', { class: 'btn', text: state.loading ? 'Saving...' : 'Save review', disabled: state.loading, onclick: submitFeedbackReviewModal }),
+        el('button', { class: 'btn', text: (state.modal?.loading || state.loading) ? 'Saving...' : 'Save review', disabled: state.modal?.loading || state.loading, onclick: submitFeedbackReviewModal }),
       ]),
     ]),
   ]);
@@ -1962,7 +2076,7 @@ function renderFeedbackReviewModal() {
 
 function renderFeedbackCreditModal() {
   const modal = state.modal;
-  const daysInput = el('input', { type: 'number', min: '1', max: '14', step: '1', value: modal.creditDays || modal.suggestedCreditDays || 1 });
+  const daysInput = el('input', { type: 'number', min: '1', max: '14', step: '1', value: modal.creditDays || modal.suggestedCreditDays || 1, 'data-field-key': 'creditDays' });
   daysInput.addEventListener('input', () => { modal.creditDays = Number(daysInput.value); });
   const reason = el('textarea', { rows: '4', placeholder: 'Reason saved for audit and optional in-app reward message, e.g. Verified Pro Analysis issue affecting paid feature.' });
   reason.value = modal.reason || '';
@@ -1985,6 +2099,7 @@ function renderFeedbackCreditModal() {
         el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
+        renderModalNotice(),
         el('div', { class: 'compact-guidance warning' }, [
           el('strong', { text: 'Credit safety' }),
           renderInfoHint('Backend will enforce eligibility, monthly cap, and Google Play defer result. If Google Play defer is pending, the app message should say the credit is being processed, not completed.', { compact: true, label: 'Credit safety details' }),
@@ -1995,7 +2110,7 @@ function renderFeedbackCreditModal() {
           ['Suggested Days', modal.suggestedCreditDays],
           ['Current Provider Status', providerStatus || 'Not requested yet'],
         ]),
-        el('div', { class: 'field' }, [el('label', { text: 'Final credit days' }), daysInput, el('small', { class: 'field-help', text: 'Recommended: use backend suggestion unless there is a clear reason.' })]),
+        el('div', { class: modalFieldClass('creditDays') }, [el('label', { text: 'Final credit days' }), daysInput, renderFieldError('creditDays'), el('small', { class: 'field-help', text: 'Recommended: use backend suggestion unless there is a clear reason.' })]),
         el('div', { class: 'field' }, [el('label', { text: 'Credit reason' }), reason]),
         el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user in app' })]),
         el('small', { class: 'field-help', text: 'When enabled, Fundoralit will show a user-specific in-app message after the backend confirms the reward status. It will not send email.' }),
@@ -2004,7 +2119,7 @@ function renderFeedbackCreditModal() {
       ]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
-        el('button', { class: 'btn secondary', text: state.loading ? 'Granting...' : 'Grant credit', disabled: state.loading, onclick: submitFeedbackCreditModal }),
+        el('button', { class: 'btn secondary', text: (state.modal?.loading || state.loading) ? 'Granting...' : 'Grant credit', disabled: state.modal?.loading || state.loading, onclick: submitFeedbackCreditModal }),
       ]),
     ]),
   ]);
@@ -2081,13 +2196,13 @@ function openFeatureLimitModal(item) {
 async function submitFeatureLimitModal() {
   const modal = state.modal;
   const limit = parseWholeNumber(modal.limitCount, 'Limit count', { allowEmpty: true, min: 0, max: ADMIN_LIMITS.featureLimitMax });
-  if (!limit.ok) return validationError(limit.message);
+  if (!limit.ok) return validationError(limit.message, 'limitCount');
   const period = requireOneOf(modal.periodType || 'NONE', ADMIN_ENUMS.featureLimitPeriods, 'Period type');
-  if (!period.ok) return validationError(period.message);
+  if (!period.ok) return validationError(period.message, 'periodType');
   const description = requireMaxLength(modal.description, 'Description', ADMIN_LIMITS.descriptionMax);
-  if (!description.ok) return validationError(description.message);
+  if (!description.ok) return validationError(description.message, 'description');
   const reason = requireAuditReason(modal.reason, 'this feature limit update');
-  if (!reason.ok) return validationError(reason.message);
+  if (!reason.ok) return validationError(reason.message, 'reason');
 
   await performPatchAction(API_PATHS.featureLimits.update(modal.id), 'Feature limit updated.', {
     limitCount: limit.value,
@@ -2151,15 +2266,15 @@ function openFeatureFlagModal(item) {
 async function submitFeatureFlagModal() {
   const modal = state.modal;
   const rollout = parseWholeNumber(modal.rolloutPercentage, 'Rollout percentage', { min: 0, max: 100 });
-  if (!rollout.ok) return validationError(rollout.message);
+  if (!rollout.ok) return validationError(rollout.message, 'rolloutPercentage');
   const targetPlan = requireOneOf(modal.targetPlan || '', ADMIN_ENUMS.featureFlagTargetPlans, 'Target plan', { allowEmpty: true });
-  if (!targetPlan.ok) return validationError(targetPlan.message);
+  if (!targetPlan.ok) return validationError(targetPlan.message, 'targetPlan');
   const minVersion = validateVersionText(modal.minAppVersion, 'Min app version');
-  if (!minVersion.ok) return validationError(minVersion.message);
+  if (!minVersion.ok) return validationError(minVersion.message, 'minAppVersion');
   const description = requireMaxLength(modal.description, 'Description', ADMIN_LIMITS.descriptionMax);
-  if (!description.ok) return validationError(description.message);
+  if (!description.ok) return validationError(description.message, 'description');
   const reason = requireAuditReason(modal.reason, 'this feature flag update');
-  if (!reason.ok) return validationError(reason.message);
+  if (!reason.ok) return validationError(reason.message, 'reason');
 
   await performPatchAction(API_PATHS.featureFlags.update(modal.id), 'Feature flag updated.', {
     enabled: Boolean(modal.enabled),
@@ -2233,16 +2348,16 @@ function openProductPolicyModal(item) {
 async function submitProductPolicyModal() {
   const modal = state.modal;
   const jsonText = normalizedTrim(modal.valueJson || '{}');
-  if (jsonText.length > ADMIN_LIMITS.productPolicyJsonMax) return validationError(`Policy JSON must be ${ADMIN_LIMITS.productPolicyJsonMax} characters or less.`);
+  if (jsonText.length > ADMIN_LIMITS.productPolicyJsonMax) return validationError(`Policy JSON must be ${ADMIN_LIMITS.productPolicyJsonMax} characters or less.`, 'valueJson');
   let valueJson;
-  try { valueJson = parseJsonInput(jsonText, {}); } catch (error) { return validationError(`Invalid JSON: ${error.message}`); }
-  if (!valueJson || typeof valueJson !== 'object' || Array.isArray(valueJson)) return validationError('Policy JSON must be a JSON object.');
+  try { valueJson = parseJsonInput(jsonText, {}); } catch (error) { return validationError(`Invalid JSON: ${error.message}`, 'valueJson'); }
+  if (!valueJson || typeof valueJson !== 'object' || Array.isArray(valueJson)) return validationError('Policy JSON must be a JSON object.', 'valueJson');
   const platform = requireOneOf(modal.platform || '', ADMIN_ENUMS.productPolicyPlatforms, 'Platform', { allowEmpty: true });
-  if (!platform.ok) return validationError(platform.message);
+  if (!platform.ok) return validationError(platform.message, 'platform');
   const minVersion = validateVersionText(modal.minAppVersion, 'Min app version');
-  if (!minVersion.ok) return validationError(minVersion.message);
+  if (!minVersion.ok) return validationError(minVersion.message, 'minAppVersion');
   const reason = requireAuditReason(modal.reason, 'this product policy update');
-  if (!reason.ok) return validationError(reason.message);
+  if (!reason.ok) return validationError(reason.message, 'reason');
 
   await performPatchAction(API_PATHS.productPolicies.update(modal.id), 'Product policy updated.', {
     enabled: Boolean(modal.enabled),
@@ -2280,7 +2395,8 @@ function renderUsageItem(item) {
     statusNode: el('span', { class: `badge ${unlimited || Number(remaining) > 0 ? 'success' : 'danger'}`, text: unlimited ? 'Unlimited' : `${remaining} left` }),
     children: [
       renderMetaGrid([
-        ['User Email', item.userEmail || item.user_email], ['User ID', item.userId || item.user_id], ['Feature', item.featureKey || item.feature_key],
+        ['User Email', item.userEmail || item.user_email], ['User ID', item.userId || item.user_id],
+        ['Plan', item.subscriptionTier || item.subscription_tier || '-'], ['Feature', item.featureKey || item.feature_key],
         ['Period', item.periodKey || item.period_key], ['Used', used], ['Limit', unlimited ? 'Unlimited' : limit], ['Remaining', remaining], ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
       el('div', { class: 'actions' }, [el('button', { class: 'btn ghost small', text: 'Adjust usage', onclick: () => openUsageAdjustModal(item) })]),
@@ -2306,14 +2422,22 @@ function openUsageAdjustModal(item) {
 async function submitUsageAdjustModal() {
   const modal = state.modal;
   const newUsed = parseWholeNumber(modal.newUsedCount, 'New used count', { min: 0, max: ADMIN_LIMITS.usageCountMax });
-  if (!newUsed.ok) return validationError(newUsed.message);
-  if (!normalizedTrim(modal.userEmail) && !normalizedTrim(modal.userId)) return validationError('User email or user ID is required for a usage adjustment.');
-  if (!normalizedTrim(modal.featureKey)) return validationError('Feature key is required for a usage adjustment.');
-  if (!normalizedTrim(modal.periodKey)) return validationError('Period key is required for a usage adjustment.');
+  if (!newUsed.ok) return validationError(newUsed.message, 'newUsedCount');
+  if (!normalizedTrim(modal.userEmail) && !normalizedTrim(modal.userId)) return validationError('User email or user ID is required for a usage adjustment.', 'userIdentity');
+  if (!normalizedTrim(modal.featureKey)) return validationError('Feature key is required for a usage adjustment.', 'featureKey');
+  if (!normalizedTrim(modal.periodKey)) return validationError('Period key is required for a usage adjustment.', 'periodKey');
   const reason = requireAuditReason(modal.reason, 'this usage adjustment');
-  if (!reason.ok) return validationError(reason.message);
+  if (!reason.ok) return validationError(reason.message, 'reason');
 
-  state.loading = true; state.error = ''; render();
+  if (state.modal) {
+    state.modal.loading = true;
+    state.modal.error = '';
+    state.modal.fieldErrors = {};
+  } else {
+    state.loading = true;
+    state.error = '';
+  }
+  render();
   try {
     await api(API_PATHS.usage.adjust, { method: 'POST', body: {
       email: blankToNull(modal.userEmail),
@@ -2327,8 +2451,14 @@ async function submitUsageAdjustModal() {
     state.modal = null;
     await loadData();
   } catch (error) {
-    setMessage(error.message || 'Failed to adjust usage.', true);
-    state.loading = false; render();
+    if (state.modal) {
+      state.modal.loading = false;
+      setModalError(error, '');
+    } else {
+      setMessage(error, true);
+      state.loading = false;
+      render();
+    }
   }
 }
 
@@ -2529,7 +2659,7 @@ function renderAnnouncementItem(item) {
           ['Title EN', item.titleEn || item.title_en], ['Message EN', item.messageEn || item.message_en],
           ['Title ZH', item.titleZh || item.title_zh], ['Message ZH', item.messageZh || item.message_zh],
           ['Title MS', item.titleMs || item.title_ms], ['Message MS', item.messageMs || item.message_ms],
-          ['CTA EN', item.ctaLabelEn || item.cta_label_en], ['CTA ZH', item.ctaLabelZh || item.cta_label_zh], ['CTA MS', item.ctaLabelMs || item.cta_label_ms], ['CTA Action', item.ctaAction || item.cta_action],
+          ['Action Label EN', item.ctaLabelEn || item.cta_label_en], ['Action Label ZH', item.ctaLabelZh || item.cta_label_zh], ['Action Label MS', item.ctaLabelMs || item.cta_label_ms], ['Action Destination', item.ctaAction || item.cta_action],
         ]),
       ]),
       el('div', { class: 'actions' }, [
@@ -2573,7 +2703,7 @@ async function disableAnnouncement(item) {
   const input = window.prompt('Enter audit reason for disabling this announcement:');
   if (input === null) return;
   const reason = requireAuditReason(input, 'this announcement disable action');
-  if (!reason.ok) return validationError(reason.message);
+  if (!reason.ok) return validationError(reason.message, 'reason');
   if (!window.confirm('Disable this announcement now? The app will prune matching local dismissed IDs on the next active-announcement fetch.')) return;
   state.loading = true; render();
   try {
@@ -2581,7 +2711,7 @@ async function disableAnnouncement(item) {
     setMessage('Announcement disabled. App local dismissed IDs will be pruned on the next active-announcement fetch.');
     await loadData();
   } catch (error) {
-    setMessage(error.message || 'Failed to disable announcement.', true);
+    setMessage(error, true);
     state.loading = false; render();
   }
 }
@@ -2628,28 +2758,29 @@ function renderAnnouncementModal() {
     ]),
     el('details', { class: 'nested-details language-section', open: true }, [
       el('summary', { text: 'English content · required' }),
-      renderPolicySafetyNote('English title and message are required. Chinese and Malay will fall back to English if left empty.'),
+      renderPolicySafetyNote('English title and message are required. Chinese and Malay content are optional and will fall back to English if left empty. Action button labels are also optional.'),
       textInput('titleEn', 'Title EN'),
       textArea('messageEn', 'Message EN'),
-      textInput('ctaLabelEn', 'CTA label EN'),
+      textInput('ctaLabelEn', 'Action button label EN · optional'),
     ]),
     el('details', { class: 'nested-details language-section' }, [
       el('summary', { text: '中文内容 · optional' }),
-      renderPolicySafetyNote('如果留空，App 会显示 English 版本。'),
+      renderPolicySafetyNote('如果标题或内容留空，App 会显示 English 版本。按钮文字也可以留空。'),
       textInput('titleZh', 'Title ZH'),
       textArea('messageZh', 'Message ZH'),
-      textInput('ctaLabelZh', 'CTA label ZH'),
+      textInput('ctaLabelZh', 'Action button label ZH · optional'),
     ]),
     el('details', { class: 'nested-details language-section' }, [
       el('summary', { text: 'Malay content · optional' }),
-      renderPolicySafetyNote('Fallback to English if Malay copy is left empty.'),
+      renderPolicySafetyNote('Fallback to English if Malay title or message is left empty. The action button label can also be left empty.'),
       textInput('titleMs', 'Title MS'),
       textArea('messageMs', 'Message MS'),
-      textInput('ctaLabelMs', 'CTA label MS'),
+      textInput('ctaLabelMs', 'Action button label MS · optional'),
     ]),
     el('details', { class: 'nested-details' }, [
-      el('summary', { text: 'Optional CTA action' }),
-      textInput('ctaAction', 'CTA action', 'open_smart_capture_review'),
+      el('summary', { text: 'Optional action button destination' }),
+      renderPolicySafetyNote('Action button labels are optional. If the destination key is empty, the app will not show a clickable button even when label fields contain text.'),
+      textInput('ctaAction', 'Action destination key · optional', 'open_smart_capture_review'),
     ]),
     textArea('reason', 'Audit reason'),
   ], submitAnnouncementModal, true);
@@ -2690,7 +2821,7 @@ async function submitAnnouncementModal() {
   const displayMode = requireOneOf(modal.displayMode, ADMIN_ENUMS.announcementDisplayModes, 'Display mode');
   if (!displayMode.ok) return validationError(displayMode.message);
   const targetPlan = requireOneOf(modal.targetPlan, ADMIN_ENUMS.announcementTargetPlans, 'Target plan');
-  if (!targetPlan.ok) return validationError(targetPlan.message);
+  if (!targetPlan.ok) return validationError(targetPlan.message, 'targetPlan');
   const targetPlatform = requireOneOf(modal.targetPlatform, ADMIN_ENUMS.announcementTargetPlatforms, 'Target platform');
   if (!targetPlatform.ok) return validationError(targetPlatform.message);
   const priority = parseWholeNumber(modal.priority, 'Priority', { min: 0, max: ADMIN_LIMITS.announcementPriorityMax });
@@ -2702,21 +2833,21 @@ async function submitAnnouncementModal() {
   if (!endAt.ok) return validationError(endAt.message);
   if (startAt.time !== null && endAt.time !== null && startAt.time > endAt.time) return validationError('Start time cannot be later than end time.');
 
-  const ctaLabelEn = requireMaxLength(modal.ctaLabelEn, 'CTA label EN', ADMIN_LIMITS.announcementCtaLabelMax);
+  const ctaLabelEn = requireMaxLength(modal.ctaLabelEn, 'English action button label', ADMIN_LIMITS.announcementCtaLabelMax);
   if (!ctaLabelEn.ok) return validationError(ctaLabelEn.message);
-  const ctaLabelZh = requireMaxLength(modal.ctaLabelZh, 'CTA label ZH', ADMIN_LIMITS.announcementCtaLabelMax);
+  const ctaLabelZh = requireMaxLength(modal.ctaLabelZh, 'Chinese action button label', ADMIN_LIMITS.announcementCtaLabelMax);
   if (!ctaLabelZh.ok) return validationError(ctaLabelZh.message);
-  const ctaLabelMs = requireMaxLength(modal.ctaLabelMs, 'CTA label MS', ADMIN_LIMITS.announcementCtaLabelMax);
+  const ctaLabelMs = requireMaxLength(modal.ctaLabelMs, 'Malay action button label', ADMIN_LIMITS.announcementCtaLabelMax);
   if (!ctaLabelMs.ok) return validationError(ctaLabelMs.message);
-  const ctaAction = requireMaxLength(modal.ctaAction, 'CTA action', ADMIN_LIMITS.announcementCtaActionMax);
+  const ctaAction = requireMaxLength(modal.ctaAction, 'Action destination key', ADMIN_LIMITS.announcementCtaActionMax);
   if (!ctaAction.ok) return validationError(ctaAction.message);
-  if (ctaAction.value && !ctaLabelEn.value) return validationError('CTA label EN is required when CTA action is provided.');
-  if (!ctaAction.value && (ctaLabelEn.value || ctaLabelZh.value || ctaLabelMs.value)) return validationError('CTA action is required when any CTA label is provided.');
+  const hasActionDestination = Boolean(ctaAction.value);
+  if (hasActionDestination && !ctaLabelEn.value) return validationError('English action button label is required when an action destination key is provided. Chinese and Malay button labels are optional and will fall back to English.', 'ctaLabelEn');
 
   const reason = requireAuditReason(modal.reason, modal.id ? 'this announcement update' : 'this announcement creation');
-  if (!reason.ok) return validationError(reason.message);
+  if (!reason.ok) return validationError(reason.message, 'reason');
 
-  state.loading = true; state.error = ''; render();
+  if (state.modal) { state.modal.loading = true; state.modal.error = ''; state.modal.fieldErrors = {}; } else { state.loading = true; state.error = ''; } render();
   const body = {
     titleEn: titleEn.value, titleZh: titleZh.value || null, titleMs: titleMs.value || null,
     messageEn: messageEn.value, messageZh: messageZh.value || null, messageMs: messageMs.value || null,
@@ -2724,8 +2855,11 @@ async function submitAnnouncementModal() {
     targetPlan: targetPlan.value, targetPlatform: targetPlatform.value,
     startAt: startAt.value, endAt: endAt.value,
     dismissible: Boolean(modal.dismissible), enabled: Boolean(modal.enabled),
-    ctaLabelEn: ctaLabelEn.value || null, ctaLabelZh: ctaLabelZh.value || null, ctaLabelMs: ctaLabelMs.value || null,
-    ctaAction: ctaAction.value || null, reason: reason.value,
+    ctaLabelEn: hasActionDestination ? ctaLabelEn.value || null : null,
+    ctaLabelZh: hasActionDestination ? ctaLabelZh.value || null : null,
+    ctaLabelMs: hasActionDestination ? ctaLabelMs.value || null : null,
+    ctaAction: hasActionDestination ? ctaAction.value : null,
+    reason: reason.value,
   };
   try {
     await api(modal.id ? API_PATHS.announcements.update(modal.id) : API_PATHS.announcements.create, { method: modal.id ? 'PATCH' : 'POST', body });
@@ -2733,8 +2867,14 @@ async function submitAnnouncementModal() {
     state.modal = null;
     await loadData();
   } catch (error) {
-    setMessage(error.message || 'Failed to save announcement.', true);
-    state.loading = false; render();
+    if (state.modal) {
+      state.modal.loading = false;
+      setModalError(error, '');
+    } else {
+      setMessage(error, true);
+      state.loading = false;
+      render();
+    }
   }
 }
 
@@ -2827,21 +2967,21 @@ function renderControlList(items, renderer, emptyText) {
 
 function renderFeatureLimitModal() {
   const modal = state.modal;
-  const limit = el('input', { type: 'number', min: '0', placeholder: 'Empty = unlimited', value: modal.limitCount ?? '' });
+  const limit = el('input', { type: 'number', min: '0', placeholder: 'Empty = unlimited', value: modal.limitCount ?? '', 'data-field-key': 'limitCount' });
   limit.addEventListener('input', () => { modal.limitCount = limit.value; });
-  const period = select(['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'], modal.periodType || 'NONE', (value) => { modal.periodType = value; });
+  const period = select(['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'], modal.periodType || 'NONE', (value) => { modal.periodType = value; }); period.setAttribute('data-field-key', 'periodType');
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
-  const description = el('textarea', { rows: '3' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
-  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const description = el('textarea', { rows: '3', 'data-field-key': 'description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
   return renderControlModal('Edit feature limit', 'Feature Limit', [
     renderMetaGrid([['Feature', modal.item?.featureKey || modal.item?.feature_key], ['Plan', modal.item?.plan]]),
     el('div', { class: 'form-grid two' }, [
-      el('div', { class: 'field' }, [el('label', { text: 'Limit count' }), limit, el('small', { class: 'field-help', text: 'Leave empty for unlimited when supported.' })]),
-      el('div', { class: 'field' }, [el('label', { text: 'Period type' }), period]),
+      el('div', { class: modalFieldClass('limitCount') }, [el('label', { text: 'Limit count' }), limit, renderFieldError('limitCount'), el('small', { class: 'field-help', text: 'Leave empty for unlimited when supported.' })]),
+      el('div', { class: modalFieldClass('periodType') }, [el('label', { text: 'Period type' }), period, renderFieldError('periodType')]),
     ]),
     el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
-    el('div', { class: 'field' }, [el('label', { text: 'Description' }), description]),
-    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+    el('div', { class: modalFieldClass('description') }, [el('label', { text: 'Description' }), description, renderFieldError('description')]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
   ], submitFeatureLimitModal);
 }
 
@@ -2849,51 +2989,51 @@ function renderFeatureFlagModal() {
   const modal = state.modal;
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
   const rollout = el('input', { type: 'number', min: '0', max: '100', value: modal.rolloutPercentage }); rollout.addEventListener('input', () => { modal.rolloutPercentage = rollout.value; });
-  const targetPlan = select(ADMIN_ENUMS.featureFlagTargetPlans, modal.targetPlan || '', (value) => { modal.targetPlan = value; });
-  const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
-  const description = el('textarea', { rows: '3' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
-  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const targetPlan = select(ADMIN_ENUMS.featureFlagTargetPlans, modal.targetPlan || '', (value) => { modal.targetPlan = value; }); targetPlan.setAttribute('data-field-key', 'targetPlan');
+  const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '', 'data-field-key': 'minAppVersion' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
+  const description = el('textarea', { rows: '3', 'data-field-key': 'description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
   return renderControlModal('Edit feature flag', 'Feature Flag', [
     renderMetaGrid([['Flag', modal.item?.flagKey || modal.item?.flag_key]]),
     el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     el('div', { class: 'form-grid two' }, [
-      el('div', { class: 'field' }, [el('label', { text: 'Rollout percentage' }), rollout]),
-      el('div', { class: 'field' }, [el('label', { text: 'Target plan' }), targetPlan]),
-      el('div', { class: 'field' }, [el('label', { text: 'Min app version' }), minVersion]),
+      el('div', { class: modalFieldClass('rolloutPercentage') }, [el('label', { text: 'Rollout percentage' }), rollout, renderFieldError('rolloutPercentage')]),
+      el('div', { class: modalFieldClass('targetPlan') }, [el('label', { text: 'Target plan' }), targetPlan, renderFieldError('targetPlan')]),
+      el('div', { class: modalFieldClass('minAppVersion') }, [el('label', { text: 'Min app version' }), minVersion, renderFieldError('minAppVersion')]),
     ]),
-    el('div', { class: 'field' }, [el('label', { text: 'Description' }), description]),
-    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+    el('div', { class: modalFieldClass('description') }, [el('label', { text: 'Description' }), description, renderFieldError('description')]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
   ], submitFeatureFlagModal);
 }
 
 function renderProductPolicyModal() {
   const modal = state.modal;
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
-  const platform = select(ADMIN_ENUMS.productPolicyPlatforms, modal.platform || '', (value) => { modal.platform = value; });
-  const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
-  const valueJson = el('textarea', { rows: '12', spellcheck: 'false' }); valueJson.value = modal.valueJson || '{}'; valueJson.addEventListener('input', () => { modal.valueJson = valueJson.value; });
-  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const platform = select(ADMIN_ENUMS.productPolicyPlatforms, modal.platform || '', (value) => { modal.platform = value; }); platform.setAttribute('data-field-key', 'platform');
+  const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '', 'data-field-key': 'minAppVersion' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
+  const valueJson = el('textarea', { rows: '12', spellcheck: 'false', 'data-field-key': 'valueJson' }); valueJson.value = modal.valueJson || '{}'; valueJson.addEventListener('input', () => { modal.valueJson = valueJson.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
   return renderControlModal('Edit product policy', 'Product Policy', [
     renderMetaGrid([['Policy', modal.item?.policyKey || modal.item?.policy_key]]),
     el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     el('div', { class: 'form-grid two' }, [
-      el('div', { class: 'field' }, [el('label', { text: 'Platform' }), platform]),
-      el('div', { class: 'field' }, [el('label', { text: 'Min app version' }), minVersion]),
+      el('div', { class: modalFieldClass('platform') }, [el('label', { text: 'Platform' }), platform, renderFieldError('platform')]),
+      el('div', { class: modalFieldClass('minAppVersion') }, [el('label', { text: 'Min app version' }), minVersion, renderFieldError('minAppVersion')]),
     ]),
-    el('div', { class: 'field' }, [el('label', { text: 'Policy JSON' }), valueJson, el('small', { class: 'field-help', text: 'Keep JSON compact and avoid sensitive user data.' })]),
-    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+    el('div', { class: modalFieldClass('valueJson') }, [el('label', { text: 'Policy JSON' }), valueJson, renderFieldError('valueJson'), el('small', { class: 'field-help', text: 'Keep JSON compact and avoid sensitive user data.' })]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
   ], submitProductPolicyModal, true);
 }
 
 function renderUsageAdjustModal() {
   const modal = state.modal;
-  const newUsed = el('input', { type: 'number', min: '0', value: modal.newUsedCount }); newUsed.addEventListener('input', () => { modal.newUsedCount = newUsed.value; });
-  const reason = el('textarea', { rows: '3', placeholder: 'Required reason, e.g. Correct duplicate local sync after support verification.' }); reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const newUsed = el('input', { type: 'number', min: '0', value: modal.newUsedCount, 'data-field-key': 'newUsedCount' }); newUsed.addEventListener('input', () => { modal.newUsedCount = newUsed.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required reason, for example: Correct duplicate local sync after support verification.', 'data-field-key': 'reason' }); reason.addEventListener('input', () => { modal.reason = reason.value; });
   return renderControlModal('Adjust usage counter', 'Usage Support', [
     renderMetaGrid([['User', modal.userEmail || modal.userId], ['Feature', modal.featureKey], ['Period', modal.periodKey]]),
-    el('div', { class: 'field' }, [el('label', { text: 'New used count' }), newUsed]),
+    el('div', { class: modalFieldClass('newUsedCount') }, [el('label', { text: 'New used count' }), newUsed, renderFieldError('newUsedCount')]),
     el('div', { class: 'compact-guidance warning' }, [el('strong', { text: 'Audit required' }), renderInfoHint('Usage adjustments affect quota and should only be used after support verification. They are not a normal product operation.', { compact: true, label: 'Usage adjustment details' })]),
-    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
   ], submitUsageAdjustModal);
 }
 
@@ -2904,10 +3044,10 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
         el('div', {}, [el('p', { class: 'eyebrow', text: eyebrow }), el('h2', { text: title })]),
         el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
-      el('div', { class: 'modal-body' }, bodyChildren),
+      el('div', { class: 'modal-body' }, [renderModalNotice(), ...bodyChildren]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
-        el('button', { class: 'btn', text: state.loading ? 'Saving...' : 'Save changes', disabled: state.loading, onclick: submitHandler }),
+        el('button', { class: 'btn', text: (state.modal?.loading || state.loading) ? 'Saving...' : 'Save changes', disabled: state.modal?.loading || state.loading, onclick: submitHandler }),
       ]),
     ]),
   ]);
@@ -3032,9 +3172,20 @@ async function boot() {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && state.navOpen) {
+  if (event.key !== 'Escape') return;
+  if (state.navOpen) {
     closeNavigation();
+    return;
   }
+  if (state.modal) {
+    closeModal();
+    return;
+  }
+  closeAllInfoHints();
+});
+
+document.addEventListener('click', (event) => {
+  if (!event.target.closest?.('.info-hint')) closeAllInfoHints();
 });
 
 if (headerMenuButton) {
