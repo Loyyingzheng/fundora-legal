@@ -332,6 +332,12 @@ function renderFieldError(fieldKey) {
 }
 
 function renderModalNotice() {
+  if (state.modal?.loading) {
+    return el('div', { class: 'modal-alert success', role: 'status', 'aria-live': 'polite' }, [
+      el('strong', { text: 'Saving changes...' }),
+      el('p', { text: 'Please wait until the backend confirms the update and the latest data reloads.' }),
+    ]);
+  }
   if (!state.modal?.error && !state.modal?.message) return null;
   const isError = Boolean(state.modal.error);
   return el('div', {
@@ -3169,6 +3175,11 @@ async function submitAnnouncementModal() {
 function renderAdminControlPage() {
   const items = state.data?.content || [];
   const children = [];
+  if (state.loading) {
+    children.push(el('div', { class: 'privacy-note', role: 'status', 'aria-live': 'polite' }, [
+      el('span', { text: 'Loading latest admin data... Please wait until all required sections finish loading.' }),
+    ]));
+  }
 
   if (state.activeTab === 'featureLimits') {
     children.push(renderAdminControlHero('Feature Limits', 'Control quota, preset, wallet, dashboard, and collaboration limits from backend policy.', 'Use this page for limits such as Smart Capture 20/week, OCR 20/month, expense presets, wallet slots, group limits, and dashboard history. Changes are audited and should keep local app fallback compatibility.'));
