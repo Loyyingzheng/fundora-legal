@@ -3206,3 +3206,73 @@ summary:focus-visible {
     grid-column: auto !important;
   }
 }
+
+/* Growth analytics visual bug fixes -----------------------------------------
+   1) active drawer item keeps readable text on the light selected background,
+   2) metric card decoration stays inside the card,
+   3) opened info popovers render above neighbouring metric cards. */
+.sidebar-link.active {
+  color: var(--heading) !important;
+  background: linear-gradient(135deg, rgba(15, 118, 110, 0.14), rgba(236, 253, 245, 0.96)) !important;
+  border-color: rgba(20, 184, 166, 0.42) !important;
+  box-shadow: inset 4px 0 0 var(--primary), 0 8px 20px rgba(15, 118, 110, 0.08) !important;
+}
+
+.sidebar-link.active .sidebar-link-label,
+.sidebar-link.active .sidebar-link-helper {
+  color: var(--heading) !important;
+  opacity: 1 !important;
+}
+
+.sidebar-link.active .sidebar-link-mark {
+  background: var(--primary) !important;
+  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.14) !important;
+}
+
+.analytics-grid,
+.analytics-target-grid,
+.stats-grid,
+.analytics-section {
+  overflow: visible !important;
+}
+
+.stat::after,
+.analytics-card::after,
+.analytics-target-card::after {
+  right: 14px !important;
+  top: 12px !important;
+  width: 74px !important;
+  height: 74px !important;
+  opacity: 0.42 !important;
+  pointer-events: none !important;
+}
+
+.analytics-card,
+.analytics-target-card,
+.stat {
+  isolation: auto !important;
+}
+
+.analytics-card:has(.info-hint[open]),
+.analytics-target-card:has(.info-hint[open]),
+.stat:has(.info-hint[open]) {
+  z-index: 2500 !important;
+}
+
+.analytics-card .info-hint[open],
+.analytics-target-card .info-hint[open],
+.stat .info-hint[open] {
+  z-index: 2600 !important;
+}
+
+.analytics-card .info-popover,
+.analytics-target-card .info-popover,
+.stat .info-popover {
+  z-index: 2700 !important;
+}
+
+.analytics-card-label,
+.analytics-target-head {
+  position: relative;
+  z-index: 2;
+}
