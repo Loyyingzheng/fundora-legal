@@ -1084,12 +1084,6 @@ function renderHeader() {
 
   if (headerInfoSlot) {
     clear(headerInfoSlot);
-    if (signedIn && item.info) {
-      headerInfoSlot.appendChild(renderInfoHint(item.info, {
-        compact: true,
-        label: `${item.label} details`,
-      }));
-    }
   }
 }
 
