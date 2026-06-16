@@ -3611,3 +3611,15 @@ summary:focus-visible {
     gap: 16px !important;
   }
 }
+
+
+/* Header title cleanup ------------------------------------------------------
+   The header subtitle already explains the current section, so the top header
+   should not show a duplicate info icon. Section/card info icons remain. */
+.app-header .header-info-slot {
+  display: none !important;
+}
+
+.app-header .header-title-row {
+  gap: 0 !important;
+}
