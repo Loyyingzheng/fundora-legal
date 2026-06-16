@@ -2912,3 +2912,42 @@ body,
   font-size: 0.8rem;
   line-height: 1.5;
 }
+
+
+/* Header info popover alignment: open to the right of the info icon on desktop. */
+.app-header .header-info-slot .info-popover,
+.header-info-slot .info-popover {
+  top: 50% !important;
+  left: calc(100% + 10px) !important;
+  right: auto !important;
+  transform: translateY(-16px) !important;
+}
+.app-header .header-info-slot .info-popover::before,
+.header-info-slot .info-popover::before {
+  top: 16px !important;
+  left: -6px !important;
+  right: auto !important;
+  transform: rotate(45deg) !important;
+  border-left: 1px solid rgba(216, 226, 223, 0.96);
+  border-bottom: 1px solid rgba(216, 226, 223, 0.96);
+  border-top: 0;
+}
+
+@media (max-width: 720px) {
+  .app-header .header-info-slot .info-popover,
+  .header-info-slot .info-popover {
+    top: calc(100% + 8px) !important;
+    left: auto !important;
+    right: 0 !important;
+    transform: none !important;
+  }
+  .app-header .header-info-slot .info-popover::before,
+  .header-info-slot .info-popover::before {
+    top: -6px !important;
+    left: auto !important;
+    right: 12px !important;
+    border-top: 1px solid rgba(216, 226, 223, 0.96);
+    border-left: 1px solid rgba(216, 226, 223, 0.96);
+    border-bottom: 0;
+  }
+}
