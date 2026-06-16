@@ -3565,3 +3565,49 @@ summary:focus-visible {
     margin-top: 10px !important;
   }
 }
+
+/* Final context bar spacing correction -------------------------------------
+   Only the header stays fixed. The page context bar should sit naturally
+   under the breadcrumb without a large sticky offset, and keep a clear gap
+   before the page content section. */
+#mainContent {
+  padding-top: calc(var(--admin-fixed-header-height) + 6px) !important;
+}
+
+.breadcrumb {
+  margin: 0 0 8px !important;
+}
+
+.page-context-bar {
+  position: static !important;
+  top: auto !important;
+  margin: 0 0 14px !important;
+}
+
+.page-context-bar + .page-section {
+  margin-top: 0 !important;
+}
+
+.page-section {
+  gap: 18px !important;
+}
+
+@media (max-width: 760px) {
+  #mainContent {
+    padding-top: calc(var(--admin-fixed-header-height) + 6px) !important;
+  }
+
+  .breadcrumb {
+    margin: 0 0 7px !important;
+  }
+
+  .page-context-bar {
+    position: static !important;
+    top: auto !important;
+    margin: 0 0 12px !important;
+  }
+
+  .page-section {
+    gap: 16px !important;
+  }
+}
