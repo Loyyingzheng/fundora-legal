@@ -3381,3 +3381,98 @@ summary:focus-visible {
     font-size: clamp(20px, 7vw, 28px) !important;
   }
 }
+
+/* Final polish: prevent all info popovers from being covered, and separate
+   sticky page context bar from the content section below it. */
+.page-context-bar {
+  margin-bottom: 24px !important;
+}
+
+.page-section {
+  gap: 22px !important;
+}
+
+.card,
+.analytics-hero,
+.analytics-section,
+.page-context-bar,
+.section-header-card,
+.toolbar,
+.analytics-toolbar-shell,
+.modal-card,
+.auth-box,
+.topbar > div:first-child {
+  position: relative;
+}
+
+.analytics-hero,
+.analytics-section,
+.page-context-bar,
+.section-header-card,
+.toolbar,
+.analytics-toolbar-shell,
+.modal-card,
+.auth-box,
+.topbar > div:first-child,
+.card {
+  overflow: visible !important;
+}
+
+.analytics-hero .analytics-section-head,
+.analytics-section-head,
+.section-title-row,
+.compact-help-row,
+.privacy-note,
+.header-info-slot,
+.inline-info-label {
+  position: relative;
+  z-index: 8;
+}
+
+.analytics-toolbar-shell,
+.toolbar,
+.analytics-grid,
+.analytics-target-grid,
+.stats-grid,
+.list,
+.pagination,
+.footer-note {
+  position: relative;
+  z-index: 1;
+}
+
+.info-hint,
+.info-hint[open] {
+  position: relative;
+}
+
+.info-hint[open] {
+  z-index: 5000 !important;
+}
+
+.info-popover {
+  z-index: 5001 !important;
+}
+
+.card:has(.info-hint[open]),
+.analytics-hero:has(.info-hint[open]),
+.analytics-section:has(.info-hint[open]),
+.page-context-bar:has(.info-hint[open]),
+.section-header-card:has(.info-hint[open]),
+.item:has(.info-hint[open]),
+.toolbar:has(.info-hint[open]),
+.analytics-toolbar-shell:has(.info-hint[open]),
+.modal-card:has(.info-hint[open]) {
+  z-index: 4900 !important;
+  isolation: isolate;
+}
+
+@media (max-width: 760px) {
+  .page-context-bar {
+    margin-bottom: 18px !important;
+  }
+
+  .page-section {
+    gap: 18px !important;
+  }
+}
