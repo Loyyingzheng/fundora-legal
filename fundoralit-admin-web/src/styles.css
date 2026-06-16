@@ -3141,3 +3141,68 @@ summary:focus-visible {
     grid-template-columns: 1fr;
   }
 }
+
+/* Fixed header refinement ---------------------------------------------------
+   Keep the compact admin header permanently visible while the dashboard body
+   scrolls. Content receives a matching top offset so breadcrumbs/cards never
+   slide underneath the header. */
+:root {
+  --admin-fixed-header-height: 66px;
+}
+
+.app-header.topbar {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  z-index: 65 !important;
+  min-height: var(--admin-fixed-header-height) !important;
+  margin: 0 !important;
+}
+
+#mainContent {
+  padding-top: calc(var(--admin-fixed-header-height) + 16px) !important;
+}
+
+.page-context-bar {
+  top: calc(var(--admin-fixed-header-height) + 10px) !important;
+}
+
+.breadcrumb {
+  margin-top: 0 !important;
+}
+
+/* Keep popovers/dropdowns above content but below the open drawer overlay. */
+.info-hint[open],
+.info-popover {
+  z-index: 64;
+}
+
+.app-header .info-hint[open],
+.app-header .info-popover {
+  z-index: 90;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --admin-fixed-header-height: 58px;
+  }
+
+  #mainContent {
+    padding-top: calc(var(--admin-fixed-header-height) + 12px) !important;
+  }
+
+  .page-context-bar {
+    top: calc(var(--admin-fixed-header-height) + 8px) !important;
+  }
+}
+
+@media (max-width: 720px) {
+  .app-header.topbar {
+    grid-template-columns: auto auto minmax(0, 1fr) auto !important;
+  }
+
+  .app-header .auth-box {
+    grid-column: auto !important;
+  }
+}
