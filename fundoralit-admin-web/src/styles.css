@@ -3276,3 +3276,108 @@ summary:focus-visible {
   position: relative;
   z-index: 2;
 }
+
+/* Final analytics info-icon and card spacing fixes -------------------------
+   - keep info icons anchored to their own label rows
+   - prevent target/value overlap inside cards
+   - keep decorative circles inside the card bounds without clipping popovers */
+.section-title-row,
+.compact-help-row,
+.privacy-note {
+  align-items: center;
+}
+
+.analytics-card-main,
+.analytics-target-head,
+.analytics-card-label {
+  min-width: 0;
+}
+
+.analytics-card-label {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  width: 100%;
+}
+
+.analytics-card-label > span:first-child {
+  min-width: 0;
+}
+
+.analytics-target-head {
+  grid-template-columns: minmax(0, 1fr) !important;
+  gap: 14px !important;
+}
+
+.analytics-target-card strong {
+  text-align: left !important;
+  white-space: normal !important;
+}
+
+.info-hint {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  z-index: auto !important;
+}
+
+.info-hint summary,
+.info-hint summary:hover,
+.info-hint[open] summary {
+  transform: none !important;
+}
+
+.info-hint[open] {
+  z-index: 3200 !important;
+}
+
+.info-popover {
+  max-width: min(320px, calc(100vw - 32px));
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.analytics-grid,
+.analytics-target-grid,
+.stats-grid {
+  gap: 16px !important;
+  align-items: stretch;
+}
+
+.analytics-card,
+.analytics-target-card,
+.stat {
+  min-width: 0;
+}
+
+.stat::after,
+.analytics-card::after,
+.analytics-target-card::after {
+  right: 16px !important;
+  top: 16px !important;
+  width: 64px !important;
+  height: 64px !important;
+  opacity: 0.24 !important;
+}
+
+.analytics-card .info-popover,
+.analytics-target-card .info-popover,
+.stat .info-popover {
+  z-index: 3300 !important;
+}
+
+@media (max-width: 760px) {
+  .section-title-row,
+  .compact-help-row,
+  .privacy-note {
+    align-items: flex-start;
+  }
+
+  .analytics-card-label {
+    gap: 8px;
+  }
+
+  .analytics-target-card strong {
+    font-size: clamp(20px, 7vw, 28px) !important;
+  }
+}
