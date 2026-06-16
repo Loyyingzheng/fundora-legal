@@ -493,6 +493,10 @@ function getActiveNavItem(tab = state.activeTab) {
   return NAV_ITEMS.find((item) => item.id === tab) || NAV_ITEMS[0];
 }
 
+function getActiveNavGroup(tab = state.activeTab) {
+  return NAV_GROUPS.find((group) => group.items.some((item) => item.id === tab)) || NAV_GROUPS[0];
+}
+
 function openNavigation() {
   state.navOpen = true;
   render();
@@ -1017,6 +1021,40 @@ async function submitCloseModal() {
     adminReplyMessage: String(state.modal.adminReplyMessage || '').trim() || null,
   };
   await performPatchAction(path, kind === 'rewardSurvey' ? 'Reward survey closed.' : 'Feedback closed.', body);
+}
+
+
+function renderBreadcrumbTrail() {
+  const group = getActiveNavGroup();
+  const item = getActiveNavItem();
+  return el('nav', { class: 'breadcrumb', 'aria-label': 'Breadcrumb' }, [
+    el('span', { class: 'breadcrumb-item', text: 'Admin' }),
+    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: '›' }),
+    el('span', { class: 'breadcrumb-item', text: group?.title || 'Section' }),
+    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: '›' }),
+    el('span', { class: 'breadcrumb-item current', 'aria-current': 'page', text: item.label }),
+  ]);
+}
+
+function renderPageContextBar() {
+  const item = getActiveNavItem();
+  return el('div', { class: 'page-context-bar' }, [
+    el('div', { class: 'page-context-copy' }, [
+      el('span', { class: 'context-kicker', text: item.helper || 'Admin operation' }),
+      el('strong', { text: item.label }),
+      item.description ? el('span', { text: item.description }) : null,
+    ]),
+    el('div', { class: 'page-context-actions' }, [
+      el('span', { class: 'shortcut-pill', text: 'Esc closes menu / popover' }),
+      el('button', {
+        class: 'btn ghost small',
+        type: 'button',
+        text: state.loading ? 'Refreshing…' : 'Refresh',
+        disabled: state.loading,
+        onclick: () => loadData(),
+      }),
+    ]),
+  ]);
 }
 
 function renderHeader() {
@@ -3622,6 +3660,8 @@ function renderAdminShell(children) {
     }),
     renderSidebar(),
     el('div', { class: 'admin-main' }, [
+      renderBreadcrumbTrail(),
+      renderPageContextBar(),
       el('section', { class: 'page-section' }, children),
     ]),
   ]);
