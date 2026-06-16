@@ -1284,14 +1284,64 @@ function isAdminControlTab(tab = state.activeTab) {
 }
 
 
+function resetInfoPopover(details) {
+  const popover = details?.querySelector?.('.info-popover');
+  if (!popover) return;
+  popover.removeAttribute('style');
+}
+
+function positionInfoPopover(details) {
+  const popover = details?.querySelector?.('.info-popover');
+  const summary = details?.querySelector?.('summary');
+  if (!details?.open || !popover || !summary) return;
+
+  const gap = 10;
+  const edge = 12;
+  const summaryRect = summary.getBoundingClientRect();
+  const width = Math.min(340, Math.max(240, window.innerWidth - edge * 2));
+
+  popover.style.position = 'fixed';
+  popover.style.width = `${width}px`;
+  popover.style.maxWidth = `calc(100vw - ${edge * 2}px)`;
+  popover.style.left = '0px';
+  popover.style.top = '0px';
+  popover.style.right = 'auto';
+  popover.style.transform = 'none';
+  popover.style.zIndex = '10000';
+
+  const popoverRect = popover.getBoundingClientRect();
+  let left = summaryRect.left;
+  if (left + width > window.innerWidth - edge) left = window.innerWidth - edge - width;
+  if (left < edge) left = edge;
+
+  let top = summaryRect.bottom + gap;
+  if (top + popoverRect.height > window.innerHeight - edge) {
+    top = summaryRect.top - popoverRect.height - gap;
+  }
+  if (top < edge) top = edge;
+
+  popover.style.left = `${Math.round(left)}px`;
+  popover.style.top = `${Math.round(top)}px`;
+}
+
+function positionOpenInfoPopovers() {
+  document.querySelectorAll('.info-hint[open]').forEach((node) => positionInfoPopover(node));
+}
+
 function closeOtherInfoHints(current) {
   document.querySelectorAll('.info-hint[open]').forEach((node) => {
-    if (node !== current) node.open = false;
+    if (node !== current) {
+      node.open = false;
+      resetInfoPopover(node);
+    }
   });
 }
 
 function closeAllInfoHints() {
-  document.querySelectorAll('.info-hint[open]').forEach((node) => { node.open = false; });
+  document.querySelectorAll('.info-hint[open]').forEach((node) => {
+    node.open = false;
+    resetInfoPopover(node);
+  });
 }
 
 function renderInfoHint(text, options = {}) {
@@ -1301,7 +1351,15 @@ function renderInfoHint(text, options = {}) {
   const title = options.title || '';
   return el('details', {
     class: `info-hint ${options.compact ? 'compact' : ''}`.trim(),
-    ontoggle: (event) => { if (event.currentTarget.open) closeOtherInfoHints(event.currentTarget); },
+    ontoggle: (event) => {
+      const details = event.currentTarget;
+      if (details.open) {
+        closeOtherInfoHints(details);
+        requestAnimationFrame(() => positionInfoPopover(details));
+      } else {
+        resetInfoPopover(details);
+      }
+    },
   }, [
     el('summary', { 'aria-label': label, title: label }, [
       el('span', { class: 'info-icon', 'aria-hidden': 'true', text: 'i' }),
@@ -3737,6 +3795,9 @@ document.addEventListener('keydown', (event) => {
 document.addEventListener('click', (event) => {
   if (!event.target.closest?.('.info-hint')) closeAllInfoHints();
 });
+
+document.addEventListener('scroll', () => positionOpenInfoPopovers(), true);
+window.addEventListener('resize', () => positionOpenInfoPopovers());
 
 if (headerMenuButton) {
   headerMenuButton.addEventListener('click', toggleNavigation);

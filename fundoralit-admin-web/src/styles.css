@@ -3476,3 +3476,61 @@ summary:focus-visible {
     gap: 18px !important;
   }
 }
+
+/* Verified fix: portal-like fixed info popovers + tighter context spacing ----
+   JS positions opened popovers against the viewport, so they cannot be hidden
+   under cards, toolbars, page sections, or sticky bars. */
+.info-popover {
+  position: fixed !important;
+  right: auto !important;
+  transform: none !important;
+  z-index: 10000 !important;
+  width: min(340px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px) !important;
+  max-height: min(340px, calc(100vh - 24px));
+  overflow-y: auto;
+}
+
+.info-popover::before {
+  display: none !important;
+}
+
+.info-hint:not([open]) .info-popover {
+  display: none !important;
+}
+
+#mainContent {
+  padding-top: calc(var(--admin-fixed-header-height) + 8px) !important;
+}
+
+.breadcrumb {
+  margin-bottom: 8px !important;
+}
+
+.page-context-bar {
+  top: calc(var(--admin-fixed-header-height) + 6px) !important;
+  margin-bottom: 16px !important;
+}
+
+.page-section {
+  gap: 18px !important;
+}
+
+@media (max-width: 760px) {
+  #mainContent {
+    padding-top: calc(var(--admin-fixed-header-height) + 8px) !important;
+  }
+
+  .breadcrumb {
+    margin-bottom: 7px !important;
+  }
+
+  .page-context-bar {
+    top: calc(var(--admin-fixed-header-height) + 6px) !important;
+    margin-bottom: 14px !important;
+  }
+
+  .page-section {
+    gap: 16px !important;
+  }
+}
