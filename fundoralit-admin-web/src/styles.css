@@ -3534,3 +3534,34 @@ summary:focus-visible {
     gap: 16px !important;
   }
 }
+
+/* Feedback/admin top spacing refinement ------------------------------------
+   Keep the sticky context bar close to the header, but preserve a clear gap
+   before the first content card/section below it. */
+.page-context-bar {
+  top: calc(var(--admin-fixed-header-height) + 4px) !important;
+  margin-bottom: 12px !important;
+}
+
+.page-context-bar + .page-section {
+  margin-top: 12px !important;
+}
+
+.page-section > .section-header-card:first-child,
+.page-section > .card:first-child,
+.page-section > .toolbar:first-child,
+.page-section > .analytics-hero:first-child,
+.page-section > .analytics-section:first-child {
+  margin-top: 0 !important;
+}
+
+@media (max-width: 760px) {
+  .page-context-bar {
+    top: calc(var(--admin-fixed-header-height) + 4px) !important;
+    margin-bottom: 10px !important;
+  }
+
+  .page-context-bar + .page-section {
+    margin-top: 10px !important;
+  }
+}
