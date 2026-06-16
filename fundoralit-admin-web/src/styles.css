@@ -970,8 +970,10 @@ pre { background: #0f172a; color: #dbeafe; border-radius: 14px; padding: 12px; o
 .info-popover {
   position: absolute;
   z-index: 45;
-  top: calc(100% + 8px);
-  right: 0;
+  top: 50%;
+  left: calc(100% + 10px);
+  right: auto;
+  transform: translateY(-16px);
   width: min(320px, calc(100vw - 48px));
   padding: 12px 14px;
   border: 1px solid var(--border);
@@ -994,6 +996,15 @@ pre { background: #0f172a; color: #dbeafe; border-radius: 14px; padding: 12px; o
   margin: 0;
   color: var(--muted-strong);
 }
+@media (max-width: 720px) {
+  .info-popover {
+    top: calc(100% + 8px);
+    left: auto;
+    right: 0;
+    transform: none;
+  }
+}
+
 .info-hint[open] summary {
   border-color: var(--primary);
   background: var(--primary-soft-2);
