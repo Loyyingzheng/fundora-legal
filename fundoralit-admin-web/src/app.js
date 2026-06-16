@@ -2974,6 +2974,66 @@ function renderAnnouncementLanguageBadges(item) {
   ]);
 }
 
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  if (typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function normalizeDistributionLabel(label) {
+  return String(label || '-')
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function renderDistributionChips(title, distribution, emptyText = 'No aggregate data yet.') {
+  const entries = Object.entries(distribution || {})
+    .map(([key, value]) => [key, Number(value)])
+    .filter(([, value]) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => b[1] - a[1]);
+  return el('section', { class: 'distribution-card' }, [
+    el('h4', { text: title }),
+    entries.length
+      ? el('div', { class: 'distribution-chip-list' }, entries.map(([key, value]) => (
+          el('span', { class: 'distribution-chip', text: `${normalizeDistributionLabel(key)} ${formatNumber(value)}` })
+        )))
+      : el('p', { class: 'muted compact-text', text: emptyText }),
+  ]);
+}
+
+function renderSmartCaptureCandidateInsight(item, groups) {
+  const rule = String(item.ruleCategory || '').toUpperCase();
+  const action = String(item.suggestedAction || '').toUpperCase();
+  const type = String(item.suggestedFinalType || '').toUpperCase();
+  const isBlock = rule === 'BLOCK_NON_TRANSACTION' || action === 'IGNORE';
+  const isReview = rule === 'FORCE_REVIEW' || action === 'REVIEW';
+  const isPotentialBoost = rule === 'BOOST_CONFIDENCE';
+  const isInternal = ['INTERNAL_TRANSFER', 'TOP_UP'].includes(type);
+  const hasPromoSignal = Object.values(groups.amountContext || {}).some((value) => Number(value) > 0)
+    && ['priceOrPromo', 'PRICE', 'DISCOUNT', 'VOUCHER', 'PROMO', 'LIMIT'].some((key) => Number(groups.amountContext[key] || 0) > 0);
+  const quickActionCopy = isPotentialBoost && !isInternal && !hasPromoSignal
+    ? 'Backend still keeps global quick action disabled unless separately verified safe.'
+    : 'Safe default: review/block only. No global quick-save rule should be enabled from this candidate.';
+  const badges = [
+    el('span', { class: `mini-badge ${isBlock ? 'danger' : isReview ? 'info' : 'neutral'}`, text: isBlock ? 'Block candidate' : isReview ? 'Review-only' : rule || 'Candidate' }),
+    el('span', { class: 'mini-badge neutral', text: type || 'No type change' }),
+    el('span', { class: 'mini-badge success', text: 'Privacy-safe aggregate' }),
+  ];
+  return el('div', { class: 'candidate-insight-card' }, [
+    el('div', { class: 'candidate-insight-header' }, badges),
+    el('p', { text: quickActionCopy }),
+  ]);
+}
+
+
 async function decideSmartCaptureCandidate(item, approve) {
   if (!confirm(`${approve ? 'Approve' : 'Reject'} this global Smart Capture candidate?`)) return;
   try {
@@ -2993,29 +3053,58 @@ async function decideSmartCaptureCandidate(item, approve) {
 }
 
 function renderSmartCaptureRuleCandidate(item) {
-  const distribution = (() => {
-    try { return JSON.parse(item.actionDistributionJson || '{}'); } catch (_) { return {}; }
-  })();
+  const groups = {
+    action: parseJsonObject(item.actionDistributionJson || item.action_distribution_json),
+    confidence: parseJsonObject(item.confidenceDistributionJson || item.confidence_distribution_json),
+    sourceTrust: parseJsonObject(item.sourceTrustDistributionJson || item.source_trust_distribution_json),
+    amountContext: parseJsonObject(item.amountContextDistributionJson || item.amount_context_distribution_json),
+    transactionType: parseJsonObject(item.transactionTypeDistributionJson || item.transaction_type_distribution_json),
+    selfDetection: parseJsonObject(item.selfDetectionDistributionJson || item.self_detection_distribution_json),
+    privacy: parseJsonObject(item.privacyDistributionJson || item.privacy_distribution_json),
+  };
+  const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
+  const suggestedType = item.suggestedFinalType || item.suggested_final_type || '';
   return renderCollapsibleItem({
-    title: item.plainSummary || item.ruleCategory || 'Smart Capture candidate',
-    subtitle: `${item.sourcePackageName || '-'} · ${item.patternHash || '-'}`,
-    statusNode: el('span', { class: 'badge warn', text: item.ruleCategory || 'PENDING' }),
+    title: item.plainSummary || item.plain_summary || ruleCategory || 'Smart Capture candidate',
+    subtitle: `${item.sourcePackageName || item.source_package_name || '-'} · ${item.patternHash || item.pattern_hash || '-'}`,
+    statusNode: el('span', { class: `badge ${ruleCategory === 'BLOCK_NON_TRANSACTION' ? 'danger' : ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: ruleCategory }),
     children: [
+      renderSmartCaptureCandidateInsight(item, groups),
       renderMetaGrid([
-        ['Suggested action', item.suggestedAction],
-        ['Suggested type', item.suggestedFinalType || 'No type change'],
-        ['Samples', item.sampleCount],
-        ['Unique users', item.uniqueUserCount],
-        ['Modification rate', formatPercent(item.modificationRate)],
-        ['Estimated impact', item.estimatedImpact],
-        ['Created', formatDate(item.createdAt)],
+        ['Suggested action', item.suggestedAction || item.suggested_action],
+        ['Suggested type', suggestedType || 'No type change'],
+        ['Samples', item.sampleCount ?? item.sample_count],
+        ['Unique users', item.uniqueUserCount ?? item.unique_user_count],
+        ['Modification rate', formatPercent(item.modificationRate ?? item.modification_rate)],
+        ['Estimated impact', item.estimatedImpact ?? item.estimated_impact],
+        ['Created', formatDate(item.createdAt || item.created_at)],
+      ]),
+      el('div', { class: 'distribution-grid' }, [
+        renderDistributionChips('Action distribution', groups.action),
+        renderDistributionChips('Confidence', groups.confidence),
+        renderDistributionChips('Source trust', groups.sourceTrust),
+        renderDistributionChips('Amount context', groups.amountContext),
+        renderDistributionChips('Transaction type', groups.transactionType),
+        renderDistributionChips('Self detection', groups.selfDetection),
+        renderDistributionChips('Privacy level', groups.privacy),
       ]),
       el('details', { class: 'nested-details' }, [
-        el('summary', { text: 'Aggregate action distribution' }),
-        renderMetaGrid(Object.entries(distribution)),
+        el('summary', { text: 'Raw aggregate JSON' }),
+        el('pre', { class: 'json-preview', text: safeJson({
+          action: groups.action,
+          confidence: groups.confidence,
+          sourceTrust: groups.sourceTrust,
+          amountContext: groups.amountContext,
+          transactionType: groups.transactionType,
+          selfDetection: groups.selfDetection,
+          privacy: groups.privacy,
+        }) }),
+      ]),
+      el('div', { class: 'privacy-note inline-note' }, [
+        el('span', { text: 'Review tip: approve only if the summary is clearly privacy-safe and the candidate cannot turn internal/top-up or promo signals into expense/income quick-save behavior.' }),
       ]),
       el('div', { class: 'actions' }, [
-        el('button', { class: 'btn primary small', text: 'Approve 100%', onclick: () => decideSmartCaptureCandidate(item, true) }),
+        el('button', { class: 'btn primary small', text: 'Approve review-only rule', onclick: () => decideSmartCaptureCandidate(item, true) }),
         el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideSmartCaptureCandidate(item, false) }),
       ]),
     ],
