@@ -85,6 +85,12 @@ const API_PATHS = {
     approve: (id) => `/api/admin/smart-capture/global-rules/candidates/${encodeURIComponent(id)}/approve`,
     reject: (id) => `/api/admin/smart-capture/global-rules/candidates/${encodeURIComponent(id)}/reject`,
   },
+  ocrReceiptRules: {
+    candidates: '/api/admin/ocr-receipt/global-rules/candidates',
+    active: '/api/ocr-receipt/global-rules/active',
+    approve: (id) => `/api/admin/ocr-receipt/global-rules/candidates/${encodeURIComponent(id)}/approve`,
+    reject: (id) => `/api/admin/ocr-receipt/global-rules/candidates/${encodeURIComponent(id)}/reject`,
+  },
 };
 
 function toLocalDateString(date) {
@@ -207,6 +213,7 @@ const state = {
     featureLimitKey: '',
     featureFlagKey: '',
     productPolicyKey: '',
+    globalLearningSourceType: '',
     plan: '',
     userEmail: '',
     periodKey: '',
@@ -835,13 +842,38 @@ async function loadAdminControlData() {
     return;
   }
   if (state.activeTab === 'smartCaptureRules') {
-    const [pending, active] = await Promise.all([
+    const [pending, active, ocrPending, ocrActive] = await Promise.all([
       api(API_PATHS.smartCaptureRules.candidates, { params: { status: 'PENDING' } }),
       api(API_PATHS.smartCaptureRules.active),
+      api(API_PATHS.ocrReceiptRules.candidates, { params: { status: 'PENDING' } }).catch(() => []),
+      api(API_PATHS.ocrReceiptRules.active).catch(() => ({ rules: [] })),
     ]);
-    const pendingItems = normalizeAdminListResponse(pending);
+    const smartItems = normalizeAdminListResponse(pending).map((item) => ({
+      ...item,
+      sourceType: item.sourceType || item.source_type || 'smart_capture',
+      globalLearningKind: 'smart_capture',
+    }));
+    const ocrItems = normalizeAdminListResponse(ocrPending).map((item) => ({
+      ...item,
+      sourceType: item.sourceType || item.source_type || 'receipt_single',
+      globalLearningKind: 'ocr_receipt',
+    }));
+    const selectedSource = state.adminFilters.globalLearningSourceType || '';
+    const pendingItems = [...smartItems, ...ocrItems]
+      .filter((item) => !selectedSource || (item.sourceType || item.source_type) === selectedSource);
     const activePayload = normalizeAdminObjectResponse(active);
-    state.data = { content: pendingItems, activeRules: activePayload.rules || [], page: 0, size: 500, totalElements: pendingItems.length, totalPages: 1 };
+    const ocrActivePayload = normalizeAdminObjectResponse(ocrActive);
+    state.data = {
+      content: pendingItems,
+      activeRules: [
+        ...(activePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture', globalLearningKind: 'smart_capture' })),
+        ...(ocrActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' })),
+      ],
+      page: 0,
+      size: 500,
+      totalElements: pendingItems.length,
+      totalPages: 1,
+    };
     return;
   }
   if (state.activeTab === 'announcements') {
@@ -1029,9 +1061,9 @@ function renderBreadcrumbTrail() {
   const item = getActiveNavItem();
   return el('nav', { class: 'breadcrumb', 'aria-label': 'Breadcrumb' }, [
     el('span', { class: 'breadcrumb-item', text: 'Admin' }),
-    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: '›' }),
+    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âº' }),
     el('span', { class: 'breadcrumb-item', text: group?.title || 'Section' }),
-    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: '›' }),
+    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âº' }),
     el('span', { class: 'breadcrumb-item current', 'aria-current': 'page', text: item.label }),
   ]);
 }
@@ -1049,7 +1081,7 @@ function renderPageContextBar() {
       el('button', {
         class: 'btn ghost small',
         type: 'button',
-        text: state.loading ? 'Refreshing…' : 'Refresh',
+        text: state.loading ? 'RefreshingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦' : 'Refresh',
         disabled: state.loading,
         onclick: () => loadData(),
       }),
@@ -1129,7 +1161,7 @@ function renderAuth() {
       title: 'Sign out',
       onclick: async () => signOut(state.auth),
     }, [
-      el('span', { 'aria-hidden': 'true', text: '↪' }),
+      el('span', { 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã¢â‚¬Â Ã‚Âª' }),
       el('span', { class: 'logout-text', text: 'Sign out' }),
     ]),
   ]));
@@ -1152,7 +1184,7 @@ function renderSidebar() {
         class: 'sidebar-close',
         type: 'button',
         'aria-label': 'Close navigation',
-        text: '×',
+        text: 'ÃƒÆ’Ã¢â‚¬â€',
         onclick: closeNavigation,
       }),
     ]),
@@ -1600,7 +1632,7 @@ function renderAnalyticsDashboard() {
     ['D7 retention', formatPercent(getMetric(overview, ['d7RetentionRate', 'd7Retention'])), 'Seven-day return rate.'],
     ['D30 retention', formatPercent(getMetric(overview, ['d30RetentionRate', 'd30Retention'])), 'Thirty-day return rate.'],
     ['Avg transactions / WAU', formatMetricValue(getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser'])), 'Transactions per weekly active user.'],
-    ['Users with ≥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Users reaching the weekly activity threshold.'],
+    ['Users with ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Users reaching the weekly activity threshold.'],
     ['Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Invites sent through the app.'],
     ['Smart Capture enabled users', formatMetricValue(getMetric(overview, ['smartCaptureEnabledUsers'])), 'Users with Smart Capture enabled.'],
     ['Smart Capture candidate saved rate', formatPercent(getMetric(overview, ['smartCaptureCandidateSavedRate', 'candidateSavedRate'])), 'Proportion of candidates saved.'],
@@ -1610,7 +1642,7 @@ function renderAnalyticsDashboard() {
     renderAnalyticsProgress('D30 retention target', getMetric(overview, ['d30RetentionRate', 'd30Retention']), 8, '%', 'Target >= 8%'),
     renderAnalyticsProgress('Free to paid conversion target', getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion']), 3, '%', 'Target >= 3%'),
     renderAnalyticsProgress('Transaction frequency target', getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser']), 5, '', 'Target >= 5 per WAU'),
-    renderAnalyticsCard('Users with ≥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
+    renderAnalyticsCard('Users with ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
     renderAnalyticsProgress('Paid users target', getMetric(overview, ['paidUsers', 'activePaidUsers']), 100, '', 'Early validation target 100-300'),
     renderAnalyticsCard('Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Shows whether Group Event / Group Goal has viral potential.'),
   ];
@@ -1738,7 +1770,7 @@ function renderFeedbackToolbar() {
     el('div', {}, [el('label', { text: 'Type' }), type]),
     el('div', { class: 'toolbar-context wide' }, [
       el('span', { text: 'Service credit workflow' }),
-      renderInfoHint('Review → select bug level → backend suggests credit → admin confirms. Different statuses trigger different user-friendly backend messages.', { compact: true, label: 'Service credit workflow details' }),
+      renderInfoHint('Review ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ select bug level ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ backend suggests credit ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ admin confirms. Different statuses trigger different user-friendly backend messages.', { compact: true, label: 'Service credit workflow details' }),
     ]),
     el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
@@ -1762,7 +1794,7 @@ function renderItemSummary({ title, subtitle, statusNode }) {
       ]),
       el('div', { class: 'item-summary-right' }, [
         statusNode,
-        el('span', { class: 'item-toggle', 'aria-hidden': 'true', text: '⌄' }),
+        el('span', { class: 'item-toggle', 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã…â€™Ã¢â‚¬Å¾' }),
       ]),
     ]),
   ]);
@@ -1885,7 +1917,7 @@ Thanks for reporting this. Please send a screenshot, screen recording, or the st
   if (normalized === 'REJECTED_NOT_BUG') {
     return `Thanks for the feedback
 
-We reviewed your report and found the behaviour is currently working as designed. We’ll keep it as usability feedback for future improvements.${reasonLine}`;
+We reviewed your report and found the behaviour is currently working as designed. WeÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ll keep it as usability feedback for future improvements.${reasonLine}`;
   }
   if (normalized === 'REJECTED_NOT_REPRODUCIBLE') {
     return `Thanks for helping us check this issue
@@ -2037,7 +2069,7 @@ function renderFeedbackItem(item) {
   ].filter(Boolean);
 
   return renderCollapsibleItem({
-    title: `${item.type || '-'} · ${item.module || '-'}`,
+    title: `${item.type || '-'} Ãƒâ€šÃ‚Â· ${item.module || '-'}`,
     subtitle: item.issue || item.userEmail || extractEmailFromDebugJson(item.debugJson) || 'Feedback report',
     statusNode: el('span', { class: getStatusClass(status), text: getStatusLabel(status) }),
     children: [
@@ -2108,7 +2140,7 @@ function renderReviewPromptItem(item) {
   const isDisabled = Boolean(item.disabled);
   return renderCollapsibleItem({
     title: item.userEmail || item.userId || 'Review prompt state',
-    subtitle: `Prompt count: ${item.promptCount ?? 0} · Native requests: ${item.nativeRequestCount ?? 0}`,
+    subtitle: `Prompt count: ${item.promptCount ?? 0} Ãƒâ€šÃ‚Â· Native requests: ${item.nativeRequestCount ?? 0}`,
     statusNode: el('span', { class: isDisabled ? 'badge warn' : 'badge closed', text: isDisabled ? 'DISABLED' : 'ACTIVE' }),
     children: [
       renderMetaGrid([
@@ -2176,7 +2208,7 @@ function renderCloseModal() {
           el('p', { class: 'eyebrow', text: 'Admin action' }),
           el('h2', { text: title }),
         ]),
-        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
         renderModalNotice(),
@@ -2254,7 +2286,7 @@ function renderFeedbackReviewModal() {
     el('section', { class: 'modal-card modal-card-wide', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Feedback review' }), el('h2', { text: 'Review decision' })]),
-        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
         renderModalNotice(),
@@ -2315,7 +2347,7 @@ function renderFeedbackCreditModal() {
     el('section', { class: 'modal-card', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Service credit' }), el('h2', { text: 'Grant Pro service credit' })]),
-        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
         renderModalNotice(),
@@ -2379,8 +2411,8 @@ function renderFeatureLimitItem(item) {
   const limit = item.limitCount ?? item.limit_count;
   const plan = item.plan || '-';
   const period = item.periodType || item.period_type || 'NONE';
-  const title = `${item.featureKey || item.feature_key || id} · ${plan}`;
-  const subtitle = limit === null || limit === undefined ? `${period} · Unlimited` : `${period} · Limit ${limit}`;
+  const title = `${item.featureKey || item.feature_key || id} Ãƒâ€šÃ‚Â· ${plan}`;
+  const subtitle = limit === null || limit === undefined ? `${period} Ãƒâ€šÃ‚Â· Unlimited` : `${period} Ãƒâ€šÃ‚Â· Limit ${limit}`;
   return renderCollapsibleItem({
     title,
     subtitle,
@@ -2451,7 +2483,7 @@ function renderFeatureFlagItem(item) {
   const rollout = item.rolloutPercentage ?? item.rollout_percentage ?? 100;
   return renderCollapsibleItem({
     title: item.flagKey || item.flag_key || id,
-    subtitle: `${rollout}% rollout${item.targetPlan || item.target_plan ? ` · ${item.targetPlan || item.target_plan}` : ''}`,
+    subtitle: `${rollout}% rollout${item.targetPlan || item.target_plan ? ` Ãƒâ€šÃ‚Â· ${item.targetPlan || item.target_plan}` : ''}`,
     statusNode: el('span', { class: `badge ${enabled ? 'success' : 'danger'}`, text: enabled ? 'Enabled' : 'Disabled' }),
     children: [
       renderMetaGrid([
@@ -2664,7 +2696,7 @@ function renderSubscriptionUserItem(summary) {
   const title = summary?.email || summary?.userId || 'Subscription user';
   return renderCollapsibleItem({
     title,
-    subtitle: `${summary?.tier || '-'} / ${summary?.status || '-'} · provider ${summary?.provider || '-'}`,
+    subtitle: `${summary?.tier || '-'} / ${summary?.status || '-'} Ãƒâ€šÃ‚Â· provider ${summary?.provider || '-'}`,
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
       renderMetaGrid([
@@ -2711,7 +2743,7 @@ function renderSubscriptionSupportSummary(summary, permissions = {}) {
     el('div', {}, [
       el('p', { class: 'eyebrow', text: 'User entitlement' }),
       el('h2', { text: summary.email || 'Subscription user' }),
-      el('p', { class: 'muted', text: `Effective state: ${summary.tier || '-'} / ${summary.status || '-'} · Provider ${summary.provider || '-'}` }),
+      el('p', { class: 'muted', text: `Effective state: ${summary.tier || '-'} / ${summary.status || '-'} Ãƒâ€šÃ‚Â· Provider ${summary.provider || '-'}` }),
     ]),
     renderMetaGrid([
       ['User ID', summary.userId], ['Tier', summary.tier], ['Status', summary.status], ['Billing Cycle', summary.billingCycle],
@@ -2758,8 +2790,8 @@ function renderSubscriptionSupportRequestItem(item) {
   const titleRight = view.targetUserEmail || view.targetUserId || 'Unknown user';
   const hasUsefulDetail = Boolean(view.targetUserEmail || view.currentTier || view.requestedTier || view.reason || view.beforeJson || view.afterJson);
   return renderCollapsibleItem({
-    title: `${titleLeft} · ${titleRight}`,
-    subtitle: `${view.currentTier || '-'} → ${view.requestedTier || '-'} · requested by ${view.requestedByEmail || '-'}`,
+    title: `${titleLeft} Ãƒâ€šÃ‚Â· ${titleRight}`,
+    subtitle: `${view.currentTier || '-'} ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ ${view.requestedTier || '-'} Ãƒâ€šÃ‚Â· requested by ${view.requestedByEmail || '-'}`,
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
       !hasUsefulDetail ? el('div', { class: 'notice warning inline-notice', text: 'This request only returned an ID from the backend/old data. Create a new request from the user search card, or check the backend response shape for this row.' }) : null,
@@ -2882,7 +2914,7 @@ function renderUsageItem(item) {
   const unlimited = item.unlimited || limit === null || limit === undefined;
   const remaining = unlimited ? 'Unlimited' : (item.remaining ?? Math.max(0, Number(limit) - Number(used || 0)));
   return renderCollapsibleItem({
-    title: `${item.featureKey || item.feature_key || '-'} · ${item.periodKey || item.period_key || '-'}`,
+    title: `${item.featureKey || item.feature_key || '-'} Ãƒâ€šÃ‚Â· ${item.periodKey || item.period_key || '-'}`,
     subtitle: item.userEmail || item.user_email || item.userId || item.user_id || 'Usage counter',
     statusNode: el('span', { class: `badge ${unlimited || Number(remaining) > 0 ? 'success' : 'danger'}`, text: unlimited ? 'Unlimited' : `${remaining} left` }),
     children: [
@@ -3017,7 +3049,7 @@ function renderAuditToolbar() {
 function renderAuditItem(item) {
   return renderCollapsibleItem({
     title: item.action || '-',
-    subtitle: `${item.targetType || item.target_type || '-'} · ${item.adminEmail || item.admin_email || 'Admin'}`,
+    subtitle: `${item.targetType || item.target_type || '-'} Ãƒâ€šÃ‚Â· ${item.adminEmail || item.admin_email || 'Admin'}`,
     statusNode: el('span', { class: 'badge neutral', text: formatDate(item.createdAt || item.created_at) }),
     children: [
       renderMetaGrid([
@@ -3059,7 +3091,7 @@ function renderAnnouncementLanguageBadges(item) {
   const hasMs = hasTextValue(item.titleMs || item.title_ms) || hasTextValue(item.messageMs || item.message_ms);
   return el('div', { class: 'language-badges' }, [
     el('span', { class: `mini-badge ${hasEn ? 'success' : 'neutral'}`, text: 'EN' }),
-    el('span', { class: `mini-badge ${hasZh ? 'info' : 'muted'}`, text: '中文' }),
+    el('span', { class: `mini-badge ${hasZh ? 'info' : 'muted'}`, text: 'ÃƒÂ¤Ã‚Â¸Ã‚Â­ÃƒÂ¦Ã¢â‚¬â€œÃ¢â‚¬Â¡' }),
     el('span', { class: `mini-badge ${hasMs ? 'info' : 'muted'}`, text: 'MS' }),
   ]);
 }
@@ -3123,17 +3155,39 @@ function renderSmartCaptureCandidateInsight(item, groups) {
   ]);
 }
 
+function renderGlobalLearningSourceFilter() {
+  const options = [
+    ['', 'All'],
+    ['smart_capture', 'Smart Capture'],
+    ['receipt_single', 'OCR Receipt'],
+    ['ocr_financial_list', 'OCR Financial List'],
+    ['ocr_handwritten', 'OCR Handwritten'],
+  ];
+  return el('div', { class: 'toolbar segmented-toolbar' }, options.map(([value, label]) =>
+    el('button', {
+      class: `btn small ${state.adminFilters.globalLearningSourceType === value ? 'primary' : 'ghost'}`,
+      text: label,
+      onclick: () => {
+        state.adminFilters.globalLearningSourceType = value;
+        loadData();
+      },
+    })
+  ));
+}
+
 
 async function decideSmartCaptureCandidate(item, approve) {
-  if (!confirm(`${approve ? 'Approve' : 'Reject'} this global Smart Capture candidate?`)) return;
+  const isOcr = item.globalLearningKind === 'ocr_receipt' || ['receipt_single', 'ocr_financial_list', 'ocr_handwritten'].includes(item.sourceType || item.source_type);
+  if (!confirm(`${approve ? 'Approve' : 'Reject'} this global learning candidate?`)) return;
   try {
     state.loading = true;
     render();
+    const paths = isOcr ? API_PATHS.ocrReceiptRules : API_PATHS.smartCaptureRules;
     await api(
-      approve ? API_PATHS.smartCaptureRules.approve(item.id) : API_PATHS.smartCaptureRules.reject(item.id),
+      approve ? paths.approve(item.id) : paths.reject(item.id),
       { method: 'POST', body: approve ? { rolloutPercentage: 100 } : {} }
     );
-    setMessage(approve ? 'Global rule approved at 100% rollout.' : 'Candidate rejected for 30 days.');
+    setMessage(approve ? 'Suggestion rule approved at 100% rollout with review-only safeguards.' : 'Candidate rejected for 30 days.');
     await loadData();
   } catch (error) {
     setMessage(error.message || 'Unable to update Smart Capture candidate.', true);
@@ -3143,6 +3197,8 @@ async function decideSmartCaptureCandidate(item, approve) {
 }
 
 function renderSmartCaptureRuleCandidate(item) {
+  const sourceType = item.sourceType || item.source_type || 'smart_capture';
+  const isOcr = ['receipt_single', 'ocr_financial_list', 'ocr_handwritten'].includes(sourceType);
   const groups = {
     action: parseJsonObject(item.actionDistributionJson || item.action_distribution_json),
     confidence: parseJsonObject(item.confidenceDistributionJson || item.confidence_distribution_json),
@@ -3151,16 +3207,37 @@ function renderSmartCaptureRuleCandidate(item) {
     transactionType: parseJsonObject(item.transactionTypeDistributionJson || item.transaction_type_distribution_json),
     selfDetection: parseJsonObject(item.selfDetectionDistributionJson || item.self_detection_distribution_json),
     privacy: parseJsonObject(item.privacyDistributionJson || item.privacy_distribution_json),
+    categoryFamily: parseJsonObject(item.categoryFamilyDistributionJson || item.category_family_distribution_json),
+    walletType: parseJsonObject(item.walletTypeDistributionJson || item.wallet_type_distribution_json),
   };
   const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
   const suggestedType = item.suggestedFinalType || item.suggested_final_type || '';
+  const resolverReasonCodes = item.resolverReasonCodesJson || item.resolver_reason_codes_json || '[]';
   return renderCollapsibleItem({
     title: item.plainSummary || item.plain_summary || ruleCategory || 'Smart Capture candidate',
-    subtitle: `${item.sourcePackageName || item.source_package_name || '-'} · ${item.patternHash || item.pattern_hash || '-'}`,
+    subtitle: `${sourceType} · ${isOcr ? (item.structureSignatureHash || item.structure_signature_hash || '-') : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-')} · ${item.patternHash || item.pattern_hash || '-'}`,
     statusNode: el('span', { class: `badge ${ruleCategory === 'BLOCK_NON_TRANSACTION' ? 'danger' : ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: ruleCategory }),
     children: [
       renderSmartCaptureCandidateInsight(item, groups),
       renderMetaGrid([
+        ['Source type', sourceType],
+        ['Pattern hash', item.patternHash || item.pattern_hash],
+        ['Structure signature hash', item.structureSignatureHash || item.structure_signature_hash || '-'],
+        ['Semantic signature hash', item.semanticSignatureHash || item.semantic_signature_hash || '-'],
+        ['Resolver suggested type', item.resolverSuggestedTransactionType || item.resolver_suggested_transaction_type || '-'],
+        ['Final transaction type', item.finalTransactionType || item.final_transaction_type || suggestedType || '-'],
+        ['Original parser type', item.originalParserTransactionType || item.original_parser_transaction_type || '-'],
+        ['Changed transaction type', item.changedTransactionType ?? item.changed_transaction_type ?? '-'],
+        ['Changed category', item.changedCategory ?? item.changed_category ?? '-'],
+        ['Changed wallet', item.changedWallet ?? item.changed_wallet ?? '-'],
+        ['Changed bucket', item.changedBucket ?? item.changed_bucket ?? '-'],
+        ['Entry type uncertain', item.entryTypeUncertain ?? item.entry_type_uncertain ?? '-'],
+        ['Transfer conflict hint', item.transferConflictHint ?? item.transfer_conflict_hint ?? '-'],
+        ['Correction rate', formatPercent(item.correctionRate ?? item.correction_rate)],
+        ['Conflict rate', formatPercent(item.conflictRate ?? item.conflict_rate)],
+        ['Disagreement rate', formatPercent(item.disagreementRate ?? item.disagreement_rate)],
+        ['Privacy status', item.privacyStatus || item.privacy_status || 'safe'],
+        ['Reason codes', resolverReasonCodes],
         ['Suggested action', item.suggestedAction || item.suggested_action],
         ['Suggested type', suggestedType || 'No type change'],
         ['Samples', item.sampleCount ?? item.sample_count],
@@ -3177,6 +3254,8 @@ function renderSmartCaptureRuleCandidate(item) {
         renderDistributionChips('Transaction type', groups.transactionType),
         renderDistributionChips('Self detection', groups.selfDetection),
         renderDistributionChips('Privacy level', groups.privacy),
+        renderDistributionChips('Category family', groups.categoryFamily),
+        renderDistributionChips('Wallet type', groups.walletType),
       ]),
       el('details', { class: 'nested-details' }, [
         el('summary', { text: 'Raw aggregate JSON' }),
@@ -3185,6 +3264,9 @@ function renderSmartCaptureRuleCandidate(item) {
           confidence: groups.confidence,
           sourceTrust: groups.sourceTrust,
           amountContext: groups.amountContext,
+          resolverReasonCodes,
+          categoryFamily: groups.categoryFamily,
+          walletType: groups.walletType,
           transactionType: groups.transactionType,
           selfDetection: groups.selfDetection,
           privacy: groups.privacy,
@@ -3203,8 +3285,8 @@ function renderSmartCaptureRuleCandidate(item) {
 
 function renderSmartCaptureActiveRule(item) {
   return renderCollapsibleItem({
-    title: `${item.ruleCategory || 'GLOBAL'} · ${item.finalType || item.action || 'REVIEW'}`,
-    subtitle: `${item.sourcePackageName || '-'} · ${item.patternHash || '-'}`,
+    title: `${item.ruleCategory || 'GLOBAL'} Ãƒâ€šÃ‚Â· ${item.finalType || item.action || 'REVIEW'}`,
+    subtitle: `${item.sourcePackageName || '-'} Ãƒâ€šÃ‚Â· ${item.patternHash || '-'}`,
     statusNode: el('span', { class: 'badge success', text: item.status || 'ACTIVE' }),
     children: [renderMetaGrid([
       ['Rollout', `${item.rolloutPercentage ?? 100}%`],
@@ -3220,10 +3302,10 @@ function renderAnnouncementItem(item) {
   const status = getAnnouncementStatus(item);
   const title = item.titleEn || item.title_en || item.title || 'Announcement';
   const type = item.type || 'INFO';
-  const target = `${item.targetPlan || item.target_plan || 'ALL'} · ${item.targetPlatform || item.target_platform || 'ALL'}`;
+  const target = `${item.targetPlan || item.target_plan || 'ALL'} Ãƒâ€šÃ‚Â· ${item.targetPlatform || item.target_platform || 'ALL'}`;
   return renderCollapsibleItem({
     title,
-    subtitle: `${type} · ${target}`,
+    subtitle: `${type} Ãƒâ€šÃ‚Â· ${target}`,
     statusNode: el('span', { class: `badge ${status.tone}`, text: status.text }),
     children: [
       renderAnnouncementLanguageBadges(item),
@@ -3341,30 +3423,30 @@ function renderAnnouncementModal() {
       el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     ]),
     el('details', { class: 'nested-details language-section', open: true }, [
-      el('summary', { text: 'English content · required' }),
+      el('summary', { text: 'English content Ãƒâ€šÃ‚Â· required' }),
       renderPolicySafetyNote('English title and message are required. Chinese and Malay content are optional and will fall back to English if left empty. Action button labels are also optional.'),
       textInput('titleEn', 'Title EN'),
       textArea('messageEn', 'Message EN'),
-      textInput('ctaLabelEn', 'Action button label EN · optional'),
+      textInput('ctaLabelEn', 'Action button label EN Ãƒâ€šÃ‚Â· optional'),
     ]),
     el('details', { class: 'nested-details language-section' }, [
-      el('summary', { text: '中文内容 · optional' }),
-      renderPolicySafetyNote('如果标题或内容留空，App 会显示 English 版本。按钮文字也可以留空。'),
+      el('summary', { text: 'ÃƒÂ¤Ã‚Â¸Ã‚Â­ÃƒÂ¦Ã¢â‚¬â€œÃ¢â‚¬Â¡ÃƒÂ¥Ã¢â‚¬Â Ã¢â‚¬Â¦ÃƒÂ¥Ã‚Â®Ã‚Â¹ Ãƒâ€šÃ‚Â· optional' }),
+      renderPolicySafetyNote('ÃƒÂ¥Ã‚Â¦Ã¢â‚¬Å¡ÃƒÂ¦Ã…Â¾Ã…â€œÃƒÂ¦Ã‚Â Ã¢â‚¬Â¡ÃƒÂ©Ã‚Â¢Ã‹Å“ÃƒÂ¦Ã‹â€ Ã¢â‚¬â€œÃƒÂ¥Ã¢â‚¬Â Ã¢â‚¬Â¦ÃƒÂ¥Ã‚Â®Ã‚Â¹ÃƒÂ§Ã¢â‚¬Â¢Ã¢â€žÂ¢ÃƒÂ§Ã‚Â©Ã‚ÂºÃƒÂ¯Ã‚Â¼Ã…â€™App ÃƒÂ¤Ã‚Â¼Ã…Â¡ÃƒÂ¦Ã‹Å“Ã‚Â¾ÃƒÂ§Ã‚Â¤Ã‚Âº English ÃƒÂ§Ã¢â‚¬Â°Ã‹â€ ÃƒÂ¦Ã…â€œÃ‚Â¬ÃƒÂ£Ã¢â€šÂ¬Ã¢â‚¬Å¡ÃƒÂ¦Ã…â€™Ã¢â‚¬Â°ÃƒÂ©Ã¢â‚¬â„¢Ã‚Â®ÃƒÂ¦Ã¢â‚¬â€œÃ¢â‚¬Â¡ÃƒÂ¥Ã‚Â­Ã¢â‚¬â€ÃƒÂ¤Ã‚Â¹Ã…Â¸ÃƒÂ¥Ã‚ÂÃ‚Â¯ÃƒÂ¤Ã‚Â»Ã‚Â¥ÃƒÂ§Ã¢â‚¬Â¢Ã¢â€žÂ¢ÃƒÂ§Ã‚Â©Ã‚ÂºÃƒÂ£Ã¢â€šÂ¬Ã¢â‚¬Å¡'),
       textInput('titleZh', 'Title ZH'),
       textArea('messageZh', 'Message ZH'),
-      textInput('ctaLabelZh', 'Action button label ZH · optional'),
+      textInput('ctaLabelZh', 'Action button label ZH Ãƒâ€šÃ‚Â· optional'),
     ]),
     el('details', { class: 'nested-details language-section' }, [
-      el('summary', { text: 'Malay content · optional' }),
+      el('summary', { text: 'Malay content Ãƒâ€šÃ‚Â· optional' }),
       renderPolicySafetyNote('Fallback to English if Malay title or message is left empty. The action button label can also be left empty.'),
       textInput('titleMs', 'Title MS'),
       textArea('messageMs', 'Message MS'),
-      textInput('ctaLabelMs', 'Action button label MS · optional'),
+      textInput('ctaLabelMs', 'Action button label MS Ãƒâ€šÃ‚Â· optional'),
     ]),
     el('details', { class: 'nested-details' }, [
       el('summary', { text: 'Optional action button destination' }),
       renderPolicySafetyNote('Enable CTA clickable only when the destination is a supported app navigation key. If CTA clickable is off, labels are treated as reference text only and the app will not show press animation or chevron.'),
-      textInput('ctaAction', 'Action destination key · required only when clickable', 'open_smart_capture_review'),
+      textInput('ctaAction', 'Action destination key Ãƒâ€šÃ‚Â· required only when clickable', 'open_smart_capture_review'),
     ]),
     textArea('reason', 'Audit reason'),
   ], submitAnnouncementModal, true);
@@ -3492,10 +3574,11 @@ function renderAdminControlPage() {
     children.push(renderPolicyShortcutGrid());
     children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
   } else if (state.activeTab === 'smartCaptureRules') {
-    children.push(renderAdminControlHero('Smart Capture Rules', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'Candidates contain package names, structural hashes, and aggregate counters only. Semantic fallback is local, same-package, review-only, and cannot reuse blocking rules.'));
+    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'Candidates contain source types, structural hashes, resolver outcome counters, and privacy-safe distributions only. No notification text, OCR text, merchant, payee, payer, exact amount, account/card number, transaction ID, or image URL is displayed.'));
+    children.push(renderGlobalLearningSourceFilter());
     children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Approval is always manual. Personal exact learning remains higher priority than these global rules.'));
-    children.push(renderControlList(items, renderSmartCaptureRuleCandidate, 'No pending Smart Capture rule candidates.'));
+    children.push(renderPolicySafetyNote('Approval creates suggestion rules only: forceReview=true, allowQuickAction=false, allowAutoSave=false. Personal local learning remains higher priority than global rules.'));
+    children.push(renderControlList(items, renderSmartCaptureRuleCandidate, 'No pending global learning rule candidates.'));
     children.push(el('h2', { text: 'Active rules' }));
     children.push(renderControlList(state.data?.activeRules || [], renderSmartCaptureActiveRule, 'No active global Smart Capture rules.'));
   } else if (state.activeTab === 'usage') {
@@ -3508,7 +3591,7 @@ function renderAdminControlPage() {
     children.push(renderAdminControlHero('Subscription Support', 'Request and approve user entitlement corrections.', 'This page avoids direct one-person edits: support admins create requests, subscription approvers approve/reject, and every applied change is audited.'));
     children.push(renderSubscriptionSupportToolbar());
     children.push(el('div', { class: 'privacy-note' }, [
-      el('span', { text: 'How to use: search user email → create request → approver opens pending request → Approve & apply. To cancel a user subscription, create “Request cancel / Free”; to cancel an unapproved request, use “Cancel request”.' }),
+      el('span', { text: 'How to use: search user email ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ create request ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ approver opens pending request ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Approve & apply. To cancel a user subscription, create ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œRequest cancel / FreeÃƒÂ¢Ã¢â€šÂ¬Ã‚Â; to cancel an unapproved request, use ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œCancel requestÃƒÂ¢Ã¢â€šÂ¬Ã‚Â.' }),
     ]));
     if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
     children.push(renderSubscriptionSupportSummary(state.data?.userSummary, state.data?.permissions || {}));
@@ -3648,7 +3731,7 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
     el('section', { class: `modal-card ${wide ? 'modal-card-wide' : ''}`.trim(), role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: eyebrow }), el('h2', { text: title })]),
-        el('button', { class: 'btn ghost small', text: '×', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [renderModalNotice(), ...bodyChildren]),
       el('div', { class: 'modal-actions' }, [
