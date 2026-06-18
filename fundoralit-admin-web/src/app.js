@@ -3231,7 +3231,7 @@ function renderAnnouncementItem(item) {
         ['Type', type], ['Display', item.displayMode || item.display_mode || 'BANNER'], ['Priority', item.priority ?? 0],
         ['Target Plan', item.targetPlan || item.target_plan], ['Target Platform', item.targetPlatform || item.target_platform],
         ['Start', formatDate(item.startAt || item.start_at)], ['End', formatDate(item.endAt || item.end_at)],
-        ['Dismissible', item.dismissible === false ? 'No' : 'Yes'], ['Enabled', item.enabled ? 'Yes' : 'No'],
+        ['Dismissible', item.dismissible === false ? 'No' : 'Yes'], ['CTA Clickable', item.clickable === false || item.ctaClickable === false || item.cta_clickable === false ? 'No' : 'Yes'], ['Enabled', item.enabled ? 'Yes' : 'No'],
         ['Created', formatDate(item.createdAt || item.created_at)], ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
       el('details', { class: 'nested-details' }, [
@@ -3240,7 +3240,7 @@ function renderAnnouncementItem(item) {
           ['Title EN', item.titleEn || item.title_en], ['Message EN', item.messageEn || item.message_en],
           ['Title ZH', item.titleZh || item.title_zh], ['Message ZH', item.messageZh || item.message_zh],
           ['Title MS', item.titleMs || item.title_ms], ['Message MS', item.messageMs || item.message_ms],
-          ['Action Label EN', item.ctaLabelEn || item.cta_label_en], ['Action Label ZH', item.ctaLabelZh || item.cta_label_zh], ['Action Label MS', item.ctaLabelMs || item.cta_label_ms], ['Action Destination', item.ctaAction || item.cta_action],
+          ['Action Label EN', item.ctaLabelEn || item.cta_label_en], ['Action Label ZH', item.ctaLabelZh || item.cta_label_zh], ['Action Label MS', item.ctaLabelMs || item.cta_label_ms], ['Action Destination', item.ctaAction || item.cta_action], ['Clickable', item.clickable === false || item.ctaClickable === false || item.cta_clickable === false ? 'No' : 'Yes'],
         ]),
       ]),
       el('div', { class: 'actions' }, [
@@ -3275,6 +3275,7 @@ function openAnnouncementModal(item) {
     ctaLabelZh: item?.ctaLabelZh || item?.cta_label_zh || '',
     ctaLabelMs: item?.ctaLabelMs || item?.cta_label_ms || '',
     ctaAction: item?.ctaAction || item?.cta_action || '',
+    clickable: item?.clickable !== false && item?.ctaClickable !== false && item?.cta_clickable !== false,
     reason: '',
   };
   render();
@@ -3322,6 +3323,7 @@ function renderAnnouncementModal() {
   endAt.addEventListener('input', () => { modal.endAt = endAt.value; });
   const dismissible = el('input', { type: 'checkbox' }); dismissible.checked = Boolean(modal.dismissible); dismissible.addEventListener('change', () => { modal.dismissible = dismissible.checked; });
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const clickable = el('input', { type: 'checkbox' }); clickable.checked = Boolean(modal.clickable); clickable.addEventListener('change', () => { modal.clickable = clickable.checked; });
   return renderControlModal(modal.id ? 'Edit announcement' : 'Create announcement', 'Announcement', [
     renderPolicySafetyNote('Banner is best for normal updates. Modal should be reserved for maintenance or critical notices. The app only stores dismissed announcement IDs locally, not announcement content.'),
     el('div', { class: 'form-grid two' }, [
@@ -3335,6 +3337,7 @@ function renderAnnouncementModal() {
     ]),
     el('div', { class: 'form-grid two' }, [
       el('label', { class: 'check-row' }, [dismissible, el('span', { text: 'Dismissible' })]),
+      el('label', { class: 'check-row' }, [clickable, el('span', { text: 'CTA clickable' })]),
       el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     ]),
     el('details', { class: 'nested-details language-section', open: true }, [
@@ -3360,8 +3363,8 @@ function renderAnnouncementModal() {
     ]),
     el('details', { class: 'nested-details' }, [
       el('summary', { text: 'Optional action button destination' }),
-      renderPolicySafetyNote('Action button labels are optional. If the destination key is empty, the app will not show a clickable button even when label fields contain text.'),
-      textInput('ctaAction', 'Action destination key · optional', 'open_smart_capture_review'),
+      renderPolicySafetyNote('Enable CTA clickable only when the destination is a supported app navigation key. If CTA clickable is off, labels are treated as reference text only and the app will not show press animation or chevron.'),
+      textInput('ctaAction', 'Action destination key · required only when clickable', 'open_smart_capture_review'),
     ]),
     textArea('reason', 'Audit reason'),
   ], submitAnnouncementModal, true);
@@ -3422,8 +3425,11 @@ async function submitAnnouncementModal() {
   if (!ctaLabelMs.ok) return validationError(ctaLabelMs.message);
   const ctaAction = requireMaxLength(modal.ctaAction, 'Action destination key', ADMIN_LIMITS.announcementCtaActionMax);
   if (!ctaAction.ok) return validationError(ctaAction.message);
+  const clickable = Boolean(modal.clickable);
   const hasActionDestination = Boolean(ctaAction.value);
-  if (hasActionDestination && !ctaLabelEn.value) return validationError('English action button label is required when an action destination key is provided. Chinese and Malay button labels are optional and will fall back to English.', 'ctaLabelEn');
+  const hasAnyCtaLabel = Boolean(ctaLabelEn.value || ctaLabelZh.value || ctaLabelMs.value);
+  if (clickable && hasAnyCtaLabel && !hasActionDestination) return validationError('Action destination key is required when CTA clickable is enabled and a CTA label is provided.', 'ctaAction');
+  if (clickable && hasActionDestination && !ctaLabelEn.value) return validationError('English action button label is required when a clickable action destination key is provided. Chinese and Malay button labels are optional and will fall back to English.', 'ctaLabelEn');
 
   const reason = requireAuditReason(modal.reason, modal.id ? 'this announcement update' : 'this announcement creation');
   if (!reason.ok) return validationError(reason.message, 'reason');
@@ -3435,11 +3441,11 @@ async function submitAnnouncementModal() {
     type: type.value, displayMode: displayMode.value, priority: priority.value,
     targetPlan: targetPlan.value, targetPlatform: targetPlatform.value,
     startAt: startAt.value, endAt: endAt.value,
-    dismissible: Boolean(modal.dismissible), enabled: Boolean(modal.enabled),
-    ctaLabelEn: hasActionDestination ? ctaLabelEn.value || null : null,
-    ctaLabelZh: hasActionDestination ? ctaLabelZh.value || null : null,
-    ctaLabelMs: hasActionDestination ? ctaLabelMs.value || null : null,
-    ctaAction: hasActionDestination ? ctaAction.value : null,
+    dismissible: Boolean(modal.dismissible), clickable, enabled: Boolean(modal.enabled),
+    ctaLabelEn: (clickable ? hasActionDestination : hasAnyCtaLabel) ? ctaLabelEn.value || null : null,
+    ctaLabelZh: (clickable ? hasActionDestination : hasAnyCtaLabel) ? ctaLabelZh.value || null : null,
+    ctaLabelMs: (clickable ? hasActionDestination : hasAnyCtaLabel) ? ctaLabelMs.value || null : null,
+    ctaAction: clickable && hasActionDestination ? ctaAction.value : null,
     reason: reason.value,
   };
   try {
