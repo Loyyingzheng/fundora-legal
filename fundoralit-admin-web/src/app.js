@@ -1061,9 +1061,9 @@ function renderBreadcrumbTrail() {
   const item = getActiveNavItem();
   return el('nav', { class: 'breadcrumb', 'aria-label': 'Breadcrumb' }, [
     el('span', { class: 'breadcrumb-item', text: 'Admin' }),
-    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âº' }),
+    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: '\u203A' }),
     el('span', { class: 'breadcrumb-item', text: group?.title || 'Section' }),
-    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã¢â€šÂ¬Ã‚Âº' }),
+    el('span', { class: 'breadcrumb-separator', 'aria-hidden': 'true', text: '\u203A' }),
     el('span', { class: 'breadcrumb-item current', 'aria-current': 'page', text: item.label }),
   ]);
 }
@@ -1081,7 +1081,7 @@ function renderPageContextBar() {
       el('button', {
         class: 'btn ghost small',
         type: 'button',
-        text: state.loading ? 'RefreshingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦' : 'Refresh',
+        text: state.loading ? 'Refreshing\u2026' : 'Refresh',
         disabled: state.loading,
         onclick: () => loadData(),
       }),
@@ -1161,7 +1161,7 @@ function renderAuth() {
       title: 'Sign out',
       onclick: async () => signOut(state.auth),
     }, [
-      el('span', { 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã¢â‚¬Â Ã‚Âª' }),
+      el('span', { 'aria-hidden': 'true', text: '\u21AA' }),
       el('span', { class: 'logout-text', text: 'Sign out' }),
     ]),
   ]));
@@ -1184,7 +1184,7 @@ function renderSidebar() {
         class: 'sidebar-close',
         type: 'button',
         'aria-label': 'Close navigation',
-        text: 'ÃƒÆ’Ã¢â‚¬â€',
+        text: '\u00D7',
         onclick: closeNavigation,
       }),
     ]),
@@ -1632,7 +1632,7 @@ function renderAnalyticsDashboard() {
     ['D7 retention', formatPercent(getMetric(overview, ['d7RetentionRate', 'd7Retention'])), 'Seven-day return rate.'],
     ['D30 retention', formatPercent(getMetric(overview, ['d30RetentionRate', 'd30Retention'])), 'Thirty-day return rate.'],
     ['Avg transactions / WAU', formatMetricValue(getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser'])), 'Transactions per weekly active user.'],
-    ['Users with ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Users reaching the weekly activity threshold.'],
+    ['Users with \u22655 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Users reaching the weekly activity threshold.'],
     ['Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Invites sent through the app.'],
     ['Smart Capture enabled users', formatMetricValue(getMetric(overview, ['smartCaptureEnabledUsers'])), 'Users with Smart Capture enabled.'],
     ['Smart Capture candidate saved rate', formatPercent(getMetric(overview, ['smartCaptureCandidateSavedRate', 'candidateSavedRate'])), 'Proportion of candidates saved.'],
@@ -1642,7 +1642,7 @@ function renderAnalyticsDashboard() {
     renderAnalyticsProgress('D30 retention target', getMetric(overview, ['d30RetentionRate', 'd30Retention']), 8, '%', 'Target >= 8%'),
     renderAnalyticsProgress('Free to paid conversion target', getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion']), 3, '%', 'Target >= 3%'),
     renderAnalyticsProgress('Transaction frequency target', getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser']), 5, '', 'Target >= 5 per WAU'),
-    renderAnalyticsCard('Users with ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
+    renderAnalyticsCard('Users with \u22655 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
     renderAnalyticsProgress('Paid users target', getMetric(overview, ['paidUsers', 'activePaidUsers']), 100, '', 'Early validation target 100-300'),
     renderAnalyticsCard('Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Shows whether Group Event / Group Goal has viral potential.'),
   ];
@@ -1770,7 +1770,7 @@ function renderFeedbackToolbar() {
     el('div', {}, [el('label', { text: 'Type' }), type]),
     el('div', { class: 'toolbar-context wide' }, [
       el('span', { text: 'Service credit workflow' }),
-      renderInfoHint('Review ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ select bug level ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ backend suggests credit ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ admin confirms. Different statuses trigger different user-friendly backend messages.', { compact: true, label: 'Service credit workflow details' }),
+      renderInfoHint('Review \u2192 select bug level \u2192 backend suggests credit \u2192 admin confirms. Different statuses trigger different user-friendly backend messages.', { compact: true, label: 'Service credit workflow details' }),
     ]),
     el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
@@ -1794,7 +1794,7 @@ function renderItemSummary({ title, subtitle, statusNode }) {
       ]),
       el('div', { class: 'item-summary-right' }, [
         statusNode,
-        el('span', { class: 'item-toggle', 'aria-hidden': 'true', text: 'ÃƒÂ¢Ã…â€™Ã¢â‚¬Å¾' }),
+        el('span', { class: 'item-toggle', 'aria-hidden': 'true', text: '\u2304' }),
       ]),
     ]),
   ]);
@@ -1917,7 +1917,7 @@ Thanks for reporting this. Please send a screenshot, screen recording, or the st
   if (normalized === 'REJECTED_NOT_BUG') {
     return `Thanks for the feedback
 
-We reviewed your report and found the behaviour is currently working as designed. WeÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ll keep it as usability feedback for future improvements.${reasonLine}`;
+We reviewed your report and found the behaviour is currently working as designed. We\u2019ll keep it as usability feedback for future improvements.${reasonLine}`;
   }
   if (normalized === 'REJECTED_NOT_REPRODUCIBLE') {
     return `Thanks for helping us check this issue
@@ -2069,7 +2069,7 @@ function renderFeedbackItem(item) {
   ].filter(Boolean);
 
   return renderCollapsibleItem({
-    title: `${item.type || '-'} Ãƒâ€šÃ‚Â· ${item.module || '-'}`,
+    title: `${item.type || '-'} \u00B7 ${item.module || '-'}`,
     subtitle: item.issue || item.userEmail || extractEmailFromDebugJson(item.debugJson) || 'Feedback report',
     statusNode: el('span', { class: getStatusClass(status), text: getStatusLabel(status) }),
     children: [
@@ -2140,7 +2140,7 @@ function renderReviewPromptItem(item) {
   const isDisabled = Boolean(item.disabled);
   return renderCollapsibleItem({
     title: item.userEmail || item.userId || 'Review prompt state',
-    subtitle: `Prompt count: ${item.promptCount ?? 0} Ãƒâ€šÃ‚Â· Native requests: ${item.nativeRequestCount ?? 0}`,
+    subtitle: `Prompt count: ${item.promptCount ?? 0} \u00B7 Native requests: ${item.nativeRequestCount ?? 0}`,
     statusNode: el('span', { class: isDisabled ? 'badge warn' : 'badge closed', text: isDisabled ? 'DISABLED' : 'ACTIVE' }),
     children: [
       renderMetaGrid([
@@ -2208,7 +2208,7 @@ function renderCloseModal() {
           el('p', { class: 'eyebrow', text: 'Admin action' }),
           el('h2', { text: title }),
         ]),
-        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: '\u00D7', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
         renderModalNotice(),
@@ -2286,7 +2286,7 @@ function renderFeedbackReviewModal() {
     el('section', { class: 'modal-card modal-card-wide', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Feedback review' }), el('h2', { text: 'Review decision' })]),
-        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: '\u00D7', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
         renderModalNotice(),
@@ -2347,7 +2347,7 @@ function renderFeedbackCreditModal() {
     el('section', { class: 'modal-card', role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Service credit' }), el('h2', { text: 'Grant Pro service credit' })]),
-        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: '\u00D7', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [
         renderModalNotice(),
@@ -2411,8 +2411,8 @@ function renderFeatureLimitItem(item) {
   const limit = item.limitCount ?? item.limit_count;
   const plan = item.plan || '-';
   const period = item.periodType || item.period_type || 'NONE';
-  const title = `${item.featureKey || item.feature_key || id} Ãƒâ€šÃ‚Â· ${plan}`;
-  const subtitle = limit === null || limit === undefined ? `${period} Ãƒâ€šÃ‚Â· Unlimited` : `${period} Ãƒâ€šÃ‚Â· Limit ${limit}`;
+  const title = `${item.featureKey || item.feature_key || id} \u00B7 ${plan}`;
+  const subtitle = limit === null || limit === undefined ? `${period} \u00B7 Unlimited` : `${period} \u00B7 Limit ${limit}`;
   return renderCollapsibleItem({
     title,
     subtitle,
@@ -2483,7 +2483,7 @@ function renderFeatureFlagItem(item) {
   const rollout = item.rolloutPercentage ?? item.rollout_percentage ?? 100;
   return renderCollapsibleItem({
     title: item.flagKey || item.flag_key || id,
-    subtitle: `${rollout}% rollout${item.targetPlan || item.target_plan ? ` Ãƒâ€šÃ‚Â· ${item.targetPlan || item.target_plan}` : ''}`,
+    subtitle: `${rollout}% rollout${item.targetPlan || item.target_plan ? ` \u00B7 ${item.targetPlan || item.target_plan}` : ''}`,
     statusNode: el('span', { class: `badge ${enabled ? 'success' : 'danger'}`, text: enabled ? 'Enabled' : 'Disabled' }),
     children: [
       renderMetaGrid([
@@ -2696,7 +2696,7 @@ function renderSubscriptionUserItem(summary) {
   const title = summary?.email || summary?.userId || 'Subscription user';
   return renderCollapsibleItem({
     title,
-    subtitle: `${summary?.tier || '-'} / ${summary?.status || '-'} Ãƒâ€šÃ‚Â· provider ${summary?.provider || '-'}`,
+    subtitle: `${summary?.tier || '-'} / ${summary?.status || '-'} \u00B7 provider ${summary?.provider || '-'}`,
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
       renderMetaGrid([
@@ -2743,7 +2743,7 @@ function renderSubscriptionSupportSummary(summary, permissions = {}) {
     el('div', {}, [
       el('p', { class: 'eyebrow', text: 'User entitlement' }),
       el('h2', { text: summary.email || 'Subscription user' }),
-      el('p', { class: 'muted', text: `Effective state: ${summary.tier || '-'} / ${summary.status || '-'} Ãƒâ€šÃ‚Â· Provider ${summary.provider || '-'}` }),
+      el('p', { class: 'muted', text: `Effective state: ${summary.tier || '-'} / ${summary.status || '-'} \u00B7 Provider ${summary.provider || '-'}` }),
     ]),
     renderMetaGrid([
       ['User ID', summary.userId], ['Tier', summary.tier], ['Status', summary.status], ['Billing Cycle', summary.billingCycle],
@@ -2790,8 +2790,8 @@ function renderSubscriptionSupportRequestItem(item) {
   const titleRight = view.targetUserEmail || view.targetUserId || 'Unknown user';
   const hasUsefulDetail = Boolean(view.targetUserEmail || view.currentTier || view.requestedTier || view.reason || view.beforeJson || view.afterJson);
   return renderCollapsibleItem({
-    title: `${titleLeft} Ãƒâ€šÃ‚Â· ${titleRight}`,
-    subtitle: `${view.currentTier || '-'} ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ ${view.requestedTier || '-'} Ãƒâ€šÃ‚Â· requested by ${view.requestedByEmail || '-'}`,
+    title: `${titleLeft} \u00B7 ${titleRight}`,
+    subtitle: `${view.currentTier || '-'} \u2192 ${view.requestedTier || '-'} \u00B7 requested by ${view.requestedByEmail || '-'}`,
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
       !hasUsefulDetail ? el('div', { class: 'notice warning inline-notice', text: 'This request only returned an ID from the backend/old data. Create a new request from the user search card, or check the backend response shape for this row.' }) : null,
@@ -2914,7 +2914,7 @@ function renderUsageItem(item) {
   const unlimited = item.unlimited || limit === null || limit === undefined;
   const remaining = unlimited ? 'Unlimited' : (item.remaining ?? Math.max(0, Number(limit) - Number(used || 0)));
   return renderCollapsibleItem({
-    title: `${item.featureKey || item.feature_key || '-'} Ãƒâ€šÃ‚Â· ${item.periodKey || item.period_key || '-'}`,
+    title: `${item.featureKey || item.feature_key || '-'} \u00B7 ${item.periodKey || item.period_key || '-'}`,
     subtitle: item.userEmail || item.user_email || item.userId || item.user_id || 'Usage counter',
     statusNode: el('span', { class: `badge ${unlimited || Number(remaining) > 0 ? 'success' : 'danger'}`, text: unlimited ? 'Unlimited' : `${remaining} left` }),
     children: [
@@ -3049,7 +3049,7 @@ function renderAuditToolbar() {
 function renderAuditItem(item) {
   return renderCollapsibleItem({
     title: item.action || '-',
-    subtitle: `${item.targetType || item.target_type || '-'} Ãƒâ€šÃ‚Â· ${item.adminEmail || item.admin_email || 'Admin'}`,
+    subtitle: `${item.targetType || item.target_type || '-'} \u00B7 ${item.adminEmail || item.admin_email || 'Admin'}`,
     statusNode: el('span', { class: 'badge neutral', text: formatDate(item.createdAt || item.created_at) }),
     children: [
       renderMetaGrid([
@@ -3091,7 +3091,7 @@ function renderAnnouncementLanguageBadges(item) {
   const hasMs = hasTextValue(item.titleMs || item.title_ms) || hasTextValue(item.messageMs || item.message_ms);
   return el('div', { class: 'language-badges' }, [
     el('span', { class: `mini-badge ${hasEn ? 'success' : 'neutral'}`, text: 'EN' }),
-    el('span', { class: `mini-badge ${hasZh ? 'info' : 'muted'}`, text: 'ÃƒÂ¤Ã‚Â¸Ã‚Â­ÃƒÂ¦Ã¢â‚¬â€œÃ¢â‚¬Â¡' }),
+    el('span', { class: `mini-badge ${hasZh ? 'info' : 'muted'}`, text: '\u4E2D\u6587' }),
     el('span', { class: `mini-badge ${hasMs ? 'info' : 'muted'}`, text: 'MS' }),
   ]);
 }
@@ -3285,8 +3285,8 @@ function renderSmartCaptureRuleCandidate(item) {
 
 function renderSmartCaptureActiveRule(item) {
   return renderCollapsibleItem({
-    title: `${item.ruleCategory || 'GLOBAL'} Ãƒâ€šÃ‚Â· ${item.finalType || item.action || 'REVIEW'}`,
-    subtitle: `${item.sourcePackageName || '-'} Ãƒâ€šÃ‚Â· ${item.patternHash || '-'}`,
+    title: `${item.ruleCategory || 'GLOBAL'} \u00B7 ${item.finalType || item.action || 'REVIEW'}`,
+    subtitle: `${item.sourcePackageName || '-'} \u00B7 ${item.patternHash || '-'}`,
     statusNode: el('span', { class: 'badge success', text: item.status || 'ACTIVE' }),
     children: [renderMetaGrid([
       ['Rollout', `${item.rolloutPercentage ?? 100}%`],
@@ -3302,10 +3302,10 @@ function renderAnnouncementItem(item) {
   const status = getAnnouncementStatus(item);
   const title = item.titleEn || item.title_en || item.title || 'Announcement';
   const type = item.type || 'INFO';
-  const target = `${item.targetPlan || item.target_plan || 'ALL'} Ãƒâ€šÃ‚Â· ${item.targetPlatform || item.target_platform || 'ALL'}`;
+  const target = `${item.targetPlan || item.target_plan || 'ALL'} \u00B7 ${item.targetPlatform || item.target_platform || 'ALL'}`;
   return renderCollapsibleItem({
     title,
-    subtitle: `${type} Ãƒâ€šÃ‚Â· ${target}`,
+    subtitle: `${type} \u00B7 ${target}`,
     statusNode: el('span', { class: `badge ${status.tone}`, text: status.text }),
     children: [
       renderAnnouncementLanguageBadges(item),
@@ -3423,30 +3423,30 @@ function renderAnnouncementModal() {
       el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     ]),
     el('details', { class: 'nested-details language-section', open: true }, [
-      el('summary', { text: 'English content Ãƒâ€šÃ‚Â· required' }),
+      el('summary', { text: 'English content \u00B7 required' }),
       renderPolicySafetyNote('English title and message are required. Chinese and Malay content are optional and will fall back to English if left empty. Action button labels are also optional.'),
       textInput('titleEn', 'Title EN'),
       textArea('messageEn', 'Message EN'),
-      textInput('ctaLabelEn', 'Action button label EN Ãƒâ€šÃ‚Â· optional'),
+      textInput('ctaLabelEn', 'Action button label EN \u00B7 optional'),
     ]),
     el('details', { class: 'nested-details language-section' }, [
-      el('summary', { text: 'ÃƒÂ¤Ã‚Â¸Ã‚Â­ÃƒÂ¦Ã¢â‚¬â€œÃ¢â‚¬Â¡ÃƒÂ¥Ã¢â‚¬Â Ã¢â‚¬Â¦ÃƒÂ¥Ã‚Â®Ã‚Â¹ Ãƒâ€šÃ‚Â· optional' }),
-      renderPolicySafetyNote('ÃƒÂ¥Ã‚Â¦Ã¢â‚¬Å¡ÃƒÂ¦Ã…Â¾Ã…â€œÃƒÂ¦Ã‚Â Ã¢â‚¬Â¡ÃƒÂ©Ã‚Â¢Ã‹Å“ÃƒÂ¦Ã‹â€ Ã¢â‚¬â€œÃƒÂ¥Ã¢â‚¬Â Ã¢â‚¬Â¦ÃƒÂ¥Ã‚Â®Ã‚Â¹ÃƒÂ§Ã¢â‚¬Â¢Ã¢â€žÂ¢ÃƒÂ§Ã‚Â©Ã‚ÂºÃƒÂ¯Ã‚Â¼Ã…â€™App ÃƒÂ¤Ã‚Â¼Ã…Â¡ÃƒÂ¦Ã‹Å“Ã‚Â¾ÃƒÂ§Ã‚Â¤Ã‚Âº English ÃƒÂ§Ã¢â‚¬Â°Ã‹â€ ÃƒÂ¦Ã…â€œÃ‚Â¬ÃƒÂ£Ã¢â€šÂ¬Ã¢â‚¬Å¡ÃƒÂ¦Ã…â€™Ã¢â‚¬Â°ÃƒÂ©Ã¢â‚¬â„¢Ã‚Â®ÃƒÂ¦Ã¢â‚¬â€œÃ¢â‚¬Â¡ÃƒÂ¥Ã‚Â­Ã¢â‚¬â€ÃƒÂ¤Ã‚Â¹Ã…Â¸ÃƒÂ¥Ã‚ÂÃ‚Â¯ÃƒÂ¤Ã‚Â»Ã‚Â¥ÃƒÂ§Ã¢â‚¬Â¢Ã¢â€žÂ¢ÃƒÂ§Ã‚Â©Ã‚ÂºÃƒÂ£Ã¢â€šÂ¬Ã¢â‚¬Å¡'),
+      el('summary', { text: '\u4E2D\u6587 content \u00B7 optional' }),
+      renderPolicySafetyNote('If Chinese title or content is empty, the app falls back to English. Add Chinese CTA only when it has a valid destination.'),
       textInput('titleZh', 'Title ZH'),
       textArea('messageZh', 'Message ZH'),
-      textInput('ctaLabelZh', 'Action button label ZH Ãƒâ€šÃ‚Â· optional'),
+      textInput('ctaLabelZh', 'Action button label ZH \u00B7 optional'),
     ]),
     el('details', { class: 'nested-details language-section' }, [
-      el('summary', { text: 'Malay content Ãƒâ€šÃ‚Â· optional' }),
+      el('summary', { text: 'Malay content \u00B7 optional' }),
       renderPolicySafetyNote('Fallback to English if Malay title or message is left empty. The action button label can also be left empty.'),
       textInput('titleMs', 'Title MS'),
       textArea('messageMs', 'Message MS'),
-      textInput('ctaLabelMs', 'Action button label MS Ãƒâ€šÃ‚Â· optional'),
+      textInput('ctaLabelMs', 'Action button label MS \u00B7 optional'),
     ]),
     el('details', { class: 'nested-details' }, [
       el('summary', { text: 'Optional action button destination' }),
       renderPolicySafetyNote('Enable CTA clickable only when the destination is a supported app navigation key. If CTA clickable is off, labels are treated as reference text only and the app will not show press animation or chevron.'),
-      textInput('ctaAction', 'Action destination key Ãƒâ€šÃ‚Â· required only when clickable', 'open_smart_capture_review'),
+      textInput('ctaAction', 'Action destination key \u00B7 required only when clickable', 'open_smart_capture_review'),
     ]),
     textArea('reason', 'Audit reason'),
   ], submitAnnouncementModal, true);
@@ -3591,7 +3591,7 @@ function renderAdminControlPage() {
     children.push(renderAdminControlHero('Subscription Support', 'Request and approve user entitlement corrections.', 'This page avoids direct one-person edits: support admins create requests, subscription approvers approve/reject, and every applied change is audited.'));
     children.push(renderSubscriptionSupportToolbar());
     children.push(el('div', { class: 'privacy-note' }, [
-      el('span', { text: 'How to use: search user email ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ create request ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ approver opens pending request ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ Approve & apply. To cancel a user subscription, create ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œRequest cancel / FreeÃƒÂ¢Ã¢â€šÂ¬Ã‚Â; to cancel an unapproved request, use ÃƒÂ¢Ã¢â€šÂ¬Ã…â€œCancel requestÃƒÂ¢Ã¢â€šÂ¬Ã‚Â.' }),
+      el('span', { text: 'How to use: search user email \u2192 create request \u2192 approver opens pending request \u2192 Approve & apply. To cancel a user subscription, create \u201CRequest cancel / Free\u201D; to cancel an unapproved request, use \u201CCancel request\u201D.' }),
     ]));
     if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
     children.push(renderSubscriptionSupportSummary(state.data?.userSummary, state.data?.permissions || {}));
@@ -3731,7 +3731,7 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
     el('section', { class: `modal-card ${wide ? 'modal-card-wide' : ''}`.trim(), role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: eyebrow }), el('h2', { text: title })]),
-        el('button', { class: 'btn ghost small', text: 'ÃƒÆ’Ã¢â‚¬â€', onclick: closeModal, 'aria-label': 'Close modal' }),
+        el('button', { class: 'btn ghost small', text: '\u00D7', onclick: closeModal, 'aria-label': 'Close modal' }),
       ]),
       el('div', { class: 'modal-body' }, [renderModalNotice(), ...bodyChildren]),
       el('div', { class: 'modal-actions' }, [
