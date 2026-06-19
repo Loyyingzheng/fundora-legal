@@ -3623,3 +3623,109 @@ summary:focus-visible {
 .app-header .header-title-row {
   gap: 0 !important;
 }
+
+/* Emergency Console -------------------------------------------------------- */
+.emergency-console {
+  display: grid;
+  gap: 16px;
+}
+
+.emergency-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.emergency-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.emergency-card.has-missing {
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.emergency-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.emergency-card h3 {
+  margin: 2px 0 0;
+}
+
+.emergency-flag-list {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.22));
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.03);
+}
+
+.emergency-flag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.86rem;
+}
+
+.emergency-flag-row span {
+  overflow-wrap: anywhere;
+}
+
+.emergency-flag-row strong {
+  white-space: nowrap;
+}
+
+.emergency-rules-section {
+  display: grid;
+  gap: 12px;
+}
+
+.compact-list {
+  gap: 10px;
+}
+
+.notice.inline-notice p {
+  margin: 4px 0 0;
+}
+
+.field.invalid input,
+.field.invalid textarea,
+.field.invalid select {
+  border-color: #dc2626 !important;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12);
+}
+
+.field-error {
+  color: #b91c1c;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .emergency-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .emergency-card-head {
+    align-items: flex-start;
+  }
+}
+
+.admin-control-card {
+  display: grid;
+  gap: 16px;
+}
+
+.modal-json-preview {
+  max-height: 520px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

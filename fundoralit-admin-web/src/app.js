@@ -4,12 +4,15 @@ import {
   browserSessionPersistence,
   setPersistence,
   signInWithEmailAndPassword,
+  EmailAuthProvider,
+  reauthenticateWithCredential,
   signOut,
   onAuthStateChanged,
 } from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js';
 
 const config = window.FUNDORALIT_ADMIN_CONFIG || {};
 const coreApiBaseUrl = normalizeBaseUrl(config.coreApiBaseUrl || '');
+const collaborationApiBaseUrl = normalizeBaseUrl(config.collaborationApiBaseUrl || '');
 const firebaseConfig = config.firebase || {};
 const brandLogoSrc = config.brandLogoSrc || './src/assets/fundora-logo.png';
 
@@ -79,17 +82,46 @@ const API_PATHS = {
     update: (id) => `/api/admin/announcements/${encodeURIComponent(id)}`,
     disable: (id) => `/api/admin/announcements/${encodeURIComponent(id)}/disable`,
   },
+  mobilePolicy: {
+    current: '/api/config/mobile-policy',
+  },
+  policyVersions: {
+    list: '/api/admin/policy-versions',
+    get: (id) => `/api/admin/policy-versions/${encodeURIComponent(id)}`,
+    rollback: (id) => `/api/admin/policy-versions/${encodeURIComponent(id)}/rollback`,
+  },
+  appVersionPolicies: {
+    list: '/api/admin/app-version-policies',
+    update: (id) => `/api/admin/app-version-policies/${encodeURIComponent(id)}`,
+  },
+  reviewPromptPolicy: {
+    get: '/api/admin/review-prompt-policy',
+    update: '/api/admin/review-prompt-policy',
+  },
+  rateLimitOverrides: {
+    list: '/api/admin/rate-limit-overrides',
+    create: '/api/admin/rate-limit-overrides',
+    update: (id) => `/api/admin/rate-limit-overrides/${encodeURIComponent(id)}`,
+    delete: (id) => `/api/admin/rate-limit-overrides/${encodeURIComponent(id)}`,
+  },
+  collaborationPolicy: {
+    clearCache: '/api/admin/collaboration-policy/cache/clear',
+  },
   smartCaptureRules: {
     candidates: '/api/admin/smart-capture/global-rules/candidates',
     active: '/api/smart-capture/global-rules/active',
     approve: (id) => `/api/admin/smart-capture/global-rules/candidates/${encodeURIComponent(id)}/approve`,
     reject: (id) => `/api/admin/smart-capture/global-rules/candidates/${encodeURIComponent(id)}/reject`,
+    status: (id, action) => `/api/admin/smart-capture/global-rules/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,
+    killSwitch: '/api/admin/smart-capture/global-rules/kill-switch',
   },
   ocrReceiptRules: {
     candidates: '/api/admin/ocr-receipt/global-rules/candidates',
     active: '/api/ocr-receipt/global-rules/active',
     approve: (id) => `/api/admin/ocr-receipt/global-rules/candidates/${encodeURIComponent(id)}/approve`,
     reject: (id) => `/api/admin/ocr-receipt/global-rules/candidates/${encodeURIComponent(id)}/reject`,
+    status: (id, action) => `/api/admin/ocr-receipt/global-rules/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,
+    killSwitch: '/api/admin/ocr-receipt/global-rules/kill-switch',
   },
 };
 
@@ -221,6 +253,10 @@ const state = {
     dateTo: todayDateString(),
     action: '',
     targetType: '',
+    policyVersionTargetId: '',
+    policyVersionPolicyKey: '',
+    appVersionPlatform: '',
+    rateLimitRouteGroup: '',
     subscriptionRequestStatus: '',
     subscriptionUserTier: '',
     subscriptionUserStatus: '',
@@ -240,7 +276,7 @@ const headerInfoSlot = document.getElementById('headerInfoSlot');
 const ADMIN_ENUMS = {
   featureLimitPeriods: ['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'],
   featureFlagTargetPlans: ['', 'ALL', 'FREE', 'PRO'],
-  productPolicyPlatforms: ['', 'ALL', 'ANDROID', 'IOS', 'WEB'],
+  productPolicyPlatforms: ['', 'ALL', 'ANDROID', 'IOS', 'WEB', 'SERVER'],
   announcementTypes: ['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE'],
   announcementDisplayModes: ['BANNER', 'MODAL'],
   announcementTargetPlans: ['ALL', 'FREE', 'PRO'],
@@ -249,6 +285,8 @@ const ADMIN_ENUMS = {
   subscriptionUserTiers: ['', 'FREE', 'PRO'],
   subscriptionUserStatuses: ['', 'ACTIVE', 'TRIAL', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'CANCELLED', 'EXPIRED', 'EMPTY'],
   subscriptionRequestTypes: ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS', 'CORRECT_TO_PRO', 'CORRECT_TO_FREE'],
+  policyVersionTargetTypes: ['', 'FEATURE_FLAG', 'FEATURE_LIMIT', 'PRODUCT_POLICY', 'ANNOUNCEMENT', 'APP_VERSION_POLICY', 'REVIEW_PROMPT_POLICY', 'RATE_LIMIT_OVERRIDE', 'SMART_CAPTURE_GLOBAL_RULE', 'OCR_RECEIPT_GLOBAL_RULE'],
+  appVersionPlatforms: ['', 'ANDROID', 'IOS', 'WEB'],
 };
 
 const ADMIN_LIMITS = {
@@ -266,6 +304,12 @@ const ADMIN_LIMITS = {
   minAppVersionMax: 40,
   platformMax: 20,
   subscriptionSupportReasonMax: 3000,
+  confirmPhraseMax: 80,
+  adminPasswordMax: 200,
+  appVersionMessageMax: 1000,
+  appVersionReleaseNotesMax: 4000,
+  appVersionUrlMax: 1000,
+  routeGroupMax: 120,
 };
 
 function normalizedTrim(value) {
@@ -280,9 +324,15 @@ function blankToNull(value) {
 function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong. Please try again.') {
   const status = Number(errorOrMessage?.status || 0);
   const payload = errorOrMessage?.payload || {};
+  const nestedData = payload?.data && typeof payload.data === 'object' ? payload.data : {};
+  const errorList = Array.isArray(payload?.errors) ? payload.errors : Array.isArray(nestedData?.errors) ? nestedData.errors : [];
+  const firstError = errorList.map((item) => item?.message || item?.defaultMessage || item).find(Boolean);
   const rawMessage = normalizedTrim(
     payload.message
     || payload.error
+    || nestedData.message
+    || nestedData.error
+    || firstError
     || payload.code
     || errorOrMessage?.message
     || errorOrMessage
@@ -290,14 +340,25 @@ function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong
   );
 
   if (status === 401) return 'Your admin session has expired. Please sign in again before continuing.';
-  if (status === 403) return 'You do not have permission to perform this admin action. Please check whether this account is allowed by the backend admin permission list.';
-  if (status === 404) return 'The selected record could not be found. Please refresh the page and check whether it was already changed or removed.';
-  if (status === 409) return 'This record was changed by another admin or by the backend. Please refresh the latest data before saving again.';
-  if (status === 429) return 'Too many admin requests were sent in a short time. Please wait a moment, then try again.';
-  if (status >= 500) return 'The backend service failed while processing this admin action. Please retry after the service is healthy, or check the backend logs.';
+  if (status === 403) return rawMessage && !/request failed/i.test(rawMessage)
+    ? `Permission denied: ${rawMessage}`
+    : 'You do not have permission to perform this admin action. Please check FUNDORA_ADMIN_EMAILS / backend admin permission settings.';
+  if (status === 404) {
+    const url = String(errorOrMessage?.url || '');
+    if (url.includes('/api/admin/policy-versions')) return 'Policy version backend endpoint is not deployed yet, or the selected policy version no longer exists.';
+    if (url.includes('/api/admin/app-version-policies')) return 'App Version backend endpoint is not deployed yet, or the selected app version policy no longer exists.';
+    if (url.includes('/api/admin/review-prompt-policy')) return 'Review Prompt Policy backend endpoint is not deployed yet. Deploy the backend endpoint or use the Product Policy fallback for review_prompt_policy.';
+    if (url.includes('/api/admin/rate-limit-overrides')) return 'Rate Limit Override backend endpoint is not deployed yet, or the selected override no longer exists.';
+    return 'The selected record or endpoint could not be found. Refresh the page and confirm the backend migration/endpoints are deployed.';
+  }
+  if (status === 409) return 'This record was changed by another admin or by the backend. Refresh the latest data before saving again.';
+  if (status === 429) return 'Too many admin requests were sent in a short time. Wait a moment, then try again.';
+  if (status >= 500) return rawMessage && !/request failed/i.test(rawMessage)
+    ? `Backend service error: ${rawMessage}`
+    : 'The backend service failed while processing this admin action. Check backend logs and retry after it is healthy.';
 
-  if (/request failed \(400\)/i.test(rawMessage)) return 'The backend rejected this request because one or more values are invalid. Please check the highlighted fields and try again.';
-  if (/request failed/i.test(rawMessage)) return 'The request could not be completed. Please check the form values and try again.';
+  if (/request failed \(400\)/i.test(rawMessage)) return 'The backend rejected this request because one or more values are invalid. Check the highlighted fields and audit reason.';
+  if (/request failed/i.test(rawMessage)) return 'The request could not be completed. Check the form values, backend URL, and admin permission, then try again.';
   if (/invalid json/i.test(rawMessage)) return rawMessage.replace(/^Invalid JSON:/i, 'Policy JSON is not valid:');
   return rawMessage || fallback;
 }
@@ -469,10 +530,15 @@ const NAV_GROUPS = [
   {
     title: 'Product Control',
     items: [
+      { id: 'emergencyConsole', label: 'Emergency Console', helper: 'One-click safety', description: 'Disable risky OCR, Smart Capture, collaboration, upload, backup, and maintenance functions without shipping a new app build.', info: 'Use this page only for operational safety. Actions require audit reason, exact confirmation phrase, and admin password re-authentication.' },
       { id: 'featureLimits', label: 'Feature Limits', helper: 'Quota policy', description: 'Control plan limits such as Smart Capture, OCR, presets, wallets, buckets, and group features.', info: 'Change limits carefully. These values affect what free and Pro users can do. Audit reasons are required for policy changes.' },
       { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
       { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app should keep local fallbacks if remote policy is unavailable.' },
-      { id: 'smartCaptureRules', label: 'Smart Capture Rules', helper: 'Manual approval', description: 'Review privacy-safe anonymous Smart Capture rule candidates before activation.', info: 'Only aggregate hashes and counters are shown. No notification text, skeleton text, merchant, payee, payer, counterparty, OCR content, or semantic vectors are stored here.' },
+      { id: 'policyVersions', label: 'Policy Versions', helper: 'Rollback safety', description: 'Inspect saved policy snapshots and roll back bad remote configuration safely.', info: 'Use rollback only when a policy, flag, or operational config causes production risk. Rollback requires reason, exact phrase, and admin verification.' },
+      { id: 'appVersion', label: 'App Version', helper: 'Update policy', description: 'Manage soft update, force update, Play fallback, and app-version messages from backend policy.', info: 'Force update is high risk. Verify version/build fields and messages before saving.' },
+      { id: 'reviewPromptPolicy', label: 'Review Prompt Policy', helper: 'Store prompt config', description: 'Configure app review prompt cooldowns and eligibility thresholds online.', info: 'Keep prompts respectful and low frequency. The backend falls back to properties if remote policy is unavailable.' },
+      { id: 'rateLimitOverrides', label: 'Rate Limit Overrides', helper: 'Temporary throttles', description: 'Store short-lived route limit overrides for operational incidents or campaigns.', info: 'Only effective if the backend has a central rate-limit enforcement path wired to this table.' },
+      { id: 'smartCaptureRules', label: 'Smart Capture Rules', helper: 'Manual approval', description: 'Review privacy-safe anonymous Smart Capture rule candidates before activation.', info: 'Only aggregate hashes and counters are shown. No notification text, skeleton text, merchant, payee, payer, counterparty, OCR content, exact amounts, or semantic vectors are stored here. Semantic slot metadata is coarse dictionary categories only.' },
     ],
   },
   {
@@ -643,9 +709,15 @@ async function getToken(forceRefresh = false) {
 }
 
 async function api(path, options = {}) {
-  if (!coreApiBaseUrl) throw new Error('Core API base URL is not configured in config.js.');
-  const token = await getToken();
-  const url = new URL(`${coreApiBaseUrl}${path}`);
+  const service = options.service || 'core';
+  const baseUrl = service === 'collaboration' ? collaborationApiBaseUrl : coreApiBaseUrl;
+  if (!baseUrl) {
+    throw new Error(service === 'collaboration'
+      ? 'Collaboration API base URL is not configured in config.js. Add collaborationApiBaseUrl to enable cache clear actions.'
+      : 'Core API base URL is not configured in config.js.');
+  }
+  const token = await getToken(options.forceTokenRefresh === true);
+  const url = new URL(`${baseUrl}${path}`);
   Object.entries(options.params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     url.searchParams.set(key, String(value));
@@ -674,10 +746,12 @@ async function api(path, options = {}) {
   try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
 
   if (!response.ok) {
-    const message = json?.message || json?.error || json?.code || `Request failed (${response.status})`;
+    const message = json?.message || json?.error || json?.data?.message || json?.code || `Request failed (${response.status})`;
     const error = new Error(message);
     error.status = response.status;
     error.payload = json;
+    error.service = service;
+    error.url = url.toString();
     throw error;
   }
 
@@ -809,6 +883,40 @@ async function loadAnalyticsData() {
 async function loadAdminControlData() {
   const filters = state.adminFilters;
   let response;
+  if (state.activeTab === 'emergencyConsole') {
+    await loadEmergencyConsoleData();
+    return;
+  }
+  if (state.activeTab === 'policyVersions') {
+    response = await api(API_PATHS.policyVersions.list, {
+      params: {
+        targetType: filters.targetType,
+        targetId: filters.policyVersionTargetId,
+        policyKey: filters.policyVersionPolicyKey,
+      },
+    });
+    const versions = normalizeAdminListResponse(response);
+    state.data = { content: versions, page: 0, size: 200, totalElements: versions.length, totalPages: 1 };
+    return;
+  }
+  if (state.activeTab === 'appVersion') {
+    response = await api(API_PATHS.appVersionPolicies.list);
+    const allItems = normalizeAdminListResponse(response);
+    const filteredItems = allItems.filter((item) => equalsFilter(item.platform || item.platform_name, filters.appVersionPlatform));
+    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
+    return;
+  }
+  if (state.activeTab === 'reviewPromptPolicy') {
+    await loadReviewPromptPolicyData();
+    return;
+  }
+  if (state.activeTab === 'rateLimitOverrides') {
+    response = await api(API_PATHS.rateLimitOverrides.list);
+    const allItems = normalizeAdminListResponse(response);
+    const filteredItems = allItems.filter((item) => String(item.routeGroup || item.route_group || '').toLowerCase().includes(String(filters.rateLimitRouteGroup || '').toLowerCase()));
+    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
+    return;
+  }
   if (state.activeTab === 'featureLimits') {
     response = await api(API_PATHS.featureLimits.list);
     const allItems = normalizeAdminListResponse(response);
@@ -1306,7 +1414,367 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['featureLimits', 'featureFlags', 'productPolicies', 'smartCaptureRules', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['emergencyConsole', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'appVersion', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+}
+
+const EMERGENCY_MODULES = [
+  {
+    id: 'ocr',
+    title: 'OCR recognition',
+    description: 'Controls the whole receipt OCR entry. Use only when local OCR flow itself is unsafe.',
+    flags: ['ocr_enabled'],
+    criticalName: 'OCR',
+  },
+  {
+    id: 'ocrGlobalRules',
+    title: 'OCR global rules',
+    description: 'Controls cloud/global OCR rule sync only. Local OCR should still work when this is disabled.',
+    flags: ['ocr_global_rules_enabled'],
+    criticalName: 'OCR_GLOBAL_RULES',
+    ruleKind: 'ocr_receipt',
+  },
+  {
+    id: 'ocrUpload',
+    title: 'OCR upload',
+    description: 'Blocks receipt/image upload paths. Use this if storage/upload or privacy-safe processing is risky.',
+    flags: ['ocr_upload_enabled'],
+    criticalName: 'OCR_UPLOAD',
+  },
+  {
+    id: 'smartCapture',
+    title: 'Smart Capture',
+    description: 'Controls notification capture entry and review flow availability.',
+    flags: ['smart_capture_enabled'],
+    criticalName: 'SMART_CAPTURE',
+  },
+  {
+    id: 'smartCaptureGlobalRules',
+    title: 'Smart Capture global rules',
+    description: 'Controls cloud/global Smart Capture rule sync. Personal local learning remains local.',
+    flags: ['smart_capture_global_rules_enabled'],
+    criticalName: 'SMART_CAPTURE_GLOBAL_RULES',
+    ruleKind: 'smart_capture',
+  },
+  {
+    id: 'groupEvent',
+    title: 'Group Event',
+    description: 'Controls group event UI and write APIs. Write flag is enforced by collaboration backend.',
+    flags: ['group_event_enabled', 'group_event_write_enabled'],
+    criticalName: 'GROUP_EVENT',
+    collaborationCache: true,
+  },
+  {
+    id: 'groupEventUpload',
+    title: 'Group Event upload',
+    description: 'Controls group event multipart receipt/image upload endpoints.',
+    flags: ['group_event_upload_enabled'],
+    criticalName: 'GROUP_EVENT_UPLOAD',
+    collaborationCache: true,
+  },
+  {
+    id: 'groupGoal',
+    title: 'Group Goal',
+    description: 'Controls group goal UI and write APIs. Write flag is enforced by collaboration backend.',
+    flags: ['group_goal_enabled', 'group_goal_write_enabled'],
+    criticalName: 'GROUP_GOAL',
+    collaborationCache: true,
+  },
+  {
+    id: 'cloudBackup',
+    title: 'Cloud Backup / Restore',
+    description: 'Controls cloud backup, restore, and upload entry points without deleting existing user data.',
+    flags: ['cloud_backup_enabled', 'cloud_restore_enabled', 'cloud_upload_enabled'],
+    criticalName: 'CLOUD_BACKUP',
+  },
+  {
+    id: 'overallAi',
+    title: 'Overall AI entry',
+    description: 'Disables OCR + Smart Capture AI-style entry points while keeping manual records available.',
+    flags: ['overall_ai_entry_enabled'],
+    criticalName: 'OVERALL_AI',
+  },
+  {
+    id: 'maintenance',
+    title: 'Maintenance read-only mode',
+    description: 'Blocks write operations but should keep read/list/detail screens available.',
+    flags: ['maintenance_read_only_enabled'],
+    criticalName: 'MAINTENANCE',
+    invertActionCopy: true,
+    collaborationCache: true,
+  },
+];
+
+const EMERGENCY_POLICY_ALLOWED_KEYS = new Set([
+  'version',
+  'maintenanceReadOnly',
+  'maintenanceMessageEn', 'maintenanceMessageZh', 'maintenanceMessageMs',
+  'smartCaptureDisabledMessageEn', 'smartCaptureDisabledMessageZh', 'smartCaptureDisabledMessageMs',
+  'ocrDisabledMessageEn', 'ocrDisabledMessageZh', 'ocrDisabledMessageMs',
+  'groupEventDisabledMessageEn', 'groupEventDisabledMessageZh', 'groupEventDisabledMessageMs',
+  'groupGoalDisabledMessageEn', 'groupGoalDisabledMessageZh', 'groupGoalDisabledMessageMs',
+  'cloudBackupDisabledMessageEn', 'cloudBackupDisabledMessageZh', 'cloudBackupDisabledMessageMs',
+  'uploadDisabledMessageEn', 'uploadDisabledMessageZh', 'uploadDisabledMessageMs',
+  'readOnlyModeMessageEn', 'readOnlyModeMessageZh', 'readOnlyModeMessageMs',
+]);
+
+function getFeatureFlagKey(item = {}) {
+  return item.flagKey || item.flag_key || item.key || getItemId(item);
+}
+
+function getPolicyKey(item = {}) {
+  return item.policyKey || item.policy_key || getItemId(item);
+}
+
+function buildFlagMap(flags = []) {
+  const map = new Map();
+  flags.forEach((item) => {
+    const key = getFeatureFlagKey(item);
+    if (key) map.set(key, item);
+  });
+  return map;
+}
+
+function getFlagEnabled(flag) {
+  return flag && flag.enabled !== false;
+}
+
+function emergencyModuleFlags(module) {
+  return module.flags.map((key) => state.data?.featureFlagMap?.get(key)).filter(Boolean);
+}
+
+function emergencyModuleMissingFlags(module) {
+  return module.flags.filter((key) => !state.data?.featureFlagMap?.has(key));
+}
+
+function emergencyModuleEnabled(module) {
+  const flags = emergencyModuleFlags(module);
+  if (!flags.length || flags.length < module.flags.length) return false;
+  return flags.every(getFlagEnabled);
+}
+
+function emergencyConfirmPhrase(module, nextEnabled) {
+  const action = nextEnabled ? 'ENABLE' : 'DISABLE';
+  return `${action} ${module.criticalName}`;
+}
+
+function getRulesForKind(kind) {
+  return (state.data?.activeRules || []).filter((item) => item.globalLearningKind === kind);
+}
+
+async function loadEmergencyConsoleData() {
+  const results = await Promise.allSettled([
+    api(API_PATHS.featureFlags.list),
+    api(API_PATHS.productPolicies.list).catch(() => []),
+    api(API_PATHS.smartCaptureRules.active).catch((error) => ({ rules: [], loadError: toFriendlyErrorMessage(error) })),
+    api(API_PATHS.ocrReceiptRules.active).catch((error) => ({ rules: [], loadError: toFriendlyErrorMessage(error) })),
+    api(API_PATHS.auditLogs.list, { params: { page: 0, size: 10 } }).catch((error) => ({ content: [], loadError: toFriendlyErrorMessage(error) })),
+    api(API_PATHS.mobilePolicy.current, { params: { platform: 'WEB', appVersion: 'admin-web', buildNumber: 'admin-web', plan: 'PRO', rolloutSeed: 'admin-web' } }).catch((error) => ({ loadError: toFriendlyErrorMessage(error) })),
+  ]);
+
+  const read = (index, fallback) => results[index].status === 'fulfilled' ? results[index].value : fallback;
+  const featureFlags = normalizeAdminListResponse(read(0, []));
+  const productPolicies = normalizeAdminListResponse(read(1, []));
+  const smartActive = normalizeAdminObjectResponse(read(2, { rules: [] }));
+  const ocrActive = normalizeAdminObjectResponse(read(3, { rules: [] }));
+  const auditsPayload = read(4, { content: [] });
+  const recentCriticalChanges = normalizeAdminListResponse(auditsPayload).slice(0, 10);
+  const loadErrors = results
+    .map((result, index) => result.status === 'rejected' ? `Section ${index + 1}: ${toFriendlyErrorMessage(result.reason)}` : '')
+    .filter(Boolean);
+  [smartActive, ocrActive, auditsPayload, read(5, {})].forEach((payload) => {
+    if (payload?.loadError) loadErrors.push(payload.loadError);
+  });
+
+  state.adminOptions.featureFlagKeys = uniqueSortedOptions(featureFlags.map(getFeatureFlagKey));
+  state.adminOptions.productPolicyKeys = uniqueSortedOptions(productPolicies.map(getPolicyKey));
+  const activeRules = [
+    ...((smartActive.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture', globalLearningKind: 'smart_capture' }))),
+    ...((ocrActive.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' }))),
+  ];
+
+  state.data = {
+    content: featureFlags,
+    featureFlags,
+    featureFlagMap: buildFlagMap(featureFlags),
+    productPolicies,
+    activeRules,
+    recentCriticalChanges,
+    mobilePolicy: normalizeAdminObjectResponse(read(5, {})),
+    loadErrors,
+    page: 0,
+    size: featureFlags.length,
+    totalElements: featureFlags.length,
+    totalPages: 1,
+  };
+}
+
+function validateEmergencyPolicyJsonForAdmin(valueJson) {
+  if (!valueJson || typeof valueJson !== 'object' || Array.isArray(valueJson)) {
+    return { ok: false, message: 'Emergency policy must be a JSON object.' };
+  }
+  if (!Number.isInteger(Number(valueJson.version)) || Number(valueJson.version) < 1) {
+    return { ok: false, message: 'Emergency policy version must be a positive integer.' };
+  }
+  const forbidden = ['rawText', 'rawOcrText', 'rawNotificationText', 'receiptImage', 'imageUrl', 'merchantName', 'payeeName', 'payerName', 'counterpartyName', 'email', 'phoneNumber', 'cardNumber', 'accountNumber', 'transactionId', 'exactAmount', 'token', 'secret', 'password'];
+  for (const key of Object.keys(valueJson)) {
+    if (forbidden.includes(key)) return { ok: false, message: `Emergency policy cannot contain sensitive user data field: ${key}.` };
+    if (!EMERGENCY_POLICY_ALLOWED_KEYS.has(key)) return { ok: false, message: `Unsupported emergency policy key: ${key}. Add backend schema support before saving.` };
+    if (key === 'version') continue;
+    const value = valueJson[key];
+    if (/Message(En|Zh|Ms)$/.test(key)) {
+      if (typeof value !== 'string' || value.length > 500) return { ok: false, message: `${key} must be text up to 500 characters.` };
+    } else if (typeof value !== 'boolean') {
+      return { ok: false, message: `${key} must be a boolean value.` };
+    }
+  }
+  return { ok: true };
+}
+
+async function reauthenticateAdminForCriticalAction(password) {
+  const cleanPassword = normalizedTrim(password);
+  if (!cleanPassword) throw new Error('Admin password is required for this critical operation.');
+  if (cleanPassword.length > ADMIN_LIMITS.adminPasswordMax) throw new Error(`Admin password must be ${ADMIN_LIMITS.adminPasswordMax} characters or less.`);
+  if (!state.user?.email) throw new Error('Cannot verify admin password because the current Firebase user email is missing. Sign in again and retry.');
+  const credential = EmailAuthProvider.credential(state.user.email, cleanPassword);
+  await reauthenticateWithCredential(state.user, credential);
+}
+
+function openEmergencyActionModal(module, nextEnabled) {
+  const missing = emergencyModuleMissingFlags(module);
+  if (missing.length) {
+    setMessage(`Cannot perform this action because these feature flags are missing: ${missing.join(', ')}. Run the V54 emergency policy migration and refresh Admin Web.`, true);
+    render();
+    return;
+  }
+  state.modal = {
+    kind: 'emergencyAction',
+    moduleId: module.id,
+    module,
+    nextEnabled,
+    expectedPhrase: emergencyConfirmPhrase(module, nextEnabled),
+    reason: '',
+    confirmPhrase: '',
+    password: '',
+  };
+  render();
+}
+
+function openEmergencyRuleActionModal(rule, action) {
+  const normalizedAction = String(action || '').toUpperCase();
+  const kind = rule.globalLearningKind === 'ocr_receipt' ? 'OCR_RECEIPT_RULE' : 'SMART_CAPTURE_RULE';
+  state.modal = {
+    kind: 'emergencyRuleAction',
+    rule,
+    action: normalizedAction,
+    expectedPhrase: `${normalizedAction} ${kind}`,
+    reason: '',
+    confirmPhrase: '',
+    password: '',
+  };
+  render();
+}
+
+async function clearCollaborationPolicyCache(reason = '') {
+  if (!collaborationApiBaseUrl) return { skipped: true, message: 'Collaboration API base URL is not configured; collaboration backend will refresh after its cache TTL.' };
+  await api(API_PATHS.collaborationPolicy.clearCache, { service: 'collaboration', method: 'POST', body: { reason } });
+  return { skipped: false, message: 'Collaboration policy cache cleared.' };
+}
+
+async function submitEmergencyActionModal() {
+  const modal = state.modal;
+  const module = modal?.module;
+  if (!module) return;
+  const reason = requireAuditReason(modal.reason, `the ${module.title} emergency action`);
+  if (!reason.ok) return validationError(reason.message, 'reason');
+  const phrase = requireMaxLength(modal.confirmPhrase, 'Confirmation phrase', ADMIN_LIMITS.confirmPhraseMax, { required: true });
+  if (!phrase.ok) return validationError(phrase.message, 'confirmPhrase');
+  if (phrase.value !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
+  const password = requireMaxLength(modal.password, 'Admin password', ADMIN_LIMITS.adminPasswordMax, { required: true });
+  if (!password.ok) return validationError(password.message, 'password');
+
+  const flags = emergencyModuleFlags(module);
+  if (flags.length < module.flags.length) return validationError('Some required feature flags are missing. Refresh after running the migration.', 'confirmPhrase');
+
+  state.modal.loading = true;
+  state.modal.error = '';
+  state.modal.fieldErrors = {};
+  render();
+  try {
+    await reauthenticateAdminForCriticalAction(password.value);
+    for (const flag of flags) {
+      const id = getItemId(flag);
+      await api(API_PATHS.featureFlags.update(id), {
+        method: 'PATCH',
+        body: {
+          enabled: Boolean(modal.nextEnabled),
+          rolloutPercentage: Number(flag.rolloutPercentage ?? flag.rollout_percentage ?? 100),
+          targetPlan: flag.targetPlan || flag.target_plan || null,
+          minAppVersion: flag.minAppVersion || flag.min_app_version || null,
+          description: flag.description || null,
+          reason: reason.value,
+        },
+        forceTokenRefresh: true,
+      });
+    }
+    let cacheMessage = '';
+    if (module.collaborationCache) {
+      const cacheResult = await clearCollaborationPolicyCache(reason.value);
+      cacheMessage = cacheResult.message;
+    }
+    setMessage(`${module.title} updated. ${cacheMessage}`.trim());
+    state.modal = null;
+    await loadData();
+  } catch (error) {
+    if (state.modal) {
+      state.modal.loading = false;
+      const message = /auth\/invalid-credential|auth\/wrong-password|auth\/user-mismatch/i.test(String(error?.code || error?.message || ''))
+        ? 'Admin password verification failed. Re-enter the password for the currently signed-in admin account.'
+        : error;
+      setModalError(message, /password|credential|auth/i.test(String(error?.code || error?.message || '')) ? 'password' : '');
+    } else {
+      setMessage(error, true);
+      state.loading = false;
+      render();
+    }
+  }
+}
+
+async function submitEmergencyRuleActionModal() {
+  const modal = state.modal;
+  const rule = modal?.rule;
+  if (!rule) return;
+  const reason = requireAuditReason(modal.reason, `the ${modal.action} global rule action`);
+  if (!reason.ok) return validationError(reason.message, 'reason');
+  const phrase = requireMaxLength(modal.confirmPhrase, 'Confirmation phrase', ADMIN_LIMITS.confirmPhraseMax, { required: true });
+  if (!phrase.ok) return validationError(phrase.message, 'confirmPhrase');
+  if (phrase.value !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
+  const password = requireMaxLength(modal.password, 'Admin password', ADMIN_LIMITS.adminPasswordMax, { required: true });
+  if (!password.ok) return validationError(password.message, 'password');
+
+  const id = rule.id || rule.ruleId || rule.rule_id || rule.hash || rule.patternHash;
+  if (!id) return validationError('Cannot identify this global rule id. Refresh the list and try again.', 'confirmPhrase');
+  const paths = rule.globalLearningKind === 'ocr_receipt' ? API_PATHS.ocrReceiptRules : API_PATHS.smartCaptureRules;
+
+  state.modal.loading = true;
+  state.modal.error = '';
+  state.modal.fieldErrors = {};
+  render();
+  try {
+    await reauthenticateAdminForCriticalAction(password.value);
+    await api(paths.status(id, modal.action), { method: 'POST', body: { reason: reason.value }, forceTokenRefresh: true });
+    setMessage(`${humanizeKey(rule.globalLearningKind)} rule ${modal.action.toLowerCase()} completed.`);
+    state.modal = null;
+    await loadData();
+  } catch (error) {
+    if (state.modal) {
+      state.modal.loading = false;
+      setModalError(error, /password|credential|auth/i.test(String(error?.code || error?.message || '')) ? 'password' : '');
+    } else {
+      setMessage(error, true);
+      state.loading = false;
+      render();
+    }
+  }
 }
 
 
@@ -2185,6 +2653,14 @@ function renderAdminModal() {
   if (state.modal.kind === 'subscriptionSupportRequest') return renderSubscriptionSupportRequestModal();
   if (state.modal.kind === 'subscriptionSupportReview') return renderSubscriptionSupportReviewModal();
   if (state.modal.kind === 'announcementEdit') return renderAnnouncementModal();
+  if (state.modal.kind === 'emergencyAction') return renderEmergencyActionModal();
+  if (state.modal.kind === 'emergencyRuleAction') return renderEmergencyRuleActionModal();
+  if (state.modal.kind === 'policyVersionView') return renderPolicyVersionViewModal();
+  if (state.modal.kind === 'policyRollback') return renderPolicyRollbackModal();
+  if (state.modal.kind === 'appVersionEdit') return renderAppVersionPolicyModal();
+  if (state.modal.kind === 'reviewPromptPolicyEdit') return renderReviewPromptPolicyModal();
+  if (state.modal.kind === 'rateLimitOverrideEdit') return renderRateLimitOverrideModal();
+  if (state.modal.kind === 'rateLimitOverrideDelete') return renderRateLimitOverrideDeleteModal();
   return renderCloseModal();
 }
 
@@ -2604,6 +3080,10 @@ async function submitProductPolicyModal() {
   let valueJson;
   try { valueJson = parseJsonInput(jsonText, {}); } catch (error) { return validationError(`Invalid JSON: ${error.message}`, 'valueJson'); }
   if (!valueJson || typeof valueJson !== 'object' || Array.isArray(valueJson)) return validationError('Policy JSON must be a JSON object.', 'valueJson');
+  if (String(modal.id || '').toLowerCase() === 'emergency_policy') {
+    const emergencyValidation = validateEmergencyPolicyJsonForAdmin(valueJson);
+    if (!emergencyValidation.ok) return validationError(emergencyValidation.message, 'valueJson');
+  }
   const platform = requireOneOf(modal.platform || '', ADMIN_ENUMS.productPolicyPlatforms, 'Platform', { allowEmpty: true });
   if (!platform.ok) return validationError(platform.message, 'platform');
   const minVersion = validateVersionText(modal.minAppVersion, 'Min app version');
@@ -3207,6 +3687,9 @@ function renderSmartCaptureRuleCandidate(item) {
     transactionType: parseJsonObject(item.transactionTypeDistributionJson || item.transaction_type_distribution_json),
     selfDetection: parseJsonObject(item.selfDetectionDistributionJson || item.self_detection_distribution_json),
     privacy: parseJsonObject(item.privacyDistributionJson || item.privacy_distribution_json),
+    language: parseJsonObject(item.languageDistributionJson || item.language_distribution_json),
+    finalAccountingIntent: parseJsonObject(item.finalAccountingIntentDistributionJson || item.final_accounting_intent_distribution_json),
+    movementNature: parseJsonObject(item.movementNatureDistributionJson || item.movement_nature_distribution_json),
     categoryFamily: parseJsonObject(item.categoryFamilyDistributionJson || item.category_family_distribution_json),
     walletType: parseJsonObject(item.walletTypeDistributionJson || item.wallet_type_distribution_json),
   };
@@ -3215,7 +3698,7 @@ function renderSmartCaptureRuleCandidate(item) {
   const resolverReasonCodes = item.resolverReasonCodesJson || item.resolver_reason_codes_json || '[]';
   return renderCollapsibleItem({
     title: item.plainSummary || item.plain_summary || ruleCategory || 'Smart Capture candidate',
-    subtitle: `${sourceType} · ${isOcr ? (item.structureSignatureHash || item.structure_signature_hash || '-') : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-')} · ${item.patternHash || item.pattern_hash || '-'}`,
+    subtitle: `${sourceType} Â· ${isOcr ? (item.structureSignatureHash || item.structure_signature_hash || '-') : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-')} Â· ${item.patternHash || item.pattern_hash || '-'}`,
     statusNode: el('span', { class: `badge ${ruleCategory === 'BLOCK_NON_TRANSACTION' ? 'danger' : ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: ruleCategory }),
     children: [
       renderSmartCaptureCandidateInsight(item, groups),
@@ -3224,6 +3707,8 @@ function renderSmartCaptureRuleCandidate(item) {
         ['Pattern hash', item.patternHash || item.pattern_hash],
         ['Structure signature hash', item.structureSignatureHash || item.structure_signature_hash || '-'],
         ['Semantic signature hash', item.semanticSignatureHash || item.semantic_signature_hash || '-'],
+        ['Semantic slot signature hash', item.semanticSlotSignatureHash || item.semantic_slot_signature_hash || '-'],
+        ['Semantic slot summary', item.semanticSlotSummary || item.semantic_slot_summary || '-'],
         ['Resolver suggested type', item.resolverSuggestedTransactionType || item.resolver_suggested_transaction_type || '-'],
         ['Final transaction type', item.finalTransactionType || item.final_transaction_type || suggestedType || '-'],
         ['Original parser type', item.originalParserTransactionType || item.original_parser_transaction_type || '-'],
@@ -3254,6 +3739,9 @@ function renderSmartCaptureRuleCandidate(item) {
         renderDistributionChips('Transaction type', groups.transactionType),
         renderDistributionChips('Self detection', groups.selfDetection),
         renderDistributionChips('Privacy level', groups.privacy),
+        renderDistributionChips('Language profile', groups.language),
+        renderDistributionChips('Final accounting intent', groups.finalAccountingIntent),
+        renderDistributionChips('Movement nature', groups.movementNature),
         renderDistributionChips('Category family', groups.categoryFamily),
         renderDistributionChips('Wallet type', groups.walletType),
       ]),
@@ -3312,6 +3800,7 @@ function renderAnnouncementItem(item) {
       renderMetaGrid([
         ['Type', type], ['Display', item.displayMode || item.display_mode || 'BANNER'], ['Priority', item.priority ?? 0],
         ['Target Plan', item.targetPlan || item.target_plan], ['Target Platform', item.targetPlatform || item.target_platform],
+        ['Min app version', item.minAppVersion || item.min_app_version], ['Max app version', item.maxAppVersion || item.max_app_version],
         ['Start', formatDate(item.startAt || item.start_at)], ['End', formatDate(item.endAt || item.end_at)],
         ['Dismissible', item.dismissible === false ? 'No' : 'Yes'], ['CTA Clickable', item.clickable === false || item.ctaClickable === false || item.cta_clickable === false ? 'No' : 'Yes'], ['Enabled', item.enabled ? 'Yes' : 'No'],
         ['Created', formatDate(item.createdAt || item.created_at)], ['Updated', formatDate(item.updatedAt || item.updated_at)],
@@ -3349,6 +3838,8 @@ function openAnnouncementModal(item) {
     priority: item?.priority ?? 0,
     targetPlan: item?.targetPlan || item?.target_plan || 'ALL',
     targetPlatform: item?.targetPlatform || item?.target_platform || 'ALL',
+    minAppVersion: item?.minAppVersion || item?.min_app_version || '',
+    maxAppVersion: item?.maxAppVersion || item?.max_app_version || '',
     startAt: item?.startAt || item?.start_at || '',
     endAt: item?.endAt || item?.end_at || '',
     dismissible: item?.dismissible !== false,
@@ -3397,6 +3888,10 @@ function renderAnnouncementModal() {
   const display = select(['BANNER', 'MODAL'], modal.displayMode, (value) => { modal.displayMode = value; });
   const plan = select(['ALL', 'FREE', 'PRO'], modal.targetPlan, (value) => { modal.targetPlan = value; });
   const platform = select(['ALL', 'ANDROID', 'IOS', 'WEB'], modal.targetPlatform, (value) => { modal.targetPlatform = value; });
+  const minVersionInput = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '', 'data-field-key': 'minAppVersion' });
+  minVersionInput.addEventListener('input', () => { modal.minAppVersion = minVersionInput.value; });
+  const maxVersionInput = el('input', { placeholder: 'Optional max app version', value: modal.maxAppVersion || '', 'data-field-key': 'maxAppVersion' });
+  maxVersionInput.addEventListener('input', () => { modal.maxAppVersion = maxVersionInput.value; });
   const priority = el('input', { type: 'number', min: '0', value: modal.priority ?? 0 });
   priority.addEventListener('input', () => { modal.priority = priority.value; });
   const startAt = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.startAt) });
@@ -3413,6 +3908,8 @@ function renderAnnouncementModal() {
       el('div', { class: 'field' }, [el('label', { text: 'Display mode' }), display]),
       el('div', { class: 'field' }, [el('label', { text: 'Target plan' }), plan]),
       el('div', { class: 'field' }, [el('label', { text: 'Target platform' }), platform]),
+      el('div', { class: modalFieldClass('minAppVersion') }, [el('label', { text: 'Min app version' }), minVersionInput, renderFieldError('minAppVersion')]),
+      el('div', { class: modalFieldClass('maxAppVersion') }, [el('label', { text: 'Max app version' }), maxVersionInput, renderFieldError('maxAppVersion')]),
       el('div', { class: 'field' }, [el('label', { text: 'Priority' }), priority]),
       el('div', { class: 'field' }, [el('label', { text: 'Start at' }), startAt]),
       el('div', { class: 'field' }, [el('label', { text: 'End at' }), endAt]),
@@ -3490,6 +3987,10 @@ async function submitAnnouncementModal() {
   if (!targetPlan.ok) return validationError(targetPlan.message, 'targetPlan');
   const targetPlatform = requireOneOf(modal.targetPlatform, ADMIN_ENUMS.announcementTargetPlatforms, 'Target platform');
   if (!targetPlatform.ok) return validationError(targetPlatform.message);
+  const minAppVersion = validateVersionText(modal.minAppVersion, 'Min app version');
+  if (!minAppVersion.ok) return validationError(minAppVersion.message, 'minAppVersion');
+  const maxAppVersion = validateVersionText(modal.maxAppVersion, 'Max app version');
+  if (!maxAppVersion.ok) return validationError(maxAppVersion.message, 'maxAppVersion');
   const priority = parseWholeNumber(modal.priority, 'Priority', { min: 0, max: ADMIN_LIMITS.announcementPriorityMax });
   if (!priority.ok) return validationError(priority.message);
 
@@ -3522,6 +4023,7 @@ async function submitAnnouncementModal() {
     messageEn: messageEn.value, messageZh: messageZh.value || null, messageMs: messageMs.value || null,
     type: type.value, displayMode: displayMode.value, priority: priority.value,
     targetPlan: targetPlan.value, targetPlatform: targetPlatform.value,
+    minAppVersion: minAppVersion.value, maxAppVersion: maxAppVersion.value,
     startAt: startAt.value, endAt: endAt.value,
     dismissible: Boolean(modal.dismissible), clickable, enabled: Boolean(modal.enabled),
     ctaLabelEn: (clickable ? hasActionDestination : hasAnyCtaLabel) ? ctaLabelEn.value || null : null,
@@ -3547,6 +4049,788 @@ async function submitAnnouncementModal() {
   }
 }
 
+function renderEmergencyConsole() {
+  const loadErrors = state.data?.loadErrors || [];
+  const mobilePolicy = state.data?.mobilePolicy || {};
+  return el('div', { class: 'emergency-console' }, [
+    loadErrors.length ? el('div', { class: 'notice warning inline-notice' }, [
+      el('strong', { text: 'Some emergency data could not be loaded' }),
+      el('p', { text: loadErrors.join(' | ') }),
+    ]) : null,
+    el('div', { class: 'compact-guidance warning' }, [
+      el('strong', { text: 'Critical operations require verification' }),
+      renderInfoHint('Each emergency action requires an audit reason, exact confirmation phrase, and Firebase password re-authentication. Missing flags usually mean the V54 migration has not run in the selected backend.', { compact: true, label: 'Emergency verification details' }),
+    ]),
+    renderMetaGrid([
+      ['Core API', coreApiBaseUrl || 'Not configured'],
+      ['Collaboration API', collaborationApiBaseUrl || 'Not configured'],
+      ['Current config version', mobilePolicy.configVersion || mobilePolicy.config_version || '-'],
+      ['Collaboration cache clear', collaborationApiBaseUrl ? 'Available' : 'Skipped until collaborationApiBaseUrl is configured'],
+    ]),
+    el('div', { class: 'emergency-grid' }, EMERGENCY_MODULES.map(renderEmergencyModuleCard)),
+    renderEmergencyRulesSection(),
+    renderRecentCriticalChanges(),
+  ]);
+}
+
+function renderEmergencyModuleCard(module) {
+  const missing = emergencyModuleMissingFlags(module);
+  const flags = emergencyModuleFlags(module);
+  const enabled = emergencyModuleEnabled(module);
+  const statusText = missing.length ? 'Missing flag' : enabled ? 'Enabled' : 'Disabled';
+  const tone = missing.length ? 'warn' : enabled ? 'success' : 'danger';
+  const nextEnabled = !enabled;
+  const actionText = nextEnabled ? (module.invertActionCopy ? 'Enable read-only' : 'Enable') : (module.invertActionCopy ? 'Disable read-only' : 'Disable');
+  return el('article', { class: `emergency-card card ${missing.length ? 'has-missing' : ''}`.trim() }, [
+    el('div', { class: 'emergency-card-head' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Emergency switch' }),
+        el('h3', { text: module.title }),
+      ]),
+      el('span', { class: `badge ${tone}`, text: statusText }),
+    ]),
+    el('p', { class: 'muted', text: module.description }),
+    missing.length ? el('div', { class: 'notice warning inline-notice', text: `Missing: ${missing.join(', ')}. Run V54 migration then refresh.` }) : null,
+    el('div', { class: 'emergency-flag-list' }, module.flags.map((key) => {
+      const flag = state.data?.featureFlagMap?.get(key);
+      return el('div', { class: 'emergency-flag-row' }, [
+        el('span', { text: key }),
+        el('strong', { text: flag ? (getFlagEnabled(flag) ? 'ON' : 'OFF') : 'MISSING' }),
+      ]);
+    })),
+    flags.length ? renderMetaGrid(flags.map((flag) => [
+      getFeatureFlagKey(flag),
+      `${getFlagEnabled(flag) ? 'enabled' : 'disabled'} · rollout ${flag.rolloutPercentage ?? flag.rollout_percentage ?? 100}% · plan ${flag.targetPlan || flag.target_plan || 'ALL'} · min ${flag.minAppVersion || flag.min_app_version || '-'}`,
+    ])) : null,
+    el('div', { class: 'actions' }, [
+      el('button', {
+        class: nextEnabled ? 'btn success small' : 'btn danger small',
+        text: actionText,
+        disabled: Boolean(missing.length || state.loading),
+        onclick: () => openEmergencyActionModal(module, nextEnabled),
+      }),
+      module.collaborationCache ? el('button', {
+        class: 'btn ghost small',
+        text: collaborationApiBaseUrl ? 'Clear collaboration cache' : 'Cache clear not configured',
+        disabled: !collaborationApiBaseUrl || state.loading,
+        onclick: async () => {
+          state.loading = true;
+          state.error = '';
+          render();
+          try {
+            const result = await clearCollaborationPolicyCache('Manual emergency console cache clear.');
+            setMessage(result.message);
+            await loadData();
+          } catch (error) {
+            setMessage(error, true);
+            state.loading = false;
+            render();
+          }
+        },
+      }) : null,
+    ]),
+  ]);
+}
+
+function renderEmergencyRulesSection() {
+  const activeRules = state.data?.activeRules || [];
+  return el('section', { class: 'card emergency-rules-section' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('h2', { text: 'Active global rules' }),
+      renderInfoHint('These actions affect cloud/global suggestion rules only. Local OCR parser and personal local learning should continue to work when global rules are paused.', { compact: true, label: 'Global rule safety details' }),
+    ]),
+    activeRules.length ? el('div', { class: 'list compact-list' }, activeRules.slice(0, 12).map(renderEmergencyActiveRule)) : el('div', { class: 'empty-state compact-empty' }, [el('strong', { text: 'No active global rules returned.' })]),
+  ]);
+}
+
+function renderEmergencyActiveRule(rule) {
+  const kind = rule.globalLearningKind === 'ocr_receipt' ? 'OCR receipt' : 'Smart Capture';
+  const id = rule.id || rule.ruleId || rule.rule_id || rule.hash || rule.patternHash || '-';
+  return renderCollapsibleItem({
+    title: `${kind} rule`,
+    subtitle: `ID: ${id}`,
+    statusNode: el('span', { class: 'badge success', text: 'Active' }),
+    children: [
+      renderMetaGrid([
+        ['Kind', kind],
+        ['Source type', rule.sourceType || rule.source_type],
+        ['Confidence', rule.confidence || rule.confidenceScore || rule.confidence_score],
+        ['Updated', formatDate(rule.updatedAt || rule.updated_at || rule.activatedAt || rule.activated_at)],
+      ]),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Safe rule payload' }), el('pre', { text: compactJson(rule) })]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn ghost small', text: 'Pause', onclick: () => openEmergencyRuleActionModal(rule, 'PAUSE') }),
+        el('button', { class: 'btn danger small', text: 'Delete', onclick: () => openEmergencyRuleActionModal(rule, 'DELETE') }),
+      ]),
+    ],
+  });
+}
+
+function renderRecentCriticalChanges() {
+  const items = state.data?.recentCriticalChanges || [];
+  return el('section', { class: 'card' }, [
+    el('div', { class: 'section-title-row' }, [el('h2', { text: 'Recent critical changes' }), renderInfoHint('Pulled from audit logs when available. If empty, check whether audit log endpoint is deployed and the active account has permission.', { compact: true, label: 'Audit details' })]),
+    items.length ? el('div', { class: 'list compact-list' }, items.map(renderAuditItem)) : el('div', { class: 'empty-state compact-empty' }, [el('strong', { text: 'No recent audit entries loaded.' })]),
+  ]);
+}
+
+function renderEmergencyActionModal() {
+  const modal = state.modal;
+  const reason = el('textarea', { rows: '3', placeholder: 'Required. Example: Disable group event writes because duplicate settlement records are being generated.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
+  const password = el('input', { type: 'password', placeholder: 'Current admin password', value: modal.password || '', autocomplete: 'current-password', 'data-field-key': 'password' });
+  password.addEventListener('input', () => { modal.password = password.value; });
+  return renderControlModal(`${modal.nextEnabled ? 'Enable' : 'Disable'} ${modal.module.title}`, 'Emergency Console', [
+    el('div', { class: 'compact-guidance warning' }, [
+      el('strong', { text: 'This is a critical production action' }),
+      el('p', { text: `To continue, type exactly “${modal.expectedPhrase}” and verify your admin password.` }),
+    ]),
+    renderMetaGrid([['Module', modal.module.title], ['Flags', modal.module.flags.join(', ')], ['Expected phrase', modal.expectedPhrase]]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
+    el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password verification' }), password, renderFieldError('password'), el('small', { class: 'field-help', text: 'Password is used only for Firebase re-authentication. It is not sent to the Fundoralit backend or stored in logs.' })]),
+  ], submitEmergencyActionModal, true);
+}
+
+function renderEmergencyRuleActionModal() {
+  const modal = state.modal;
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
+  const password = el('input', { type: 'password', placeholder: 'Current admin password', value: modal.password || '', autocomplete: 'current-password', 'data-field-key': 'password' });
+  password.addEventListener('input', () => { modal.password = password.value; });
+  return renderControlModal(`${modal.action} global rule`, 'Global Rule Emergency Action', [
+    el('div', { class: 'compact-guidance warning' }, [
+      el('strong', { text: 'Global rule action' }),
+      el('p', { text: `This affects cloud/global suggestion rules only. Type exactly “${modal.expectedPhrase}”.` }),
+    ]),
+    renderMetaGrid([['Rule kind', modal.rule?.globalLearningKind], ['Rule id', modal.rule?.id || modal.rule?.ruleId || modal.rule?.rule_id || '-'], ['Expected phrase', modal.expectedPhrase]]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
+    el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password verification' }), password, renderFieldError('password')]),
+  ], submitEmergencyRuleActionModal, true);
+}
+
+async function loadReviewPromptPolicyData() {
+  try {
+    const response = await api(API_PATHS.reviewPromptPolicy.get);
+    state.data = {
+      content: [],
+      reviewPromptPolicy: normalizeAdminObjectResponse(response),
+      reviewPromptSource: 'dedicated',
+      page: 0,
+      size: 1,
+      totalElements: 1,
+      totalPages: 1,
+    };
+    return;
+  } catch (error) {
+    if (Number(error.status) !== 404) throw error;
+    const policies = await api(API_PATHS.productPolicies.list).catch(() => []);
+    const items = normalizeAdminListResponse(policies);
+    const policyItem = items.find((item) => String(item.policyKey || item.policy_key || '').toLowerCase() === 'review_prompt_policy');
+    const fallbackValue = policyItem?.value || policyItem?.policyValue || policyItem?.policy_value || {
+      version: 1,
+      enabled: true,
+      cooldownDays: 30,
+      maxPromptCount: 3,
+      minAccountAgeDays: 7,
+      minPositiveActionCount: 1,
+      groupInvitePromptCooldownDays: 30,
+    };
+    state.data = {
+      content: [],
+      reviewPromptPolicy: fallbackValue,
+      reviewPromptSource: policyItem ? 'productPolicy' : 'localDefault',
+      productPolicyItem: policyItem || null,
+      backendWarning: policyItem
+        ? 'Dedicated Review Prompt endpoint is not deployed yet. Editing will use Product Policy fallback: review_prompt_policy.'
+        : 'Dedicated Review Prompt endpoint is not deployed yet and review_prompt_policy was not found. This page is showing a local default preview only.',
+      page: 0,
+      size: 1,
+      totalElements: policyItem ? 1 : 0,
+      totalPages: 1,
+    };
+  }
+}
+
+function openPolicyVersionViewModal(item) {
+  state.modal = {
+    kind: 'policyVersionView',
+    title: 'Policy version snapshot',
+    item,
+    snapshotJson: compactJson(item.snapshot || item.snapshotJson || item.snapshot_json || item),
+    submitLabel: 'Close',
+  };
+  render();
+}
+
+function openPolicyRollbackModal(item) {
+  state.modal = {
+    kind: 'policyRollback',
+    title: 'Rollback policy version',
+    item,
+    reason: '',
+    confirmPhrase: '',
+    password: '',
+    expectedPhrase: 'ROLLBACK POLICY',
+    snapshotJson: compactJson(item.snapshot || item.snapshotJson || item.snapshot_json || item),
+    submitLabel: 'Rollback policy',
+    submitClass: 'btn danger',
+    loadingLabel: 'Rolling back...',
+  };
+  render();
+}
+
+function openAppVersionPolicyModal(item) {
+  state.modal = {
+    kind: 'appVersionEdit',
+    title: `Edit ${item.platform || 'App'} version policy`,
+    item,
+    enabled: item.enabled !== false,
+    latestVersion: item.latestVersion || '',
+    latestBuildNumber: item.latestBuildNumber || '',
+    minimumSupportedBuildNumber: item.minimumSupportedBuildNumber || '',
+    forceUpdate: Boolean(item.forceUpdate),
+    useBackendMessage: item.useBackendMessage !== false,
+    messageEn: item.messageEn || '',
+    messageZh: item.messageZh || '',
+    messageMs: item.messageMs || '',
+    releaseNotesEn: item.releaseNotesEn || '',
+    releaseNotesZh: item.releaseNotesZh || '',
+    releaseNotesMs: item.releaseNotesMs || '',
+    updateUrl: item.updateUrl || '',
+    fallbackUrl: item.fallbackUrl || '',
+    allowStoreFallbackPrompt: item.allowStoreFallbackPrompt !== false,
+    forceWhenPlayUnavailable: Boolean(item.forceWhenPlayUnavailable),
+    emergencyForceWhenPlayUnavailable: Boolean(item.emergencyForceWhenPlayUnavailable),
+    rolloutStatus: item.rolloutStatus || '',
+    reason: '',
+    confirmPhrase: '',
+    password: '',
+    expectedPhrase: 'UPDATE APP VERSION POLICY',
+  };
+  render();
+}
+
+function openReviewPromptPolicyModal(policy) {
+  const source = state.data?.reviewPromptSource || 'dedicated';
+  state.modal = {
+    kind: 'reviewPromptPolicyEdit',
+    title: 'Edit Review Prompt Policy',
+    item: policy,
+    source,
+    productPolicyItem: state.data?.productPolicyItem || null,
+    version: Number(policy.version || 1),
+    enabled: policy.enabled !== false,
+    cooldownDays: policy.cooldownDays ?? 30,
+    maxPromptCount: policy.maxPromptCount ?? 3,
+    minAccountAgeDays: policy.minAccountAgeDays ?? 7,
+    minPositiveActionCount: policy.minPositiveActionCount ?? 1,
+    groupInvitePromptCooldownDays: policy.groupInvitePromptCooldownDays ?? 30,
+    reason: '',
+  };
+  render();
+}
+
+function openRateLimitOverrideModal(item = null) {
+  state.modal = {
+    kind: 'rateLimitOverrideEdit',
+    title: item ? `Edit ${item.routeGroup || item.route_group || 'override'}` : 'Create rate limit override',
+    item,
+    routeGroup: item?.routeGroup || item?.route_group || '',
+    perMinute: item?.perMinute ?? item?.per_minute ?? '',
+    enabled: item ? item.enabled !== false : true,
+    expiresAt: toDateTimeLocalValue(item?.expiresAt || item?.expires_at),
+    reason: '',
+    submitLabel: item ? 'Save override' : 'Create override',
+  };
+  render();
+}
+
+function openRateLimitOverrideDeleteModal(item) {
+  state.modal = {
+    kind: 'rateLimitOverrideDelete',
+    title: `Delete ${item.routeGroup || item.route_group || 'rate limit override'}`,
+    item,
+    reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'DELETE RATE LIMIT OVERRIDE',
+    submitLabel: 'Delete override',
+    submitClass: 'btn danger',
+    loadingLabel: 'Deleting...',
+  };
+  render();
+}
+
+function toDateTimeLocalValue(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+async function submitPolicyRollbackModal() {
+  const modal = state.modal;
+  const reasonCheck = requireAuditReason(modal.reason, 'policy rollback');
+  if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type ${modal.expectedPhrase} to confirm rollback.`, 'confirmPhrase');
+  const passwordCheck = requireMaxLength(modal.password, 'Admin password', ADMIN_LIMITS.adminPasswordMax, { required: true });
+  if (!passwordCheck.ok) return validationError(passwordCheck.message, 'password');
+  try {
+    modal.loading = true;
+    modal.error = '';
+    render();
+    await reauthenticateAdminForCriticalAction(passwordCheck.value);
+    await api(API_PATHS.policyVersions.rollback(getItemId(modal.item)), {
+      method: 'POST',
+      body: { reason: reasonCheck.value, confirmPhrase: modal.expectedPhrase },
+    });
+    setMessage('Policy version rolled back successfully.');
+    state.modal = null;
+    await loadData();
+  } catch (error) {
+    if (state.modal) state.modal.loading = false;
+    setModalError(error, '');
+  }
+}
+
+async function submitAppVersionPolicyModal() {
+  const modal = state.modal;
+  const id = getItemId(modal.item);
+  if (!id) return validationError('Cannot update this app version policy because the backend ID is missing. Refresh and try again.');
+  const reasonCheck = requireAuditReason(modal.reason, 'app version policy update');
+  if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
+  const versionCheck = validateVersionText(modal.latestVersion, 'Latest version');
+  if (!versionCheck.ok) return validationError(versionCheck.message, 'latestVersion');
+  const latestBuildCheck = validateVersionText(modal.latestBuildNumber, 'Latest build number');
+  if (!latestBuildCheck.ok) return validationError(latestBuildCheck.message, 'latestBuildNumber');
+  const minBuildCheck = validateVersionText(modal.minimumSupportedBuildNumber, 'Minimum supported build number');
+  if (!minBuildCheck.ok) return validationError(minBuildCheck.message, 'minimumSupportedBuildNumber');
+  const updateUrlCheck = requireMaxLength(modal.updateUrl, 'Update URL', ADMIN_LIMITS.appVersionUrlMax);
+  if (!updateUrlCheck.ok) return validationError(updateUrlCheck.message, 'updateUrl');
+  const fallbackUrlCheck = requireMaxLength(modal.fallbackUrl, 'Fallback URL', ADMIN_LIMITS.appVersionUrlMax);
+  if (!fallbackUrlCheck.ok) return validationError(fallbackUrlCheck.message, 'fallbackUrl');
+  for (const [field, label] of [['messageEn', 'Message EN'], ['messageZh', 'Message ZH'], ['messageMs', 'Message MS']]) {
+    const check = requireMaxLength(modal[field], label, ADMIN_LIMITS.appVersionMessageMax);
+    if (!check.ok) return validationError(check.message, field);
+  }
+  for (const [field, label] of [['releaseNotesEn', 'Release notes EN'], ['releaseNotesZh', 'Release notes ZH'], ['releaseNotesMs', 'Release notes MS']]) {
+    const check = requireMaxLength(modal[field], label, ADMIN_LIMITS.appVersionReleaseNotesMax);
+    if (!check.ok) return validationError(check.message, field);
+  }
+  const highRisk = (!Boolean(modal.item?.forceUpdate) && Boolean(modal.forceUpdate))
+    || (!Boolean(modal.item?.emergencyForceWhenPlayUnavailable) && Boolean(modal.emergencyForceWhenPlayUnavailable));
+  if (highRisk) {
+    if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type ${modal.expectedPhrase} to confirm high-risk update policy changes.`, 'confirmPhrase');
+    const passwordCheck = requireMaxLength(modal.password, 'Admin password', ADMIN_LIMITS.adminPasswordMax, { required: true });
+    if (!passwordCheck.ok) return validationError(passwordCheck.message, 'password');
+    try {
+      modal.loading = true;
+      modal.error = '';
+      render();
+      await reauthenticateAdminForCriticalAction(passwordCheck.value);
+    } catch (error) {
+      if (state.modal) state.modal.loading = false;
+      return setModalError(error, 'password');
+    }
+  }
+  await performPatchAction(API_PATHS.appVersionPolicies.update(id), 'App version policy updated.', {
+    enabled: Boolean(modal.enabled),
+    latestVersion: versionCheck.value,
+    latestBuildNumber: latestBuildCheck.value,
+    minimumSupportedBuildNumber: minBuildCheck.value,
+    forceUpdate: Boolean(modal.forceUpdate),
+    useBackendMessage: Boolean(modal.useBackendMessage),
+    messageEn: blankToNull(modal.messageEn),
+    messageZh: blankToNull(modal.messageZh),
+    messageMs: blankToNull(modal.messageMs),
+    releaseNotesEn: blankToNull(modal.releaseNotesEn),
+    releaseNotesZh: blankToNull(modal.releaseNotesZh),
+    releaseNotesMs: blankToNull(modal.releaseNotesMs),
+    updateUrl: blankToNull(modal.updateUrl),
+    fallbackUrl: blankToNull(modal.fallbackUrl),
+    allowStoreFallbackPrompt: Boolean(modal.allowStoreFallbackPrompt),
+    forceWhenPlayUnavailable: Boolean(modal.forceWhenPlayUnavailable),
+    emergencyForceWhenPlayUnavailable: Boolean(modal.emergencyForceWhenPlayUnavailable),
+    rolloutStatus: blankToNull(modal.rolloutStatus),
+    reason: reasonCheck.value,
+  });
+}
+
+async function submitReviewPromptPolicyModal() {
+  const modal = state.modal;
+  const reasonCheck = requireAuditReason(modal.reason, 'review prompt policy update');
+  if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
+  const cooldown = parseWholeNumber(modal.cooldownDays, 'Cooldown days', { min: 1, max: 365 });
+  if (!cooldown.ok) return validationError(cooldown.message, 'cooldownDays');
+  const maxPrompt = parseWholeNumber(modal.maxPromptCount, 'Max prompt count', { min: 0, max: 20 });
+  if (!maxPrompt.ok) return validationError(maxPrompt.message, 'maxPromptCount');
+  const minAge = parseWholeNumber(modal.minAccountAgeDays, 'Minimum account age days', { min: 0, max: 365 });
+  if (!minAge.ok) return validationError(minAge.message, 'minAccountAgeDays');
+  const minPositive = parseWholeNumber(modal.minPositiveActionCount, 'Minimum positive action count', { min: 0, max: 100 });
+  if (!minPositive.ok) return validationError(minPositive.message, 'minPositiveActionCount');
+  const groupCooldown = parseWholeNumber(modal.groupInvitePromptCooldownDays, 'Group invite prompt cooldown days', { min: 1, max: 365 });
+  if (!groupCooldown.ok) return validationError(groupCooldown.message, 'groupInvitePromptCooldownDays');
+  const policyValue = {
+    version: Number(modal.version || 1),
+    enabled: Boolean(modal.enabled),
+    cooldownDays: cooldown.value,
+    maxPromptCount: maxPrompt.value,
+    minAccountAgeDays: minAge.value,
+    minPositiveActionCount: minPositive.value,
+    groupInvitePromptCooldownDays: groupCooldown.value,
+  };
+  if (modal.source === 'productPolicy') {
+    const id = getItemId(modal.productPolicyItem);
+    if (!id) return validationError('Product Policy fallback is missing the review_prompt_policy ID. Deploy the dedicated backend endpoint or seed review_prompt_policy.');
+    await performPatchAction(API_PATHS.productPolicies.update(id), 'Review prompt product policy updated.', {
+      value: policyValue,
+      enabled: modal.productPolicyItem?.enabled !== false,
+      platform: modal.productPolicyItem?.platform || null,
+      minAppVersion: modal.productPolicyItem?.minAppVersion || null,
+      reason: reasonCheck.value,
+    });
+    return;
+  }
+  await performPatchAction(API_PATHS.reviewPromptPolicy.update, 'Review prompt policy updated.', {
+    ...policyValue,
+    reason: reasonCheck.value,
+  });
+}
+
+async function submitRateLimitOverrideModal() {
+  const modal = state.modal;
+  const reasonCheck = requireAuditReason(modal.reason, modal.item ? 'rate limit override update' : 'rate limit override create');
+  if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
+  const routeGroupCheck = requireMaxLength(modal.routeGroup, 'Route group', ADMIN_LIMITS.routeGroupMax, { required: true });
+  if (!routeGroupCheck.ok) return validationError(routeGroupCheck.message, 'routeGroup');
+  const perMinuteCheck = parseWholeNumber(modal.perMinute, 'Per minute', { min: 1, max: 100000 });
+  if (!perMinuteCheck.ok) return validationError(perMinuteCheck.message, 'perMinute');
+  const expiryCheck = parseOptionalDateTime(modal.expiresAt, 'Expires at');
+  if (!expiryCheck.ok) return validationError(expiryCheck.message, 'expiresAt');
+  if (expiryCheck.time && expiryCheck.time <= Date.now()) return validationError('Expires at must be in the future.', 'expiresAt');
+  const body = {
+    routeGroup: routeGroupCheck.value,
+    perMinute: perMinuteCheck.value,
+    enabled: Boolean(modal.enabled),
+    expiresAt: expiryCheck.value,
+    reason: reasonCheck.value,
+  };
+  if (modal.item) {
+    await performPatchAction(API_PATHS.rateLimitOverrides.update(getItemId(modal.item)), 'Rate limit override updated.', body);
+  } else {
+    await performPostAction(API_PATHS.rateLimitOverrides.create, 'Rate limit override created.', body);
+  }
+}
+
+async function submitRateLimitOverrideDeleteModal() {
+  const modal = state.modal;
+  const reasonCheck = requireAuditReason(modal.reason, 'rate limit override delete');
+  if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type ${modal.expectedPhrase} to confirm deletion.`, 'confirmPhrase');
+  const modalRequest = Boolean(state.modal);
+  if (modalRequest) {
+    state.modal.loading = true;
+    state.modal.error = '';
+    state.modal.fieldErrors = {};
+    render();
+  }
+  try {
+    await api(API_PATHS.rateLimitOverrides.delete(getItemId(modal.item)), {
+      method: 'DELETE',
+      body: { reason: reasonCheck.value },
+    });
+    setMessage('Rate limit override deleted.');
+    state.modal = null;
+    await loadData();
+  } catch (error) {
+    if (state.modal) state.modal.loading = false;
+    setModalError(error, '');
+  }
+}
+
+function renderPolicyVersionToolbar() {
+  const targetType = select(ADMIN_ENUMS.policyVersionTargetTypes, state.adminFilters.targetType, (value) => { state.adminFilters.targetType = value; });
+  const targetId = el('input', { type: 'text', placeholder: 'Target ID', value: state.adminFilters.policyVersionTargetId || '' });
+  targetId.addEventListener('input', () => { state.adminFilters.policyVersionTargetId = targetId.value; });
+  const policyKey = el('input', { type: 'text', placeholder: 'Policy key', value: state.adminFilters.policyVersionPolicyKey || '' });
+  policyKey.addEventListener('input', () => { state.adminFilters.policyVersionPolicyKey = policyKey.value; });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Target type' }), targetType]),
+    el('div', {}, [el('label', { text: 'Target ID' }), targetId]),
+    el('div', {}, [el('label', { text: 'Policy key' }), policyKey]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.targetType = ''; state.adminFilters.policyVersionTargetId = ''; state.adminFilters.policyVersionPolicyKey = ''; loadData(); } }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ], 'control-toolbar-inline-double');
+}
+
+function renderPolicyVersionItem(item) {
+  const id = getItemId(item);
+  return renderCollapsibleItem({
+    title: `${item.targetType || item.target_type || 'Policy'} · v${item.versionNo ?? item.version_no ?? '-'}`,
+    subtitle: `${item.policyKey || item.policy_key || '-'} · ${item.targetId || item.target_id || id}`,
+    statusNode: el('span', { class: 'badge info', text: 'SNAPSHOT' }),
+    children: [
+      renderMetaGrid([
+        ['Version ID', id], ['Target Type', item.targetType || item.target_type], ['Target ID', item.targetId || item.target_id],
+        ['Policy Key', item.policyKey || item.policy_key], ['Version No', item.versionNo ?? item.version_no], ['Created By', item.createdBy || item.created_by],
+        ['Reason', item.reason], ['Created', formatDate(item.createdAt || item.created_at)],
+      ]),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Snapshot preview' }), el('pre', { text: compactJson(item.snapshot || item.snapshotJson || item.snapshot_json) })]),
+      el('div', { class: 'actions compact-actions' }, [
+        el('button', { class: 'btn ghost small', text: 'View JSON', onclick: () => openPolicyVersionViewModal(item) }),
+        el('button', { class: 'btn danger small', text: 'Rollback', onclick: () => openPolicyRollbackModal(item) }),
+      ]),
+    ],
+  });
+}
+
+function renderAppVersionToolbar() {
+  const platform = select(ADMIN_ENUMS.appVersionPlatforms, state.adminFilters.appVersionPlatform, (value) => { state.adminFilters.appVersionPlatform = value; });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Platform' }), platform]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.appVersionPlatform = ''; loadData(); } }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ], 'control-toolbar-inline-double');
+}
+
+function renderAppVersionPolicyItem(item) {
+  const force = Boolean(item.forceUpdate || item.emergencyForceWhenPlayUnavailable);
+  return renderCollapsibleItem({
+    title: `${item.platform || 'Platform'} · ${item.latestVersion || '-'}`,
+    subtitle: `Latest build ${item.latestBuildNumber || '-'} · Min supported ${item.minimumSupportedBuildNumber || '-'}`,
+    statusNode: el('span', { class: force ? 'badge danger' : item.enabled === false ? 'badge warn' : 'badge success', text: force ? 'FORCE' : item.enabled === false ? 'DISABLED' : 'ACTIVE' }),
+    children: [
+      renderMetaGrid([
+        ['ID', getItemId(item)], ['Platform', item.platform], ['Enabled', item.enabled !== false ? 'Yes' : 'No'], ['Latest Version', item.latestVersion],
+        ['Latest Build', item.latestBuildNumber], ['Minimum Supported Build', item.minimumSupportedBuildNumber], ['Force Update', item.forceUpdate ? 'Yes' : 'No'],
+        ['Use Backend Message', item.useBackendMessage !== false ? 'Yes' : 'No'], ['Force When Play Unavailable', item.forceWhenPlayUnavailable ? 'Yes' : 'No'],
+        ['Emergency Force When Play Unavailable', item.emergencyForceWhenPlayUnavailable ? 'Yes' : 'No'], ['Rollout Status', item.rolloutStatus], ['Updated', formatDate(item.updatedAt)],
+      ]),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Messages and release notes' }), el('pre', { text: compactJson({ messageEn: item.messageEn, messageZh: item.messageZh, messageMs: item.messageMs, releaseNotesEn: item.releaseNotesEn, releaseNotesZh: item.releaseNotesZh, releaseNotesMs: item.releaseNotesMs, updateUrl: item.updateUrl, fallbackUrl: item.fallbackUrl }) })]),
+      el('div', { class: 'actions compact-actions' }, [el('button', { class: 'btn small', text: 'Edit', onclick: () => openAppVersionPolicyModal(item) })]),
+    ],
+  });
+}
+
+function renderReviewPromptPolicyPanel(policy) {
+  return el('section', { class: 'card admin-control-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: state.data?.reviewPromptSource === 'productPolicy' ? 'Product Policy fallback' : 'Backend policy' }), el('h2', { text: 'Current Review Prompt Policy' })]),
+      el('button', { class: 'btn', text: 'Edit policy', onclick: () => openReviewPromptPolicyModal(policy) }),
+    ]),
+    renderMetaGrid([
+      ['Enabled', policy.enabled !== false ? 'Yes' : 'No'], ['Cooldown Days', policy.cooldownDays], ['Max Prompt Count', policy.maxPromptCount],
+      ['Min Account Age Days', policy.minAccountAgeDays], ['Min Positive Action Count', policy.minPositiveActionCount], ['Group Invite Prompt Cooldown Days', policy.groupInvitePromptCooldownDays],
+      ['Updated', formatDate(policy.updatedAt)], ['Source', state.data?.reviewPromptSource || 'dedicated'],
+    ]),
+    el('details', { class: 'nested-details' }, [el('summary', { text: 'View raw JSON' }), el('pre', { text: compactJson(policy) })]),
+  ]);
+}
+
+function renderRateLimitOverrideToolbar() {
+  const routeGroup = el('input', { type: 'text', placeholder: 'Search route group', value: state.adminFilters.rateLimitRouteGroup || '' });
+  routeGroup.addEventListener('input', () => { state.adminFilters.rateLimitRouteGroup = routeGroup.value; });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Route group' }), routeGroup]),
+    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
+    el('button', { class: 'btn secondary', text: 'Create override', onclick: () => openRateLimitOverrideModal(null) }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.rateLimitRouteGroup = ''; loadData(); } }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+  ], 'control-toolbar-inline-double');
+}
+
+function getRateLimitOverrideStatus(item) {
+  if (item.enabled === false) return { label: 'Disabled', className: 'badge warn' };
+  const expiresAt = item.expiresAt || item.expires_at;
+  if (expiresAt && new Date(expiresAt).getTime() <= Date.now()) return { label: 'Expired', className: 'badge neutral' };
+  return { label: 'Active', className: 'badge success' };
+}
+
+function renderRateLimitOverrideItem(item) {
+  const status = getRateLimitOverrideStatus(item);
+  return renderCollapsibleItem({
+    title: item.routeGroup || item.route_group || 'Rate limit override',
+    subtitle: `${item.perMinute ?? item.per_minute ?? '-'} per minute · expires ${formatDate(item.expiresAt || item.expires_at)}`,
+    statusNode: el('span', { class: status.className, text: status.label }),
+    children: [
+      renderMetaGrid([
+        ['ID', getItemId(item)], ['Route Group', item.routeGroup || item.route_group], ['Per Minute', item.perMinute ?? item.per_minute],
+        ['Enabled', item.enabled !== false ? 'Yes' : 'No'], ['Expires At', formatDate(item.expiresAt || item.expires_at)], ['Reason', item.reason],
+        ['Updated By', item.updatedBy || item.updated_by], ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      el('div', { class: 'actions compact-actions' }, [
+        el('button', { class: 'btn small', text: 'Edit', onclick: () => openRateLimitOverrideModal(item) }),
+        el('button', { class: 'btn danger small', text: 'Delete', onclick: () => openRateLimitOverrideDeleteModal(item) }),
+      ]),
+    ],
+  });
+}
+
+function renderPolicyVersionViewModal() {
+  const modal = state.modal;
+  return renderControlModal('Policy version JSON', 'Policy Versions', [
+    renderMetaGrid([['Version ID', getItemId(modal.item)], ['Target Type', modal.item?.targetType || modal.item?.target_type], ['Policy Key', modal.item?.policyKey || modal.item?.policy_key]]),
+    el('pre', { class: 'modal-json-preview', text: modal.snapshotJson || '{}' }),
+  ], closeModal, true);
+}
+
+function renderPolicyRollbackModal() {
+  const modal = state.modal;
+  const reason = el('textarea', { rows: '3', placeholder: 'Required. Example: Roll back bad emergency flag update causing group write block.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { type: 'text', placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
+  const password = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Firebase admin password', 'data-field-key': 'password' });
+  password.addEventListener('input', () => { modal.password = password.value; });
+  return renderControlModal('Rollback policy version', 'Critical rollback', [
+    renderPolicySafetyNote('Rollback restores a previously saved backend snapshot and writes a new audit entry. Confirm the JSON before continuing.'),
+    renderMetaGrid([['Target Type', modal.item?.targetType || modal.item?.target_type], ['Target ID', modal.item?.targetId || modal.item?.target_id], ['Expected phrase', modal.expectedPhrase]]),
+    el('details', { class: 'nested-details', open: true }, [el('summary', { text: 'Snapshot JSON to restore' }), el('pre', { text: modal.snapshotJson || '{}' })]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
+    el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password verification' }), password, renderFieldError('password')]),
+  ], submitPolicyRollbackModal, true);
+}
+
+function renderAppVersionPolicyModal() {
+  const modal = state.modal;
+  const checkboxField = (key, label) => {
+    const input = el('input', { type: 'checkbox' });
+    input.checked = Boolean(modal[key]);
+    input.addEventListener('change', () => { modal[key] = input.checked; render(); });
+    return el('label', { class: 'check-row' }, [input, el('span', { text: label })]);
+  };
+  const textField = (key, label, placeholder = '') => {
+    const input = el('input', { type: 'text', value: modal[key] || '', placeholder, 'data-field-key': key });
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
+  };
+  const textAreaField = (key, label, rows = '3') => {
+    const input = el('textarea', { rows, 'data-field-key': key });
+    input.value = modal[key] || '';
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
+  };
+  const highRisk = (!Boolean(modal.item?.forceUpdate) && Boolean(modal.forceUpdate)) || (!Boolean(modal.item?.emergencyForceWhenPlayUnavailable) && Boolean(modal.emergencyForceWhenPlayUnavailable));
+  const phrase = el('input', { type: 'text', placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
+  const password = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Firebase admin password', 'data-field-key': 'password' });
+  password.addEventListener('input', () => { modal.password = password.value; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal(modal.title, 'App Version', [
+    renderMetaGrid([['ID', getItemId(modal.item)], ['Platform', modal.item?.platform], ['High-risk change', highRisk ? 'Yes' : 'No']]),
+    el('div', { class: 'form-grid two' }, [
+      textField('latestVersion', 'Latest version'),
+      textField('latestBuildNumber', 'Latest build number'),
+      textField('minimumSupportedBuildNumber', 'Minimum supported build number'),
+      textField('rolloutStatus', 'Rollout status'),
+      textField('updateUrl', 'Update URL'),
+      textField('fallbackUrl', 'Fallback URL'),
+    ]),
+    el('div', { class: 'form-grid two' }, [
+      checkboxField('enabled', 'Enabled'),
+      checkboxField('forceUpdate', 'Force update'),
+      checkboxField('useBackendMessage', 'Use backend message'),
+      checkboxField('allowStoreFallbackPrompt', 'Allow store fallback prompt'),
+      checkboxField('forceWhenPlayUnavailable', 'Force when Play unavailable'),
+      checkboxField('emergencyForceWhenPlayUnavailable', 'Emergency force when Play unavailable'),
+    ]),
+    el('div', { class: 'form-grid two' }, [
+      textAreaField('messageEn', 'Message EN'),
+      textAreaField('messageZh', 'Message ZH'),
+      textAreaField('messageMs', 'Message MS'),
+      textAreaField('releaseNotesEn', 'Release notes EN', '4'),
+      textAreaField('releaseNotesZh', 'Release notes ZH', '4'),
+      textAreaField('releaseNotesMs', 'Release notes MS', '4'),
+    ]),
+    highRisk ? el('div', { class: 'modal-alert error' }, [el('strong', { text: 'High-risk update policy change' }), el('p', { text: 'Enabling force update or emergency force requires exact confirmation and Firebase password re-authentication.' })]) : null,
+    highRisk ? el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]) : null,
+    highRisk ? el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password verification' }), password, renderFieldError('password')]) : null,
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+  ], submitAppVersionPolicyModal, true);
+}
+
+function renderReviewPromptPolicyModal() {
+  const modal = state.modal;
+  const checkbox = el('input', { type: 'checkbox' });
+  checkbox.checked = Boolean(modal.enabled);
+  checkbox.addEventListener('change', () => { modal.enabled = checkbox.checked; });
+  const numericField = (key, label) => {
+    const input = el('input', { type: 'number', value: modal[key] ?? '', 'data-field-key': key });
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
+  };
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal('Edit Review Prompt Policy', 'Review Prompt Policy', [
+    el('p', { class: 'muted', text: modal.source === 'productPolicy' ? 'Dedicated endpoint is not available. Saving through Product Policy fallback review_prompt_policy.' : 'Saving through dedicated review prompt policy endpoint.' }),
+    el('label', { class: 'check-row' }, [checkbox, el('span', { text: 'Enabled' })]),
+    el('div', { class: 'form-grid two' }, [
+      numericField('cooldownDays', 'Cooldown days'),
+      numericField('maxPromptCount', 'Max prompt count'),
+      numericField('minAccountAgeDays', 'Minimum account age days'),
+      numericField('minPositiveActionCount', 'Minimum positive action count'),
+      numericField('groupInvitePromptCooldownDays', 'Group invite prompt cooldown days'),
+    ]),
+    el('details', { class: 'nested-details' }, [el('summary', { text: 'Current raw JSON' }), el('pre', { text: compactJson(modal.item) })]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+  ], submitReviewPromptPolicyModal, true);
+}
+
+function renderRateLimitOverrideModal() {
+  const modal = state.modal;
+  const routeGroup = el('input', { type: 'text', value: modal.routeGroup || '', 'data-field-key': 'routeGroup' });
+  routeGroup.addEventListener('input', () => { modal.routeGroup = routeGroup.value; });
+  const perMinute = el('input', { type: 'number', min: '1', max: '100000', value: modal.perMinute ?? '', 'data-field-key': 'perMinute' });
+  perMinute.addEventListener('input', () => { modal.perMinute = perMinute.value; });
+  const expiresAt = el('input', { type: 'datetime-local', value: modal.expiresAt || '', 'data-field-key': 'expiresAt' });
+  expiresAt.addEventListener('input', () => { modal.expiresAt = expiresAt.value; });
+  const enabled = el('input', { type: 'checkbox' });
+  enabled.checked = Boolean(modal.enabled);
+  enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal(modal.title, 'Rate Limit Override', [
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: modalFieldClass('routeGroup') }, [el('label', { text: 'Route group' }), routeGroup, renderFieldError('routeGroup')]),
+      el('div', { class: modalFieldClass('perMinute') }, [el('label', { text: 'Per minute' }), perMinute, renderFieldError('perMinute')]),
+      el('div', { class: modalFieldClass('expiresAt') }, [el('label', { text: 'Expires at' }), expiresAt, renderFieldError('expiresAt')]),
+    ]),
+    el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+  ], submitRateLimitOverrideModal, true);
+}
+
+function renderRateLimitOverrideDeleteModal() {
+  const modal = state.modal;
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { type: 'text', placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
+  return renderControlModal('Delete rate limit override', 'Critical cleanup', [
+    renderPolicySafetyNote('Deleting this override removes the temporary operational rule. Use this only when the override is no longer needed or was created incorrectly.'),
+    renderMetaGrid([['Route Group', modal.item?.routeGroup || modal.item?.route_group], ['Expected phrase', modal.expectedPhrase]]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
+  ], submitRateLimitOverrideDeleteModal, true);
+}
+
 function renderAdminControlPage() {
   const items = state.data?.content || [];
   const children = [];
@@ -3556,7 +4840,33 @@ function renderAdminControlPage() {
     ]));
   }
 
-  if (state.activeTab === 'featureLimits') {
+  if (state.activeTab === 'emergencyConsole') {
+    children.push(renderAdminControlHero('Emergency Console', 'Pause risky modules, uploads, collaboration writes, and maintenance mode without a new app build.', 'Use this only for production safety actions. Each critical change requires an audit reason, exact confirmation phrase, and Firebase password verification.'));
+    children.push(renderPolicySafetyNote('OCR global rules can be disabled without disabling local OCR. Group Event / Group Goal write switches are also enforced by the collaboration backend.'));
+    children.push(renderEmergencyConsole());
+  } else if (state.activeTab === 'policyVersions') {
+    children.push(renderAdminControlHero('Policy Versions', 'View backend policy snapshots and roll back bad operational configuration.', 'Rollback should be used only when a remote config, flag, app version policy, or rule update causes production risk. It requires reason, exact phrase, and admin password verification.'));
+    children.push(renderPolicyVersionToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Snapshots should contain policy/config data only. Never store raw OCR text, notification text, merchant names, payees, or exact transaction amounts.'));
+    children.push(renderControlList(items, renderPolicyVersionItem, 'No policy versions found. Deploy backend snapshot wiring or change a policy first.'));
+  } else if (state.activeTab === 'appVersion') {
+    children.push(renderAdminControlHero('App Version', 'Manage online soft update, force update, Play fallback, and app version messages.', 'DB-backed app version policy is read first by the backend. If no DB row exists, the public endpoint should fall back to application properties.'));
+    children.push(renderAppVersionToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Force update and emergency Play-unavailable force are high risk. Confirm version/build values and messages before saving.'));
+    children.push(renderControlList(items, renderAppVersionPolicyItem, 'No app version policy rows found. Run the backend migration/seed first; public endpoint should still use property fallback.'));
+  } else if (state.activeTab === 'reviewPromptPolicy') {
+    children.push(renderAdminControlHero('Review Prompt Policy', 'Tune app review prompt cooldowns and eligibility thresholds without a new build.', 'Use low-frequency prompts. The backend should fall back to ReviewPromptProperties if remote config is missing or invalid.'));
+    if (state.data?.backendWarning) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.backendWarning }));
+    children.push(renderReviewPromptPolicyPanel(state.data?.reviewPromptPolicy || {}));
+  } else if (state.activeTab === 'rateLimitOverrides') {
+    children.push(renderAdminControlHero('Rate Limit Overrides', 'Store temporary route limit overrides for incidents, campaigns, or backend protection.', 'This page stores override records. They only affect traffic if the backend has wired this table into a real central rate-limit enforcement path.'));
+    children.push(renderRateLimitOverrideToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Use short expiry windows and clear reasons. Do not create permanent high limits unless backend capacity has been verified.'));
+    children.push(renderControlList(items, renderRateLimitOverrideItem, 'No rate limit overrides found.'));
+  } else if (state.activeTab === 'featureLimits') {
     children.push(renderAdminControlHero('Feature Limits', 'Control quota, preset, wallet, dashboard, and collaboration limits from backend policy.', 'Use this page for limits such as Smart Capture 20/week, OCR 20/month, expense presets, wallet slots, group limits, and dashboard history. Changes are audited and should keep local app fallback compatibility.'));
     children.push(renderFeatureLimitToolbar());
     children.push(renderStats(items));
@@ -3574,7 +4884,7 @@ function renderAdminControlPage() {
     children.push(renderPolicyShortcutGrid());
     children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
   } else if (state.activeTab === 'smartCaptureRules') {
-    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'Candidates contain source types, structural hashes, resolver outcome counters, and privacy-safe distributions only. No notification text, OCR text, merchant, payee, payer, exact amount, account/card number, transaction ID, or image URL is displayed.'));
+    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'Candidates contain source types, structural hashes, semantic slot hashes/summaries, resolver outcome counters, and privacy-safe distributions only. No notification text, OCR text, merchant, payee, payer, exact amount, account/card number, transaction ID, or image URL is displayed. Approved global rules stay review-only and cannot quick-save or auto-save.'));
     children.push(renderGlobalLearningSourceFilter());
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Approval creates suggestion rules only: forceReview=true, allowQuickAction=false, allowAutoSave=false. Personal local learning remains higher priority than global rules.'));
@@ -3736,7 +5046,7 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
       el('div', { class: 'modal-body' }, [renderModalNotice(), ...bodyChildren]),
       el('div', { class: 'modal-actions' }, [
         el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
-        el('button', { class: 'btn', text: (state.modal?.loading || state.loading) ? 'Saving...' : 'Save changes', disabled: state.modal?.loading || state.loading, onclick: submitHandler }),
+        el('button', { class: state.modal?.submitClass || 'btn', text: (state.modal?.loading || state.loading) ? (state.modal?.loadingLabel || 'Saving...') : (state.modal?.submitLabel || 'Save changes'), disabled: state.modal?.loading || state.loading, onclick: submitHandler }),
       ]),
     ]),
   ]);
@@ -3887,3 +5197,5 @@ if (headerMenuButton) {
 }
 
 boot();
+
+

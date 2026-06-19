@@ -3,6 +3,9 @@
 // NEVER put Supabase service role keys, Google service account keys, backend internal secrets, or database credentials here.
 window.FUNDORALIT_ADMIN_CONFIG = {
   coreApiBaseUrl: 'https://fundora-app-t1jp.onrender.com',
+  // Optional. Required only for Emergency Console collaboration cache clearing.
+  // Example: 'https://fundora-collaboration-backend.onrender.com'
+  collaborationApiBaseUrl: 'https://fundora-app-6brn.onrender.com',
   firebase: {
     apiKey: "AIzaSyBEj6yVCCPafrPJnbvKLL05PRLSm23SsLU",
     authDomain: "fundora-2cb67.firebaseapp.com",
