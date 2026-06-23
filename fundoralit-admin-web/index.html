@@ -29,7 +29,13 @@
       <div class="auth-box" id="authBox"></div>
     </header>
 
-    <main id="mainContent"></main>
+    <main id="mainContent">
+      <section class="card signed-out-card app-boot-fallback" id="bootFallback">
+        <div class="empty-state-icon" aria-hidden="true"></div>
+        <h2>Loading admin login…</h2>
+        <p class="muted">If this message stays on screen, the admin JavaScript failed to boot. Refresh once and check the browser console/network tab.</p>
+      </section>
+    </main>
   </div>
 
   <script src="./config.js"></script>

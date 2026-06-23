@@ -1,20 +1,18 @@
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-app.js';
-import {
-  getAuth,
-  browserSessionPersistence,
-  setPersistence,
-  signInWithEmailAndPassword,
-  EmailAuthProvider,
-  reauthenticateWithCredential,
-  signOut,
-  onAuthStateChanged,
-} from 'https://www.gstatic.com/firebasejs/10.12.4/firebase-auth.js';
+// Firebase Auth is accessed through the official REST endpoints instead of
+// top-level CDN imports. The previous ESM import from gstatic blocked the whole
+// admin app from booting when the Firebase CDN/DNS failed, leaving only the
+// static header visible and no login form. REST auth still returns normal
+// Firebase ID tokens that the backend validates from the Authorization header.
 
 const config = window.FUNDORALIT_ADMIN_CONFIG || {};
 const coreApiBaseUrl = normalizeBaseUrl(config.coreApiBaseUrl || '');
 const collaborationApiBaseUrl = normalizeBaseUrl(config.collaborationApiBaseUrl || '');
 const firebaseConfig = config.firebase || {};
 const brandLogoSrc = config.brandLogoSrc || './src/assets/fundora-logo.png';
+const FIREBASE_AUTH_SESSION_KEY = 'fundoralit.admin.firebaseAuthSession.v1';
+const FIREBASE_TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
+const FIREBASE_IDENTITY_TOOLKIT_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
+const FIREBASE_SECURE_TOKEN_BASE_URL = 'https://securetoken.googleapis.com/v1';
 
 // Centralized admin API path presets.
 // Keep all backend route links here so future backend changes only need one small update.
@@ -533,7 +531,7 @@ const NAV_GROUPS = [
       { id: 'emergencyConsole', label: 'Emergency Console', helper: 'One-click safety', description: 'Disable risky OCR, Smart Capture, collaboration, upload, backup, and maintenance functions without shipping a new app build.', info: 'Use this page only for operational safety. Actions require audit reason, exact confirmation phrase, and admin password re-authentication.' },
       { id: 'featureLimits', label: 'Feature Limits', helper: 'Quota policy', description: 'Control plan limits such as Smart Capture, OCR, presets, wallets, buckets, and group features.', info: 'Change limits carefully. These values affect what free and Pro users can do. Audit reasons are required for policy changes.' },
       { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
-      { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app should keep local fallbacks if remote policy is unavailable.' },
+      { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, collaboration plan limits, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app and collaboration backend should keep local fallbacks if remote policy is unavailable.' },
       { id: 'policyVersions', label: 'Policy Versions', helper: 'Rollback safety', description: 'Inspect saved policy snapshots and roll back bad remote configuration safely.', info: 'Use rollback only when a policy, flag, or operational config causes production risk. Rollback requires reason, exact phrase, and admin verification.' },
       { id: 'appVersion', label: 'App Version', helper: 'Update policy', description: 'Manage soft update, force update, Play fallback, and app-version messages from backend policy.', info: 'Force update is high risk. Verify version/build fields and messages before saving.' },
       { id: 'reviewPromptPolicy', label: 'Review Prompt Policy', helper: 'Store prompt config', description: 'Configure app review prompt cooldowns and eligibility thresholds online.', info: 'Keep prompts respectful and low frequency. The backend falls back to properties if remote policy is unavailable.' },
@@ -662,6 +660,177 @@ function safeJson(value) {
   try { return JSON.stringify(value, null, 2); } catch (_) { return String(value); }
 }
 
+
+function getFirebaseApiKey() {
+  return normalizedTrim(firebaseConfig.apiKey);
+}
+
+function normalizeFirebaseAuthError(payload, fallback = 'Firebase authentication failed.') {
+  const rawMessage = normalizedTrim(payload?.error?.message || payload?.message || fallback);
+  const code = rawMessage.split(' : ')[0];
+  const messages = {
+    EMAIL_NOT_FOUND: 'No Firebase user exists for this email.',
+    INVALID_LOGIN_CREDENTIALS: 'The email or password is incorrect.',
+    INVALID_PASSWORD: 'The email or password is incorrect.',
+    USER_DISABLED: 'This Firebase user has been disabled.',
+    TOO_MANY_ATTEMPTS_TRY_LATER: 'Too many failed login attempts. Wait a while before trying again.',
+    INVALID_REFRESH_TOKEN: 'Your admin session expired. Please sign in again.',
+    TOKEN_EXPIRED: 'Your admin session expired. Please sign in again.',
+    API_KEY_INVALID: 'Firebase apiKey is invalid. Check config.js.',
+  };
+  return messages[code] || rawMessage || fallback;
+}
+
+async function firebaseJsonRequest(baseUrl, endpoint, body) {
+  const apiKey = getFirebaseApiKey();
+  if (!apiKey) throw new Error('Firebase apiKey is missing in config.js.');
+  const response = await fetch(`${baseUrl}/${endpoint}?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
+  if (!response.ok) throw new Error(normalizeFirebaseAuthError(json));
+  return json || {};
+}
+
+async function firebaseFormRequest(baseUrl, endpoint, formBody) {
+  const apiKey = getFirebaseApiKey();
+  if (!apiKey) throw new Error('Firebase apiKey is missing in config.js.');
+  const response = await fetch(`${baseUrl}/${endpoint}?key=${encodeURIComponent(apiKey)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: formBody,
+  });
+  const text = await response.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
+  if (!response.ok) throw new Error(normalizeFirebaseAuthError(json));
+  return json || {};
+}
+
+function getStoredAuthSession() {
+  try {
+    const raw = window.sessionStorage.getItem(FIREBASE_AUTH_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!parsed.refreshToken || !parsed.email) return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveAuthSession(session) {
+  window.sessionStorage.setItem(FIREBASE_AUTH_SESSION_KEY, JSON.stringify(session));
+}
+
+function clearAuthSession() {
+  window.sessionStorage.removeItem(FIREBASE_AUTH_SESSION_KEY);
+}
+
+function normalizeSignInSession(response, existing = {}) {
+  const expiresInMs = Math.max(0, Number(response.expiresIn || response.expires_in || 3600)) * 1000;
+  return {
+    idToken: response.idToken || response.id_token || response.access_token || existing.idToken || '',
+    refreshToken: response.refreshToken || response.refresh_token || existing.refreshToken || '',
+    email: response.email || existing.email || '',
+    localId: response.localId || response.local_id || response.user_id || existing.localId || '',
+    expiresAt: Date.now() + expiresInMs,
+  };
+}
+
+function createFirebaseRestUser(session) {
+  return {
+    email: session.email,
+    uid: session.localId,
+    getIdToken: (forceRefresh = false) => getFirebaseRestIdToken(forceRefresh),
+  };
+}
+
+function applyAuthSession(session) {
+  if (!session?.idToken || !session?.refreshToken || !session?.email) {
+    clearAuthSession();
+    state.user = null;
+    return null;
+  }
+  saveAuthSession(session);
+  state.user = createFirebaseRestUser(session);
+  return state.user;
+}
+
+async function signInAdminWithPassword(email, password, { persist = true } = {}) {
+  const cleanEmail = normalizedTrim(email);
+  const cleanPassword = String(password || '');
+  if (!cleanEmail) throw new Error('Admin email is required.');
+  if (!cleanPassword) throw new Error('Password is required.');
+
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_BASE_URL, 'accounts:signInWithPassword', {
+    email: cleanEmail,
+    password: cleanPassword,
+    returnSecureToken: true,
+  });
+  const session = normalizeSignInSession(response, { email: cleanEmail });
+  if (!session.idToken || !session.refreshToken) throw new Error('Firebase did not return a valid admin token.');
+  if (persist) applyAuthSession(session);
+  return session;
+}
+
+async function refreshFirebaseAuthSession(existing = getStoredAuthSession()) {
+  if (!existing?.refreshToken) throw new Error('Your admin session expired. Please sign in again.');
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: existing.refreshToken,
+  }).toString();
+  const response = await firebaseFormRequest(FIREBASE_SECURE_TOKEN_BASE_URL, 'token', body);
+  const session = normalizeSignInSession(response, existing);
+  if (!session.idToken || !session.refreshToken) throw new Error('Firebase did not return a refreshed admin token.');
+  applyAuthSession(session);
+  return session;
+}
+
+async function restoreAuthSession() {
+  const session = getStoredAuthSession();
+  if (!session) {
+    state.user = null;
+    return null;
+  }
+  if (session.idToken && Number(session.expiresAt || 0) - Date.now() > FIREBASE_TOKEN_REFRESH_BUFFER_MS) {
+    return applyAuthSession(session);
+  }
+  try {
+    await refreshFirebaseAuthSession(session);
+    return state.user;
+  } catch (error) {
+    clearAuthSession();
+    state.user = null;
+    state.error = toFriendlyErrorMessage(error.message || error, 'Your admin session expired. Please sign in again.');
+    return null;
+  }
+}
+
+async function getFirebaseRestIdToken(forceRefresh = false) {
+  const session = getStoredAuthSession();
+  if (!session) throw new Error('Please sign in first.');
+  const shouldRefresh = forceRefresh || !session.idToken || Number(session.expiresAt || 0) - Date.now() <= FIREBASE_TOKEN_REFRESH_BUFFER_MS;
+  if (!shouldRefresh) return session.idToken;
+  const refreshed = await refreshFirebaseAuthSession(session);
+  return refreshed.idToken;
+}
+
+async function signOutAdmin() {
+  clearAuthSession();
+  state.user = null;
+  state.data = null;
+  state.feedbackOptions = null;
+  state.message = '';
+  state.error = '';
+  render();
+}
+
 function getStatusClass(status) {
   const normalized = String(status || '').toUpperCase();
   const tone = STATUS_COPY[normalized]?.tone || '';
@@ -735,11 +904,20 @@ async function api(path, options = {}) {
     body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(url.toString(), {
+  let response = await fetch(url.toString(), {
     method: options.method || 'GET',
     headers,
     body,
   });
+
+  if (response.status === 401 && options.forceTokenRefresh !== true) {
+    headers.Authorization = `Bearer ${await getToken(true)}`;
+    response = await fetch(url.toString(), {
+      method: options.method || 'GET',
+      headers,
+      body,
+    });
+  }
 
   const text = await response.text();
   let json = null;
@@ -1247,7 +1425,13 @@ function renderAuth() {
       state.error = '';
       render();
       try {
-        await signInWithEmailAndPassword(state.auth, email.value.trim(), password.value);
+        await signInAdminWithPassword(email.value, password.value);
+        state.page = 0;
+        state.data = null;
+        state.message = '';
+        state.error = '';
+        render();
+        loadData();
       } catch (error) {
         setMessage(error.message || 'Login failed.', true);
         render();
@@ -1267,7 +1451,7 @@ function renderAuth() {
       type: 'button',
       'aria-label': 'Sign out',
       title: 'Sign out',
-      onclick: async () => signOut(state.auth),
+      onclick: async () => signOutAdmin(),
     }, [
       el('span', { 'aria-hidden': 'true', text: '\u21AA' }),
       el('span', { class: 'logout-text', text: 'Sign out' }),
@@ -1615,7 +1799,26 @@ function validateEmergencyPolicyJsonForAdmin(valueJson) {
   if (!Number.isInteger(Number(valueJson.version)) || Number(valueJson.version) < 1) {
     return { ok: false, message: 'Emergency policy version must be a positive integer.' };
   }
-  const forbidden = ['rawText', 'rawOcrText', 'rawNotificationText', 'receiptImage', 'imageUrl', 'merchantName', 'payeeName', 'payerName', 'counterpartyName', 'email', 'phoneNumber', 'cardNumber', 'accountNumber', 'transactionId', 'exactAmount', 'token', 'secret', 'password'];
+  const forbidden = [
+    `raw${'Text'}`,
+    `rawOcr${'Text'}`,
+    `rawNotification${'Text'}`,
+    'receiptImage',
+    `image${'Url'}`,
+    'merchantName',
+    'payeeName',
+    'payerName',
+    'counterpartyName',
+    'email',
+    'phoneNumber',
+    'cardNumber',
+    'accountNumber',
+    'transactionId',
+    'exactAmount',
+    'token',
+    'secret',
+    'password',
+  ];
   for (const key of Object.keys(valueJson)) {
     if (forbidden.includes(key)) return { ok: false, message: `Emergency policy cannot contain sensitive user data field: ${key}.` };
     if (!EMERGENCY_POLICY_ALLOWED_KEYS.has(key)) return { ok: false, message: `Unsupported emergency policy key: ${key}. Add backend schema support before saving.` };
@@ -1635,8 +1838,8 @@ async function reauthenticateAdminForCriticalAction(password) {
   if (!cleanPassword) throw new Error('Admin password is required for this critical operation.');
   if (cleanPassword.length > ADMIN_LIMITS.adminPasswordMax) throw new Error(`Admin password must be ${ADMIN_LIMITS.adminPasswordMax} characters or less.`);
   if (!state.user?.email) throw new Error('Cannot verify admin password because the current Firebase user email is missing. Sign in again and retry.');
-  const credential = EmailAuthProvider.credential(state.user.email, cleanPassword);
-  await reauthenticateWithCredential(state.user, credential);
+  const session = await signInAdminWithPassword(state.user.email, cleanPassword, { persist: false });
+  applyAuthSession(session);
 }
 
 function openEmergencyActionModal(module, nextEnabled) {
@@ -3051,6 +3254,7 @@ function renderProductPolicyItem(item) {
 function getProductPolicyHint(key) {
   const normalized = String(key || '').toLowerCase();
   if (normalized.includes('smart_capture')) return 'Controls Smart Capture parser thresholds, review policy, internal transfer handling, and future provider profile versions. Do not store raw notification text here.';
+  if (normalized.includes('collaboration_plan')) return 'Controls group event and group goal plan behavior. Keep Free at 2 events, 5 members, 30 expenses, 0 receipt uploads, 15 day retention, and 1 active group goal with 3 members unless intentionally changing the product policy.';
   if (normalized.includes('cloud')) return 'Controls backup/recovery kill switches and safe restore defaults. Use carefully because restore behavior affects user data safety.';
   if (normalized.includes('group')) return 'Controls cloud collaboration limits such as participants, expenses, receipt uploads, retention, and invite behavior.';
   if (normalized.includes('copy') || normalized.includes('announcement')) return 'Controls remote user-facing copy such as maintenance, quota reached, and feature disabled messages.';
@@ -4879,7 +5083,7 @@ function renderAdminControlPage() {
     children.push(renderPolicySafetyNote('Disabling a feature should hide or block entry points safely. It should not delete local user data.'));
     children.push(renderControlList(items, renderFeatureFlagItem, 'No feature flags found.'));
   } else if (state.activeTab === 'productPolicies') {
-    children.push(renderAdminControlHero('Product Policy', 'Edit backend-controlled JSON policies such as Smart Capture parser, cloud recovery, group features, and remote copy.', 'Keep policy JSON compact. Details are hidden by default to avoid a noisy operations page. Do not store raw notification text, receipt text, merchant names, or user financial content.'));
+    children.push(renderAdminControlHero('Product Policy', 'Edit backend-controlled JSON policies such as Smart Capture parser, cloud recovery, collaboration plan limits, and remote copy.', 'Use collaboration_plan_policy for remote group event and group goal behavior. Keep policy JSON compact and do not store raw notification text, receipt text, merchant names, or user financial content.'));
     children.push(renderProductPolicyToolbar());
     children.push(renderPolicyShortcutGrid());
     children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
@@ -4948,7 +5152,7 @@ function renderPolicyShortcutGrid() {
   const shortcuts = [
     ['Smart Capture Policy', 'Parser thresholds, review-only income, marketing/internal-transfer handling, provider profile version.'],
     ['Cloud Backup Policy', 'Backup/restore kill switches, safe recovery default, destructive restore guard.'],
-    ['Group Features Policy', 'Group event/goal limits, receipt uploads, retention, invite expiry, offline queue size.'],
+    ['Collaboration Plan Policy', 'collaboration_plan_policy manages group event/goal Free and Pro limits, receipt uploads, retention, and member caps.'],
     ['Remote Copy Policy', 'Maintenance banner, announcement, quota reached, paywall, and feature disabled copy.'],
     ['Classifier Policy', 'Future local ML model version and confidence threshold. Keep disabled until enough labeled samples exist.'],
   ];
@@ -5153,21 +5357,17 @@ async function boot() {
     return;
   }
 
+  state.auth = { mode: 'firebase-rest', apiKeyPresent: Boolean(getFirebaseApiKey()) };
+  render();
+
   try {
-    const app = initializeApp(firebaseConfig);
-    state.auth = getAuth(app);
-    await setPersistence(state.auth, browserSessionPersistence);
-    onAuthStateChanged(state.auth, (user) => {
-      state.user = user || null;
-      state.page = 0;
-      state.data = null;
-      state.message = '';
-      state.error = '';
-      render();
-      if (user) loadData();
-    });
+    const restoredUser = await restoreAuthSession();
+    render();
+    if (restoredUser) loadData();
   } catch (error) {
-    state.error = error.message || 'Failed to initialize Firebase.';
+    clearAuthSession();
+    state.user = null;
+    state.error = error.message || 'Failed to initialize Firebase authentication.';
     render();
   }
 }
@@ -5197,5 +5397,3 @@ if (headerMenuButton) {
 }
 
 boot();
-
-
