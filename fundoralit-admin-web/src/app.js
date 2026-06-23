@@ -88,10 +88,6 @@ const API_PATHS = {
     get: (id) => `/api/admin/policy-versions/${encodeURIComponent(id)}`,
     rollback: (id) => `/api/admin/policy-versions/${encodeURIComponent(id)}/rollback`,
   },
-  appVersionPolicies: {
-    list: '/api/admin/app-version-policies',
-    update: (id) => `/api/admin/app-version-policies/${encodeURIComponent(id)}`,
-  },
   reviewPromptPolicy: {
     get: '/api/admin/review-prompt-policy',
     update: '/api/admin/review-prompt-policy',
@@ -253,7 +249,6 @@ const state = {
     targetType: '',
     policyVersionTargetId: '',
     policyVersionPolicyKey: '',
-    appVersionPlatform: '',
     rateLimitRouteGroup: '',
     subscriptionRequestStatus: '',
     subscriptionUserTier: '',
@@ -283,8 +278,7 @@ const ADMIN_ENUMS = {
   subscriptionUserTiers: ['', 'FREE', 'PRO'],
   subscriptionUserStatuses: ['', 'ACTIVE', 'TRIAL', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'CANCELLED', 'EXPIRED', 'EMPTY'],
   subscriptionRequestTypes: ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS', 'CORRECT_TO_PRO', 'CORRECT_TO_FREE'],
-  policyVersionTargetTypes: ['', 'FEATURE_FLAG', 'FEATURE_LIMIT', 'PRODUCT_POLICY', 'ANNOUNCEMENT', 'APP_VERSION_POLICY', 'REVIEW_PROMPT_POLICY', 'RATE_LIMIT_OVERRIDE', 'SMART_CAPTURE_GLOBAL_RULE', 'OCR_RECEIPT_GLOBAL_RULE'],
-  appVersionPlatforms: ['', 'ANDROID', 'IOS', 'WEB'],
+  policyVersionTargetTypes: ['', 'FEATURE_FLAG', 'FEATURE_LIMIT', 'PRODUCT_POLICY', 'ANNOUNCEMENT', 'REVIEW_PROMPT_POLICY', 'RATE_LIMIT_OVERRIDE', 'SMART_CAPTURE_GLOBAL_RULE', 'OCR_RECEIPT_GLOBAL_RULE'],
 };
 
 const ADMIN_LIMITS = {
@@ -304,9 +298,6 @@ const ADMIN_LIMITS = {
   subscriptionSupportReasonMax: 3000,
   confirmPhraseMax: 80,
   adminPasswordMax: 200,
-  appVersionMessageMax: 1000,
-  appVersionReleaseNotesMax: 4000,
-  appVersionUrlMax: 1000,
   routeGroupMax: 120,
 };
 
@@ -344,7 +335,6 @@ function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong
   if (status === 404) {
     const url = String(errorOrMessage?.url || '');
     if (url.includes('/api/admin/policy-versions')) return 'Policy version backend endpoint is not deployed yet, or the selected policy version no longer exists.';
-    if (url.includes('/api/admin/app-version-policies')) return 'App Version backend endpoint is not deployed yet, or the selected app version policy no longer exists.';
     if (url.includes('/api/admin/review-prompt-policy')) return 'Review Prompt Policy backend endpoint is not deployed yet. Deploy the backend endpoint or use the Product Policy fallback for review_prompt_policy.';
     if (url.includes('/api/admin/rate-limit-overrides')) return 'Rate Limit Override backend endpoint is not deployed yet, or the selected override no longer exists.';
     return 'The selected record or endpoint could not be found. Refresh the page and confirm the backend migration/endpoints are deployed.';
@@ -533,7 +523,6 @@ const NAV_GROUPS = [
       { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
       { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, collaboration plan limits, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app and collaboration backend should keep local fallbacks if remote policy is unavailable.' },
       { id: 'policyVersions', label: 'Policy Versions', helper: 'Rollback safety', description: 'Inspect saved policy snapshots and roll back bad remote configuration safely.', info: 'Use rollback only when a policy, flag, or operational config causes production risk. Rollback requires reason, exact phrase, and admin verification.' },
-      { id: 'appVersion', label: 'Emergency Update', helper: 'Force policy', description: 'Manage emergency force-update policy only. Normal optional updates are handled by Google Play in the app.', info: 'Use this only to block unsafe builds or show emergency update copy. Normal release prompts should not be managed here.' },
       { id: 'reviewPromptPolicy', label: 'Review Prompt Policy', helper: 'Store prompt config', description: 'Configure app review prompt cooldowns and eligibility thresholds online.', info: 'Keep prompts respectful and low frequency. The backend falls back to properties if remote policy is unavailable.' },
       { id: 'rateLimitOverrides', label: 'Rate Limit Overrides', helper: 'Temporary throttles', description: 'Store short-lived route limit overrides for operational incidents or campaigns.', info: 'Only effective if the backend has a central rate-limit enforcement path wired to this table.' },
       { id: 'smartCaptureRules', label: 'Smart Capture Rules', helper: 'Manual approval', description: 'Review privacy-safe anonymous Smart Capture rule candidates before activation.', info: 'Only aggregate hashes and counters are shown. No notification text, skeleton text, merchant, payee, payer, counterparty, OCR content, exact amounts, or semantic vectors are stored here. Semantic slot metadata is coarse dictionary categories only.' },
@@ -1077,13 +1066,6 @@ async function loadAdminControlData() {
     state.data = { content: versions, page: 0, size: 200, totalElements: versions.length, totalPages: 1 };
     return;
   }
-  if (state.activeTab === 'appVersion') {
-    response = await api(API_PATHS.appVersionPolicies.list);
-    const allItems = normalizeAdminListResponse(response);
-    const filteredItems = allItems.filter((item) => equalsFilter(item.platform || item.platform_name, filters.appVersionPlatform));
-    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
-    return;
-  }
   if (state.activeTab === 'reviewPromptPolicy') {
     await loadReviewPromptPolicyData();
     return;
@@ -1598,7 +1580,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['emergencyConsole', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'appVersion', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['emergencyConsole', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -2860,7 +2842,6 @@ function renderAdminModal() {
   if (state.modal.kind === 'emergencyRuleAction') return renderEmergencyRuleActionModal();
   if (state.modal.kind === 'policyVersionView') return renderPolicyVersionViewModal();
   if (state.modal.kind === 'policyRollback') return renderPolicyRollbackModal();
-  if (state.modal.kind === 'appVersionEdit') return renderAppVersionPolicyModal();
   if (state.modal.kind === 'reviewPromptPolicyEdit') return renderReviewPromptPolicyModal();
   if (state.modal.kind === 'rateLimitOverrideEdit') return renderRateLimitOverrideModal();
   if (state.modal.kind === 'rateLimitOverrideDelete') return renderRateLimitOverrideDeleteModal();
@@ -4491,37 +4472,6 @@ function openPolicyRollbackModal(item) {
   render();
 }
 
-function openAppVersionPolicyModal(item) {
-  state.modal = {
-    kind: 'appVersionEdit',
-    title: `Edit ${item.platform || 'App'} version policy`,
-    item,
-    enabled: item.enabled !== false,
-    latestVersion: item.latestVersion || '',
-    latestBuildNumber: item.latestBuildNumber || '',
-    minimumSupportedBuildNumber: item.minimumSupportedBuildNumber || '',
-    forceUpdate: Boolean(item.forceUpdate),
-    useBackendMessage: item.useBackendMessage !== false,
-    messageEn: item.messageEn || '',
-    messageZh: item.messageZh || '',
-    messageMs: item.messageMs || '',
-    releaseNotesEn: item.releaseNotesEn || '',
-    releaseNotesZh: item.releaseNotesZh || '',
-    releaseNotesMs: item.releaseNotesMs || '',
-    updateUrl: item.updateUrl || '',
-    fallbackUrl: item.fallbackUrl || '',
-    allowStoreFallbackPrompt: Boolean(item.allowStoreFallbackPrompt),
-    forceWhenPlayUnavailable: Boolean(item.forceWhenPlayUnavailable),
-    emergencyForceWhenPlayUnavailable: Boolean(item.emergencyForceWhenPlayUnavailable),
-    rolloutStatus: item.rolloutStatus || '',
-    reason: '',
-    confirmPhrase: '',
-    password: '',
-    expectedPhrase: 'UPDATE APP VERSION POLICY',
-  };
-  render();
-}
-
 function openReviewPromptPolicyModal(policy) {
   const source = state.data?.reviewPromptSource || 'dedicated';
   state.modal = {
@@ -4595,69 +4545,6 @@ async function submitPolicyRollbackModal() {
     if (state.modal) state.modal.loading = false;
     setModalError(error, '');
   }
-}
-
-async function submitAppVersionPolicyModal() {
-  const modal = state.modal;
-  const id = getItemId(modal.item);
-  if (!id) return validationError('Cannot update this app version policy because the backend ID is missing. Refresh and try again.');
-  const reasonCheck = requireAuditReason(modal.reason, 'app version policy update');
-  if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
-  const versionCheck = validateVersionText(modal.latestVersion, 'Latest version');
-  if (!versionCheck.ok) return validationError(versionCheck.message, 'latestVersion');
-  const latestBuildCheck = validateVersionText(modal.latestBuildNumber, 'Target build number');
-  if (!latestBuildCheck.ok) return validationError(latestBuildCheck.message, 'latestBuildNumber');
-  const minBuildCheck = validateVersionText(modal.minimumSupportedBuildNumber, 'Minimum supported build number');
-  if (!minBuildCheck.ok) return validationError(minBuildCheck.message, 'minimumSupportedBuildNumber');
-  const updateUrlCheck = requireMaxLength(modal.updateUrl, 'Update URL', ADMIN_LIMITS.appVersionUrlMax);
-  if (!updateUrlCheck.ok) return validationError(updateUrlCheck.message, 'updateUrl');
-  const fallbackUrlCheck = requireMaxLength(modal.fallbackUrl, 'Fallback URL', ADMIN_LIMITS.appVersionUrlMax);
-  if (!fallbackUrlCheck.ok) return validationError(fallbackUrlCheck.message, 'fallbackUrl');
-  for (const [field, label] of [['messageEn', 'Message EN'], ['messageZh', 'Message ZH'], ['messageMs', 'Message MS']]) {
-    const check = requireMaxLength(modal[field], label, ADMIN_LIMITS.appVersionMessageMax);
-    if (!check.ok) return validationError(check.message, field);
-  }
-  for (const [field, label] of [['releaseNotesEn', 'Release notes EN'], ['releaseNotesZh', 'Release notes ZH'], ['releaseNotesMs', 'Release notes MS']]) {
-    const check = requireMaxLength(modal[field], label, ADMIN_LIMITS.appVersionReleaseNotesMax);
-    if (!check.ok) return validationError(check.message, field);
-  }
-  const highRisk = (!Boolean(modal.item?.forceUpdate) && Boolean(modal.forceUpdate))
-    || (!Boolean(modal.item?.emergencyForceWhenPlayUnavailable) && Boolean(modal.emergencyForceWhenPlayUnavailable));
-  if (highRisk) {
-    if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type ${modal.expectedPhrase} to confirm high-risk update policy changes.`, 'confirmPhrase');
-    const passwordCheck = requireMaxLength(modal.password, 'Admin password', ADMIN_LIMITS.adminPasswordMax, { required: true });
-    if (!passwordCheck.ok) return validationError(passwordCheck.message, 'password');
-    try {
-      modal.loading = true;
-      modal.error = '';
-      render();
-      await reauthenticateAdminForCriticalAction(passwordCheck.value);
-    } catch (error) {
-      if (state.modal) state.modal.loading = false;
-      return setModalError(error, 'password');
-    }
-  }
-  await performPatchAction(API_PATHS.appVersionPolicies.update(id), 'App version policy updated.', {
-    enabled: Boolean(modal.enabled),
-    latestVersion: versionCheck.value ?? '',
-    latestBuildNumber: latestBuildCheck.value ?? '',
-    minimumSupportedBuildNumber: minBuildCheck.value ?? '',
-    forceUpdate: Boolean(modal.forceUpdate),
-    useBackendMessage: Boolean(modal.useBackendMessage),
-    messageEn: normalizedTrim(modal.messageEn),
-    messageZh: normalizedTrim(modal.messageZh),
-    messageMs: normalizedTrim(modal.messageMs),
-    releaseNotesEn: normalizedTrim(modal.releaseNotesEn),
-    releaseNotesZh: normalizedTrim(modal.releaseNotesZh),
-    releaseNotesMs: normalizedTrim(modal.releaseNotesMs),
-    updateUrl: normalizedTrim(modal.updateUrl),
-    fallbackUrl: normalizedTrim(modal.fallbackUrl),
-    allowStoreFallbackPrompt: Boolean(modal.allowStoreFallbackPrompt),
-    forceWhenPlayUnavailable: Boolean(modal.forceWhenPlayUnavailable),
-    emergencyForceWhenPlayUnavailable: Boolean(modal.emergencyForceWhenPlayUnavailable),
-    rolloutStatus: normalizedTrim(modal.rolloutStatus),
-    reason: reasonCheck.value,
-  });
 }
 
 async function submitReviewPromptPolicyModal() {
@@ -4789,35 +4676,6 @@ function renderPolicyVersionItem(item) {
   });
 }
 
-function renderAppVersionToolbar() {
-  const platform = select(ADMIN_ENUMS.appVersionPlatforms, state.adminFilters.appVersionPlatform, (value) => { state.adminFilters.appVersionPlatform = value; });
-  return renderControlToolbar([
-    el('div', {}, [el('label', { text: 'Platform' }), platform]),
-    el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
-    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.appVersionPlatform = ''; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
-  ], 'control-toolbar-inline-double');
-}
-
-function renderAppVersionPolicyItem(item) {
-  const force = Boolean(item.forceUpdate || item.emergencyForceWhenPlayUnavailable);
-  return renderCollapsibleItem({
-    title: `${item.platform || 'Platform'} · ${item.latestVersion || '-'}`,
-    subtitle: `Emergency target ${item.latestBuildNumber || '-'} · Min supported ${item.minimumSupportedBuildNumber || '-'}`,
-    statusNode: el('span', { class: force ? 'badge danger' : item.enabled === false ? 'badge warn' : 'badge success', text: force ? 'FORCE' : item.enabled === false ? 'DISABLED' : 'ACTIVE' }),
-    children: [
-      renderMetaGrid([
-        ['ID', getItemId(item)], ['Platform', item.platform], ['Enabled', item.enabled !== false ? 'Yes' : 'No'], ['Target Version', item.latestVersion],
-        ['Emergency Target Build', item.latestBuildNumber], ['Minimum Supported Build', item.minimumSupportedBuildNumber], ['Force Update', item.forceUpdate ? 'Yes' : 'No'],
-        ['Use Backend Message', item.useBackendMessage !== false ? 'Yes' : 'No'], ['Force When Play Unavailable', item.forceWhenPlayUnavailable ? 'Yes' : 'No'],
-        ['Emergency Force When Play Unavailable', item.emergencyForceWhenPlayUnavailable ? 'Yes' : 'No'], ['Rollout Status', item.rolloutStatus], ['Updated', formatDate(item.updatedAt)],
-      ]),
-      el('details', { class: 'nested-details' }, [el('summary', { text: 'Messages and release notes' }), el('pre', { text: compactJson({ messageEn: item.messageEn, messageZh: item.messageZh, messageMs: item.messageMs, releaseNotesEn: item.releaseNotesEn, releaseNotesZh: item.releaseNotesZh, releaseNotesMs: item.releaseNotesMs, updateUrl: item.updateUrl, fallbackUrl: item.fallbackUrl }) })]),
-      el('div', { class: 'actions compact-actions' }, [el('button', { class: 'btn small', text: 'Edit', onclick: () => openAppVersionPolicyModal(item) })]),
-    ],
-  });
-}
-
 function renderReviewPromptPolicyPanel(policy) {
   return el('section', { class: 'card admin-control-card' }, [
     el('div', { class: 'section-title-row' }, [
@@ -4897,66 +4755,6 @@ function renderPolicyRollbackModal() {
     el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
     el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password verification' }), password, renderFieldError('password')]),
   ], submitPolicyRollbackModal, true);
-}
-
-function renderAppVersionPolicyModal() {
-  const modal = state.modal;
-  const checkboxField = (key, label) => {
-    const input = el('input', { type: 'checkbox' });
-    input.checked = Boolean(modal[key]);
-    input.addEventListener('change', () => { modal[key] = input.checked; render(); });
-    return el('label', { class: 'check-row' }, [input, el('span', { text: label })]);
-  };
-  const textField = (key, label, placeholder = '') => {
-    const input = el('input', { type: 'text', value: modal[key] || '', placeholder, 'data-field-key': key });
-    input.addEventListener('input', () => { modal[key] = input.value; });
-    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
-  };
-  const textAreaField = (key, label, rows = '3') => {
-    const input = el('textarea', { rows, 'data-field-key': key });
-    input.value = modal[key] || '';
-    input.addEventListener('input', () => { modal[key] = input.value; });
-    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
-  };
-  const highRisk = (!Boolean(modal.item?.forceUpdate) && Boolean(modal.forceUpdate)) || (!Boolean(modal.item?.emergencyForceWhenPlayUnavailable) && Boolean(modal.emergencyForceWhenPlayUnavailable));
-  const phrase = el('input', { type: 'text', placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', 'data-field-key': 'confirmPhrase' });
-  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
-  const password = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Firebase admin password', 'data-field-key': 'password' });
-  password.addEventListener('input', () => { modal.password = password.value; });
-  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
-  reason.value = modal.reason || '';
-  reason.addEventListener('input', () => { modal.reason = reason.value; });
-  return renderControlModal(modal.title, 'Emergency Update', [
-    renderMetaGrid([['ID', getItemId(modal.item)], ['Platform', modal.item?.platform], ['High-risk change', highRisk ? 'Yes' : 'No']]),
-    el('div', { class: 'form-grid two' }, [
-      textField('latestVersion', 'Target version (force only)'),
-      textField('latestBuildNumber', 'Target build number (force only)'),
-      textField('minimumSupportedBuildNumber', 'Minimum supported build number'),
-      textField('rolloutStatus', 'Rollout status'),
-      textField('updateUrl', 'Update URL'),
-      textField('fallbackUrl', 'Fallback URL'),
-    ]),
-    el('div', { class: 'form-grid two' }, [
-      checkboxField('enabled', 'Enabled'),
-      checkboxField('forceUpdate', 'Force update'),
-      checkboxField('useBackendMessage', 'Use backend message'),
-      checkboxField('allowStoreFallbackPrompt', 'Legacy store fallback prompt (normal update disabled)'),
-      checkboxField('forceWhenPlayUnavailable', 'Force when Play unavailable'),
-      checkboxField('emergencyForceWhenPlayUnavailable', 'Emergency force when Play unavailable'),
-    ]),
-    el('div', { class: 'form-grid two' }, [
-      textAreaField('messageEn', 'Message EN'),
-      textAreaField('messageZh', 'Message ZH'),
-      textAreaField('messageMs', 'Message MS'),
-      textAreaField('releaseNotesEn', 'Release notes EN', '4'),
-      textAreaField('releaseNotesZh', 'Release notes ZH', '4'),
-      textAreaField('releaseNotesMs', 'Release notes MS', '4'),
-    ]),
-    highRisk ? el('div', { class: 'modal-alert error' }, [el('strong', { text: 'High-risk update policy change' }), el('p', { text: 'Enabling force update or emergency force requires exact confirmation and Firebase password re-authentication.' })]) : null,
-    highRisk ? el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]) : null,
-    highRisk ? el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password verification' }), password, renderFieldError('password')]) : null,
-    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
-  ], submitAppVersionPolicyModal, true);
 }
 
 function renderReviewPromptPolicyModal() {
@@ -5046,12 +4844,6 @@ function renderAdminControlPage() {
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Snapshots should contain policy/config data only. Never store raw OCR text, notification text, merchant names, payees, or exact transaction amounts.'));
     children.push(renderControlList(items, renderPolicyVersionItem, 'No policy versions found. Deploy backend snapshot wiring or change a policy first.'));
-  } else if (state.activeTab === 'appVersion') {
-    children.push(renderAdminControlHero('Emergency Update', 'Manage emergency force-update policy only.', 'Normal optional update prompts are handled by Google Play. Use backend policy only to block unsafe builds, require a minimum supported build, or show emergency update copy.'));
-    children.push(renderAppVersionToolbar());
-    children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Normal releases should not be updated here. Upload AAB to Play Console and let Google Play drive optional prompts. Use this page only for emergency force update or minimum supported build.'));
-    children.push(renderControlList(items, renderAppVersionPolicyItem, 'No emergency update policy rows found. This is safe for normal releases because Google Play now drives optional update prompts.'));
   } else if (state.activeTab === 'reviewPromptPolicy') {
     children.push(renderAdminControlHero('Review Prompt Policy', 'Tune app review prompt cooldowns and eligibility thresholds without a new build.', 'Use low-frequency prompts. The backend should fall back to ReviewPromptProperties if remote config is missing or invalid.'));
     if (state.data?.backendWarning) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.backendWarning }));
