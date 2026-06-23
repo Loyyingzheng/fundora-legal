@@ -4572,14 +4572,6 @@ function openRateLimitOverrideDeleteModal(item) {
   render();
 }
 
-function toDateTimeLocalValue(value) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
-}
-
 async function submitPolicyRollbackModal() {
   const modal = state.modal;
   const reasonCheck = requireAuditReason(modal.reason, 'policy rollback');
