@@ -533,7 +533,7 @@ const NAV_GROUPS = [
       { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
       { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, collaboration plan limits, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app and collaboration backend should keep local fallbacks if remote policy is unavailable.' },
       { id: 'policyVersions', label: 'Policy Versions', helper: 'Rollback safety', description: 'Inspect saved policy snapshots and roll back bad remote configuration safely.', info: 'Use rollback only when a policy, flag, or operational config causes production risk. Rollback requires reason, exact phrase, and admin verification.' },
-      { id: 'appVersion', label: 'App Version', helper: 'Update policy', description: 'Manage soft update, force update, Play fallback, and app-version messages from backend policy.', info: 'Force update is high risk. Verify version/build fields and messages before saving.' },
+      { id: 'appVersion', label: 'Emergency Update', helper: 'Force policy', description: 'Manage emergency force-update policy only. Normal optional updates are handled by Google Play in the app.', info: 'Use this only to block unsafe builds or show emergency update copy. Normal release prompts should not be managed here.' },
       { id: 'reviewPromptPolicy', label: 'Review Prompt Policy', helper: 'Store prompt config', description: 'Configure app review prompt cooldowns and eligibility thresholds online.', info: 'Keep prompts respectful and low frequency. The backend falls back to properties if remote policy is unavailable.' },
       { id: 'rateLimitOverrides', label: 'Rate Limit Overrides', helper: 'Temporary throttles', description: 'Store short-lived route limit overrides for operational incidents or campaigns.', info: 'Only effective if the backend has a central rate-limit enforcement path wired to this table.' },
       { id: 'smartCaptureRules', label: 'Smart Capture Rules', helper: 'Manual approval', description: 'Review privacy-safe anonymous Smart Capture rule candidates before activation.', info: 'Only aggregate hashes and counters are shown. No notification text, skeleton text, merchant, payee, payer, counterparty, OCR content, exact amounts, or semantic vectors are stored here. Semantic slot metadata is coarse dictionary categories only.' },
@@ -4510,7 +4510,7 @@ function openAppVersionPolicyModal(item) {
     releaseNotesMs: item.releaseNotesMs || '',
     updateUrl: item.updateUrl || '',
     fallbackUrl: item.fallbackUrl || '',
-    allowStoreFallbackPrompt: item.allowStoreFallbackPrompt !== false,
+    allowStoreFallbackPrompt: Boolean(item.allowStoreFallbackPrompt),
     forceWhenPlayUnavailable: Boolean(item.forceWhenPlayUnavailable),
     emergencyForceWhenPlayUnavailable: Boolean(item.emergencyForceWhenPlayUnavailable),
     rolloutStatus: item.rolloutStatus || '',
@@ -4605,7 +4605,7 @@ async function submitAppVersionPolicyModal() {
   if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
   const versionCheck = validateVersionText(modal.latestVersion, 'Latest version');
   if (!versionCheck.ok) return validationError(versionCheck.message, 'latestVersion');
-  const latestBuildCheck = validateVersionText(modal.latestBuildNumber, 'Latest build number');
+  const latestBuildCheck = validateVersionText(modal.latestBuildNumber, 'Target build number');
   if (!latestBuildCheck.ok) return validationError(latestBuildCheck.message, 'latestBuildNumber');
   const minBuildCheck = validateVersionText(modal.minimumSupportedBuildNumber, 'Minimum supported build number');
   if (!minBuildCheck.ok) return validationError(minBuildCheck.message, 'minimumSupportedBuildNumber');
@@ -4803,12 +4803,12 @@ function renderAppVersionPolicyItem(item) {
   const force = Boolean(item.forceUpdate || item.emergencyForceWhenPlayUnavailable);
   return renderCollapsibleItem({
     title: `${item.platform || 'Platform'} · ${item.latestVersion || '-'}`,
-    subtitle: `Latest build ${item.latestBuildNumber || '-'} · Min supported ${item.minimumSupportedBuildNumber || '-'}`,
+    subtitle: `Emergency target ${item.latestBuildNumber || '-'} · Min supported ${item.minimumSupportedBuildNumber || '-'}`,
     statusNode: el('span', { class: force ? 'badge danger' : item.enabled === false ? 'badge warn' : 'badge success', text: force ? 'FORCE' : item.enabled === false ? 'DISABLED' : 'ACTIVE' }),
     children: [
       renderMetaGrid([
-        ['ID', getItemId(item)], ['Platform', item.platform], ['Enabled', item.enabled !== false ? 'Yes' : 'No'], ['Latest Version', item.latestVersion],
-        ['Latest Build', item.latestBuildNumber], ['Minimum Supported Build', item.minimumSupportedBuildNumber], ['Force Update', item.forceUpdate ? 'Yes' : 'No'],
+        ['ID', getItemId(item)], ['Platform', item.platform], ['Enabled', item.enabled !== false ? 'Yes' : 'No'], ['Target Version', item.latestVersion],
+        ['Emergency Target Build', item.latestBuildNumber], ['Minimum Supported Build', item.minimumSupportedBuildNumber], ['Force Update', item.forceUpdate ? 'Yes' : 'No'],
         ['Use Backend Message', item.useBackendMessage !== false ? 'Yes' : 'No'], ['Force When Play Unavailable', item.forceWhenPlayUnavailable ? 'Yes' : 'No'],
         ['Emergency Force When Play Unavailable', item.emergencyForceWhenPlayUnavailable ? 'Yes' : 'No'], ['Rollout Status', item.rolloutStatus], ['Updated', formatDate(item.updatedAt)],
       ]),
@@ -4926,11 +4926,11 @@ function renderAppVersionPolicyModal() {
   const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
   reason.value = modal.reason || '';
   reason.addEventListener('input', () => { modal.reason = reason.value; });
-  return renderControlModal(modal.title, 'App Version', [
+  return renderControlModal(modal.title, 'Emergency Update', [
     renderMetaGrid([['ID', getItemId(modal.item)], ['Platform', modal.item?.platform], ['High-risk change', highRisk ? 'Yes' : 'No']]),
     el('div', { class: 'form-grid two' }, [
-      textField('latestVersion', 'Latest version'),
-      textField('latestBuildNumber', 'Latest build number'),
+      textField('latestVersion', 'Target version (force only)'),
+      textField('latestBuildNumber', 'Target build number (force only)'),
       textField('minimumSupportedBuildNumber', 'Minimum supported build number'),
       textField('rolloutStatus', 'Rollout status'),
       textField('updateUrl', 'Update URL'),
@@ -4940,7 +4940,7 @@ function renderAppVersionPolicyModal() {
       checkboxField('enabled', 'Enabled'),
       checkboxField('forceUpdate', 'Force update'),
       checkboxField('useBackendMessage', 'Use backend message'),
-      checkboxField('allowStoreFallbackPrompt', 'Allow store fallback prompt'),
+      checkboxField('allowStoreFallbackPrompt', 'Legacy store fallback prompt (normal update disabled)'),
       checkboxField('forceWhenPlayUnavailable', 'Force when Play unavailable'),
       checkboxField('emergencyForceWhenPlayUnavailable', 'Emergency force when Play unavailable'),
     ]),
@@ -5047,11 +5047,11 @@ function renderAdminControlPage() {
     children.push(renderPolicySafetyNote('Snapshots should contain policy/config data only. Never store raw OCR text, notification text, merchant names, payees, or exact transaction amounts.'));
     children.push(renderControlList(items, renderPolicyVersionItem, 'No policy versions found. Deploy backend snapshot wiring or change a policy first.'));
   } else if (state.activeTab === 'appVersion') {
-    children.push(renderAdminControlHero('App Version', 'Manage online soft update, force update, Play fallback, and app version messages.', 'DB-backed app version policy is read first by the backend. If no DB row exists, the public endpoint should fall back to application properties.'));
+    children.push(renderAdminControlHero('Emergency Update', 'Manage emergency force-update policy only.', 'Normal optional update prompts are handled by Google Play. Use backend policy only to block unsafe builds, require a minimum supported build, or show emergency update copy.'));
     children.push(renderAppVersionToolbar());
     children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Force update and emergency Play-unavailable force are high risk. Confirm version/build values and messages before saving.'));
-    children.push(renderControlList(items, renderAppVersionPolicyItem, 'No app version policy rows found. Run the backend migration/seed first; public endpoint should still use property fallback.'));
+    children.push(renderPolicySafetyNote('Normal releases should not be updated here. Upload AAB to Play Console and let Google Play drive optional prompts. Use this page only for emergency force update or minimum supported build.'));
+    children.push(renderControlList(items, renderAppVersionPolicyItem, 'No emergency update policy rows found. This is safe for normal releases because Google Play now drives optional update prompts.'));
   } else if (state.activeTab === 'reviewPromptPolicy') {
     children.push(renderAdminControlHero('Review Prompt Policy', 'Tune app review prompt cooldowns and eligibility thresholds without a new build.', 'Use low-frequency prompts. The backend should fall back to ReviewPromptProperties if remote config is missing or invalid.'));
     if (state.data?.backendWarning) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.backendWarning }));
