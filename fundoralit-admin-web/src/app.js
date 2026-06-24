@@ -82,6 +82,7 @@ const API_PATHS = {
   },
   mobilePolicy: {
     current: '/api/config/mobile-policy',
+    revision: '/api/config/mobile-policy/revision',
   },
   policyVersions: {
     list: '/api/admin/policy-versions',
@@ -184,6 +185,14 @@ function formatMetricValue(value, suffix = '') {
   const num = Number(value);
   if (!Number.isFinite(num)) return String(value);
   return `${formatNumber(num)}${suffix ? ` ${suffix}` : ''}`;
+}
+
+function formatChangedKeys(value) {
+  if (!value) return '-';
+  const list = Array.isArray(value) ? value : String(value).split(',');
+  const clean = list.map((item) => String(item || '').trim()).filter(Boolean);
+  if (!clean.length) return '-';
+  return clean.slice(0, 6).join(', ') + (clean.length > 6 ? ` +${clean.length - 6} more` : '');
 }
 
 function getMetric(obj, keys, fallback = 0) {
@@ -1735,6 +1744,7 @@ async function loadEmergencyConsoleData() {
     api(API_PATHS.ocrReceiptRules.active).catch((error) => ({ rules: [], loadError: toFriendlyErrorMessage(error) })),
     api(API_PATHS.auditLogs.list, { params: { page: 0, size: 10 } }).catch((error) => ({ content: [], loadError: toFriendlyErrorMessage(error) })),
     api(API_PATHS.mobilePolicy.current, { params: { platform: 'WEB', appVersion: 'admin-web', buildNumber: 'admin-web', plan: 'PRO', rolloutSeed: 'admin-web' } }).catch((error) => ({ loadError: toFriendlyErrorMessage(error) })),
+    api(API_PATHS.mobilePolicy.revision, { params: { platform: 'WEB', appVersion: 'admin-web', buildNumber: 'admin-web', plan: 'PRO', rolloutSeed: 'admin-web' } }).catch((error) => ({ loadError: toFriendlyErrorMessage(error) })),
   ]);
 
   const read = (index, fallback) => results[index].status === 'fulfilled' ? results[index].value : fallback;
@@ -1747,7 +1757,7 @@ async function loadEmergencyConsoleData() {
   const loadErrors = results
     .map((result, index) => result.status === 'rejected' ? `Section ${index + 1}: ${toFriendlyErrorMessage(result.reason)}` : '')
     .filter(Boolean);
-  [smartActive, ocrActive, auditsPayload, read(5, {})].forEach((payload) => {
+  [smartActive, ocrActive, auditsPayload, read(5, {}), read(6, {})].forEach((payload) => {
     if (payload?.loadError) loadErrors.push(payload.loadError);
   });
 
@@ -1766,6 +1776,7 @@ async function loadEmergencyConsoleData() {
     activeRules,
     recentCriticalChanges,
     mobilePolicy: normalizeAdminObjectResponse(read(5, {})),
+    mobilePolicyRevision: normalizeAdminObjectResponse(read(6, {})),
     loadErrors,
     page: 0,
     size: featureFlags.length,
@@ -4237,6 +4248,7 @@ async function submitAnnouncementModal() {
 function renderEmergencyConsole() {
   const loadErrors = state.data?.loadErrors || [];
   const mobilePolicy = state.data?.mobilePolicy || {};
+  const mobilePolicyRevision = state.data?.mobilePolicyRevision || {};
   return el('div', { class: 'emergency-console' }, [
     loadErrors.length ? el('div', { class: 'notice warning inline-notice' }, [
       el('strong', { text: 'Some emergency data could not be loaded' }),
@@ -4250,6 +4262,9 @@ function renderEmergencyConsole() {
       ['Core API', coreApiBaseUrl || 'Not configured'],
       ['Collaboration API', collaborationApiBaseUrl || 'Not configured'],
       ['Current config version', mobilePolicy.configVersion || mobilePolicy.config_version || '-'],
+      ['Mobile policy revision', mobilePolicyRevision.revision || mobilePolicy.policyRevision || mobilePolicy.policy_revision || '-'],
+      ['Last invalidated', formatDate(mobilePolicyRevision.invalidatedAt || mobilePolicyRevision.invalidated_at || mobilePolicy.invalidatedAt || mobilePolicy.invalidated_at)],
+      ['Changed keys', formatChangedKeys(mobilePolicyRevision.changedKeys || mobilePolicyRevision.changed_keys || mobilePolicy.changedKeys || mobilePolicy.changed_keys)],
       ['Collaboration cache clear', collaborationApiBaseUrl ? 'Available' : 'Skipped until collaborationApiBaseUrl is configured'],
     ]),
     el('div', { class: 'emergency-grid' }, EMERGENCY_MODULES.map(renderEmergencyModuleCard)),
@@ -4858,16 +4873,16 @@ function renderAdminControlPage() {
     children.push(renderAdminControlHero('Feature Limits', 'Control quota, preset, wallet, dashboard, and collaboration limits from backend policy.', 'Use this page for limits such as Smart Capture 20/week, OCR 20/month, expense presets, wallet slots, group limits, and dashboard history. Changes are audited and should keep local app fallback compatibility.'));
     children.push(renderFeatureLimitToolbar());
     children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Limit changes affect user entitlement and quota. Use empty limit for unlimited only when backend supports it.'));
+    children.push(renderPolicySafetyNote('Limit changes affect user entitlement and quota. Save actions now bump the mobile policy revision, so mobile devices can refresh the cached policy only after Admin changes.'));
     children.push(renderControlList(items, renderFeatureLimitItem, 'No feature limits found.'));
   } else if (state.activeTab === 'featureFlags') {
     children.push(renderAdminControlHero('Feature Flags', 'Remote kill switches for Smart Capture, OCR, cloud, collaboration, and future features.', 'Flags should be used to safely disable risky features without a new app release. Avoid enabling experimental features such as income auto-save unless the app has strict safety checks.'));
     children.push(renderFeatureFlagToolbar());
     children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Disabling a feature should hide or block entry points safely. It should not delete local user data.'));
+    children.push(renderPolicySafetyNote('Disabling a feature should hide or block entry points safely. Save actions now bump the mobile policy revision for passive app refresh.'));
     children.push(renderControlList(items, renderFeatureFlagItem, 'No feature flags found.'));
   } else if (state.activeTab === 'productPolicies') {
-    children.push(renderAdminControlHero('Product Policy', 'Edit backend-controlled JSON policies such as Smart Capture parser, cloud recovery, collaboration plan limits, and remote copy.', 'Use collaboration_plan_policy for remote group event and group goal behavior. Keep policy JSON compact and do not store raw notification text, receipt text, merchant names, or user financial content.'));
+    children.push(renderAdminControlHero('Product Policy', 'Edit backend-controlled JSON policies such as Smart Capture parser, cloud recovery, collaboration plan limits, and remote copy.', 'Saving a product policy bumps the mobile policy revision. Apps keep cached policy locally and refresh only when the revision changes or the fallback safety TTL is reached.'));
     children.push(renderProductPolicyToolbar());
     children.push(renderPolicyShortcutGrid());
     children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
