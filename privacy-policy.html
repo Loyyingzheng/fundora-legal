@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Fundoralit Privacy Policy</title>
-    <meta name="description" content="Fundoralit Privacy Policy - Learn how we collect, use, and protect your personal information in our financial management app.">
+    <meta name="description" content="Fundoralit Privacy Policy - Learn how we collect, use, store, and protect your personal information in our financial management app.">
     <meta name="keywords" content="Fundoralit, privacy policy, data protection, financial app, mobile privacy">
     <meta name="author" content="Fundoralit">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -156,6 +156,13 @@
             margin: 20px 0;
         }
 
+        .warning {
+            background-color: #fffaf0;
+            padding: 15px;
+            border-left: 4px solid #ed8936;
+            margin: 20px 0;
+        }
+
         footer {
             background-color: #2d3748;
             color: #ffffff;
@@ -224,7 +231,7 @@
     <header>
         <div class="container">
             <h1>Fundoralit Privacy Policy</h1>
-            <p>Last Updated: May 13, 2026</p>
+            <p>Last Updated: June 24, 2026</p>
         </div>
     </header>
 
@@ -252,37 +259,42 @@
         <main class="main-content">
             <section id="introduction" class="section">
                 <p>Welcome to Fundoralit.</p>
-                <p>Fundoralit ("we", "our", or "us") is committed to protecting your privacy and personal information. This Privacy Policy explains how Fundoralit collects, uses, stores, and protects your information when you use the Fundoralit mobile application and related services.</p>
+                <p>Fundoralit ("we", "our", or "us") is committed to protecting your privacy and personal information. This Privacy Policy explains how Fundoralit collects, uses, stores, shares, and protects your information when you use the Fundoralit mobile application and related services.</p>
+                <p>Fundoralit is a personal finance management app. Because financial information can be sensitive, we aim to collect only the information needed to provide the app's features, protect your account, and improve the reliability of the service.</p>
                 <p>By using Fundoralit, you agree to the collection and use of information in accordance with this Privacy Policy.</p>
             </section>
 
             <section id="information-collect" class="section">
                 <h2>1. Information We Collect</h2>
-                <p>Fundoralit follows data minimization principles and collects only the information necessary to provide application functionality and related services.</p>
+                <p>Fundoralit follows data minimization principles and collects only the information necessary to provide application functionality, security, backup, synchronization, and related services.</p>
 
                 <h3>1.1 Account Information</h3>
-                <p>When you create an account, we may collect:</p>
+                <p>When you create or sign in to an account, we may collect or process:</p>
                 <ul>
                     <li>Email address</li>
-                    <li>Username</li>
-                    <li>Authentication information provided through Firebase Authentication</li>
+                    <li>Username or display name</li>
+                    <li>Authentication identifiers provided through Firebase Authentication</li>
                     <li>Profile information you choose to provide</li>
+                    <li>Subscription and entitlement status, where applicable</li>
                 </ul>
 
-                <h3>1.2 Financial and Usage Information</h3>
-                <p>To provide personal finance management features, Fundoralit may collect:</p>
+                <h3>1.2 Financial and App Content</h3>
+                <p>To provide personal finance management features, Fundoralit may collect or store information you enter or generate in the app, including:</p>
                 <ul>
                     <li>Expense records</li>
                     <li>Income records</li>
+                    <li>Transfer records</li>
+                    <li>Wallet and bucket allocations</li>
                     <li>Budget and saving goals</li>
                     <li>Bill reminders and payment tracking</li>
-                    <li>Wallet and bucket allocations</li>
-                    <li>Group event and group saving information</li>
-                    <li>Financial analysis and projections generated from your data</li>
+                    <li>Destination or saving target information</li>
+                    <li>Group event and shared expense information</li>
+                    <li>Financial analysis, summaries, and projections generated from your data</li>
+                    <li>App settings and preferences needed to operate the service</li>
                 </ul>
 
                 <h3>1.3 Device and Technical Information</h3>
-                <p>We may automatically collect limited technical information including:</p>
+                <p>We may automatically collect limited technical information to operate, secure, and improve the app, including:</p>
                 <ul>
                     <li>Device type</li>
                     <li>Operating system version</li>
@@ -290,25 +302,34 @@
                     <li>Crash logs</li>
                     <li>Diagnostic information</li>
                     <li>Notification permission status</li>
+                    <li>Feature usage and quota status, where needed to provide limits or premium access</li>
                 </ul>
                 <p>Some information may also be securely stored locally on your device using local databases or device storage to support offline functionality and improve app performance.</p>
-                <p>If biometric login features are enabled, authentication-related credentials may be securely stored on the device to support faster sign-in and improve account security.</p>
-                <p>Receipt scanning features may use optical character recognition (OCR) technology to extract expense-related information from images captured by users.</p>
-                <p>Fundoralit does not use receipt images or financial information for advertising purposes.</p>
+                <p>If biometric login features are enabled, authentication-related credentials may be securely stored on your device to support faster sign-in and improve account security.</p>
 
-                <h3>1.4 Notification Access (Android Only)</h3>
-                <p>If you enable Smart Capture features on Android devices, Fundoralit may process supported transaction-related notification content locally on your device to help detect financial transactions and simplify expense tracking.</p>
-                <p>Fundoralit does not intentionally access unrelated personal messages or store raw notification content on remote servers.</p>
-                <p>Users may disable notification access permissions at any time through Android device settings.</p>
+                <h3>1.4 Receipt Scanning and Local OCR</h3>
+                <p>Receipt scanning features may use optical character recognition (OCR) technology to extract expense-related information from images captured or selected by you.</p>
+                <p>Fundoralit is designed to perform receipt scanning locally on your device where supported. Extracted receipt information may be used to help create or suggest financial entries for your review.</p>
+                <p>Fundoralit does not use receipt images or extracted financial information for advertising purposes.</p>
+                <p>Receipt images and extracted text are not intentionally sold, rented, or used for third-party marketing.</p>
 
-                <h3>1.5 Cloud Backup Information</h3>
+                <h3>1.5 Smart Capture and Notification Access (Android Only)</h3>
+                <p>If you enable Smart Capture on Android devices, Fundoralit may process supported transaction-related notification content locally on your device to help detect financial transactions and simplify expense tracking.</p>
+                <p>Smart Capture only runs after you grant Android notification access permission. It is intended to detect transaction-related notifications, such as bank, e-wallet, payment, telco, or merchant transaction notifications.</p>
+                <p>Fundoralit does not intentionally access unrelated personal messages and does not intentionally store raw unrelated notification content on remote servers.</p>
+                <p>Smart Capture may create local review items or suggestions so you can confirm, edit, or reject detected entries before saving them.</p>
+                <p>You may disable notification access at any time through Android device settings.</p>
+
+                <h3>1.6 Cloud Backup and Synchronization Information</h3>
                 <p>If you enable cloud backup or synchronization features, selected financial and application data may be securely transmitted and stored on cloud infrastructure to support:</p>
                 <ul>
                     <li>Backup and restore</li>
                     <li>Multi-device synchronization</li>
                     <li>Data recovery</li>
+                    <li>Service continuity if your device is lost, changed, or reset</li>
                 </ul>
-                <p>Cloud backup data is protected using industry-standard security measures and encrypted network communication.</p>
+                <p>New cloud backup snapshots are encrypted before storage using server-side envelope encryption and are not stored as readable plaintext. Backup data is protected in transit using HTTPS.</p>
+                <p>Cloud Backup is designed to protect your financial records while still allowing account-based restore after you sign in with your Fundoralit account.</p>
             </section>
 
             <section id="how-we-use" class="section">
@@ -317,17 +338,21 @@
                 <ul>
                     <li>Provide and maintain app functionality</li>
                     <li>Create and manage user accounts</li>
+                    <li>Authenticate users and protect accounts</li>
                     <li>Sync and restore user data</li>
-                    <li>Generate financial insights and analytics</li>
-                    <li>Improve budgeting and saving experiences</li>
+                    <li>Create, display, and manage financial records</li>
+                    <li>Generate financial insights, summaries, and analytics</li>
+                    <li>Improve budgeting, saving, and bill tracking experiences</li>
                     <li>Enable group financial collaboration features</li>
-                    <li>Send reminders and notifications</li>
+                    <li>Send reminders, alerts, and app notifications</li>
+                    <li>Support Smart Capture and receipt scanning features</li>
                     <li>Improve app stability, performance, and security</li>
-                    <li>Detect abuse, fraud, or unauthorized access</li>
-                    <li>Manage subscription, premium access, and entitlement-related features</li>
+                    <li>Detect abuse, fraud, unauthorized access, or technical issues</li>
+                    <li>Manage subscription, premium access, entitlement, and quota-related features</li>
+                    <li>Comply with legal obligations and enforce applicable terms</li>
                 </ul>
                 <p>Fundoralit does not sell, rent, or lease your personal information to third parties for their direct marketing purposes.</p>
-                <p>We may use aggregated or anonymized information for analytics and product improvement purposes.</p>
+                <p>We may use aggregated or anonymized information for analytics, reliability, security, and product improvement purposes.</p>
             </section>
 
             <section id="data-storage" class="section">
@@ -335,30 +360,36 @@
                 <p>We take reasonable measures to protect your information, including:</p>
                 <ul>
                     <li>Secure authentication systems</li>
-                    <li>Encrypted network communication (HTTPS)</li>
+                    <li>Encrypted network communication using HTTPS</li>
                     <li>Access control and authentication mechanisms</li>
                     <li>Secure cloud infrastructure providers</li>
+                    <li>Encrypted storage for new Cloud Backup snapshots using server-side envelope encryption</li>
                     <li>Local device storage protections where applicable</li>
+                    <li>Operational safeguards such as audit logging for sensitive administrative actions</li>
+                    <li>Measures to reduce unnecessary storage of raw sensitive content</li>
                 </ul>
                 <div class="highlight">
-                    <p>However, no internet-based service or electronic storage system is completely secure. We cannot guarantee absolute security.</p>
+                    <p>New cloud backup snapshots are encrypted before storage and are not stored as readable plaintext. This helps reduce the risk of exposure if backup storage is accessed without authorization.</p>
+                </div>
+                <div class="warning">
+                    <p>However, no internet-based service, mobile application, or electronic storage system is completely secure. We cannot guarantee absolute security.</p>
                 </div>
             </section>
 
             <section id="third-party" class="section">
                 <h2>4. Third-Party Services</h2>
-                <p>Fundoralit may use trusted third-party services to support app functionality.</p>
-                <p>These services may process limited data as required for their services.</p>
-                <p>Examples include:</p>
+                <p>Fundoralit may use trusted third-party services to support app functionality, security, authentication, payments, cloud infrastructure, diagnostics, and app distribution.</p>
+                <p>These services may process limited data only as required to provide their services.</p>
+                <p>Examples may include, depending on enabled features:</p>
                 <ul>
-                    <li>Firebase Authentication</li>
-                    <li>Supabase</li>
-                    <li>Google Play Services</li>
-                    <li>Cloud hosting providers</li>
-                    <li>Analytics and crash reporting providers</li>
+                    <li>Firebase Authentication for secure account sign-in and authentication management</li>
+                    <li>Supabase or managed database infrastructure for secure data storage</li>
+                    <li>Google Play Services for subscriptions, purchases, billing, app services, and distribution</li>
+                    <li>Cloud hosting providers for backend APIs and infrastructure</li>
+                    <li>Crash, diagnostic, or analytics services if enabled to improve stability and reliability</li>
                 </ul>
-                <p>Firebase Authentication is used for secure account sign-in and authentication management.</p>
-                <p>These third-party services operate under their own privacy policies.</p>
+                <p>These third-party services operate under their own privacy policies and security practices.</p>
+                <p>Fundoralit does not use receipt images, Smart Capture data, or financial records for third-party advertising.</p>
             </section>
 
             <section id="data-sharing" class="section">
@@ -366,11 +397,13 @@
                 <p>Fundoralit does not sell personal information.</p>
                 <p>We may share limited information only in the following situations:</p>
                 <ul>
-                    <li>When required by law or legal process</li>
-                    <li>To protect the security and integrity of the application</li>
+                    <li>When required by law, regulation, or legal process</li>
+                    <li>To protect the security, rights, and integrity of the application, users, or platform</li>
                     <li>With trusted service providers that help operate the platform</li>
-                    <li>With your consent</li>
+                    <li>With your consent or at your direction</li>
+                    <li>As necessary to provide group collaboration features you choose to use</li>
                 </ul>
+                <p>For group events and shared financial features, information you enter for a group may be visible to other group members as necessary to provide the collaboration feature. For example, shared expenses, participants, amounts, and settlement information may be visible to relevant group members.</p>
             </section>
 
             <section id="data-retention" class="section">
@@ -379,10 +412,12 @@
                 <ul>
                     <li>Provide services</li>
                     <li>Maintain backups and synchronization</li>
+                    <li>Maintain account, subscription, entitlement, and security records</li>
                     <li>Comply with legal obligations</li>
                     <li>Resolve disputes and enforce agreements</li>
+                    <li>Prevent abuse, fraud, or unauthorized access</li>
                 </ul>
-                <p>Some information may remain in backups or archived systems for a limited period before permanent deletion.</p>
+                <p>Some information may remain in backups, logs, or archived systems for a limited period before permanent deletion, subject to technical, security, legal, or operational requirements.</p>
             </section>
 
             <section id="your-rights" class="section">
@@ -394,34 +429,37 @@
                     <li>Request deletion of your account and data</li>
                     <li>Withdraw permissions</li>
                     <li>Disable notifications</li>
-                    <li>Stop using cloud synchronization features</li>
+                    <li>Disable Android notification access for Smart Capture</li>
+                    <li>Stop using cloud backup or synchronization features</li>
+                    <li>Manage subscription features through Google Play, where applicable</li>
                 </ul>
-                <p>Users may revoke application permissions through device settings at any time.</p>
+                <p>Users may revoke application permissions through device settings at any time. Some app features may not work properly if required permissions are disabled.</p>
             </section>
 
             <section id="account-deletion" class="section">
                 <h2>8. Account Deletion</h2>
-                <p>Users may request account deletion directly within the Fundoralit application.</p>
+                <p>Users can request account and data deletion from within the Fundoralit application.</p>
                 <p>When an account deletion request is submitted:</p>
                 <ul>
-                    <li>Authentication credentials may be removed</li>
-                    <li>Associated financial records may be deleted</li>
+                    <li>Authentication credentials may be removed or disabled</li>
+                    <li>Associated personal financial records may be deleted</li>
                     <li>Cloud backup data may be removed</li>
-                    <li>Group-related data may be anonymized or preserved where necessary to protect other users' experience</li>
+                    <li>Subscription and entitlement records may be retained where required for billing, fraud prevention, or legal compliance</li>
+                    <li>Group-related data may be anonymized, deleted, or preserved where necessary to protect other users' experience and preserve shared group records</li>
                 </ul>
-                <p>Some limited records may be temporarily retained for security, fraud prevention, legal compliance, dispute resolution, or system integrity purposes.</p>
+                <p>Some limited records may be temporarily retained for security, fraud prevention, legal compliance, dispute resolution, backup integrity, or system integrity purposes.</p>
             </section>
 
             <section id="childrens-privacy" class="section">
                 <h2>9. Children's Privacy</h2>
                 <p>Fundoralit is not intended for children under the age required by local laws to consent to digital services.</p>
-                <p>We do not knowingly collect personal information from children.</p>
+                <p>We do not knowingly collect personal information from children. If we become aware that personal information has been collected from a child without appropriate consent, we will take reasonable steps to delete such information.</p>
             </section>
 
             <section id="international" class="section">
                 <h2>10. International Data Processing</h2>
                 <p>Your information may be processed or stored in countries outside your own jurisdiction depending on the cloud infrastructure providers used by Fundoralit.</p>
-                <p>By using Fundoralit, you consent to such transfers where permitted by law.</p>
+                <p>By using Fundoralit, you understand that your information may be transferred to, stored in, or processed in countries where data protection laws may differ from those in your jurisdiction, where permitted by applicable law.</p>
             </section>
 
             <section id="changes" class="section">
@@ -441,15 +479,18 @@
 
             <section id="google-play" class="section">
                 <h2>13. Google Play Data Disclosure</h2>
-                <p>Fundoralit may collect and process:</p>
+                <p>Fundoralit may collect and process the following categories of data, depending on the features you use:</p>
                 <ul>
-                    <li>Personal information</li>
-                    <li>Financial information entered by users</li>
-                    <li>App activity data</li>
-                    <li>Device or diagnostic information</li>
+                    <li>Personal information, such as email address, account identifiers, and profile information</li>
+                    <li>Financial information entered by users, such as expenses, income, wallets, bills, goals, buckets, group expenses, and backup data</li>
+                    <li>App activity data, such as feature usage, review actions, and settings needed to operate app functionality</li>
+                    <li>Device or diagnostic information, such as app version, device type, crash logs, and diagnostic information</li>
+                    <li>Notification-related data processed locally for Android Smart Capture if you grant notification access permission</li>
+                    <li>Subscription and purchase-related information processed through Google Play Services where applicable</li>
                 </ul>
-                <p>This information is used strictly to provide application functionality, improve user experience, maintain security, and support synchronization features.</p>
+                <p>This information is used to provide application functionality, support backup and restore, improve user experience, maintain security, manage subscriptions, and support synchronization features.</p>
                 <p>Fundoralit does not sell personal user data.</p>
+                <p>Fundoralit does not use personal financial information, receipt images, or notification content for third-party advertising.</p>
             </section>
         </main>
     </div>
