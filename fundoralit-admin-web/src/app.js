@@ -235,6 +235,78 @@ function getMetric(obj, keys, fallback = 0) {
 const initialAnalyticsPreset = '30d';
 const initialAnalyticsDateRange = getAnalyticsPresetRange(initialAnalyticsPreset);
 
+const FALLBACK_DYNAMIC_PLAN_FILTER_KEYS = ['FREE', 'PRO'];
+const PLAN_FILTER_FALLBACK_WARNING = 'Using fallback plan list because /api/admin/subscription-plans is unavailable. Dynamic Plan Matrix remains the source of truth once backend endpoints are deployed.';
+
+function normalizeAdminPlanKey(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function buildDynamicPlanFilterOptions(planKeys = []) {
+  return ['', ...uniqueSortedOptions(planKeys.map(normalizeAdminPlanKey))];
+}
+
+function planFilterMatches(value, filter) {
+  const cleanFilter = normalizeAdminPlanKey(filter);
+  if (!cleanFilter || cleanFilter === 'ALL') return true;
+  return normalizeAdminPlanKey(value) === cleanFilter;
+}
+
+async function loadDynamicSubscriptionPlanFilterKeys() {
+  try {
+    const response = await api(API_PATHS.subscriptionPlans.list);
+    const plans = normalizeAdminListResponse(response).map(normalizeSubscriptionPlanItem);
+    const planKeys = uniqueSortedOptions(plans
+      .filter((item) => item.enabled !== false)
+      .map((item) => item.planKey));
+    return { planKeys: planKeys.length ? planKeys : [...FALLBACK_DYNAMIC_PLAN_FILTER_KEYS], warning: '' };
+  } catch (error) {
+    return {
+      planKeys: [...FALLBACK_DYNAMIC_PLAN_FILTER_KEYS],
+      warning: PLAN_FILTER_FALLBACK_WARNING,
+      error: toFriendlyErrorMessage(error, PLAN_FILTER_FALLBACK_WARNING),
+    };
+  }
+}
+
+function goToPlanMatrixPolicy(policyKey, moduleKey = '') {
+  state.activeTab = 'planMatrix';
+  state.adminFilters.planMatrixSearch = String(policyKey || '').trim();
+  if (moduleKey) state.adminFilters.planMatrixModule = String(moduleKey || '').trim();
+  state.adminFilters.planMatrixStatus = '';
+  state.page = 0;
+  state.data = { content: [] };
+  loadData();
+}
+
+function goToFeatureLimitsForPolicy(policyKey) {
+  state.activeTab = 'featureLimits';
+  state.adminFilters.featureLimitKey = String(policyKey || '').trim();
+  state.adminFilters.plan = '';
+  state.page = 0;
+  state.data = { content: [] };
+  loadData();
+}
+
+function goToProductPoliciesForPolicy(policyKey) {
+  state.activeTab = 'productPolicies';
+  state.adminFilters.productPolicyKey = String(policyKey || '').trim();
+  state.page = 0;
+  state.data = { content: [] };
+  loadData();
+}
+
+function isPlanMatrixFeatureLimitRelated(item) {
+  const source = String(item?.source || '').toLowerCase();
+  return source.includes('feature_limit') || source.includes('feature-limit') || source.includes('feature limits');
+}
+
+function isPlanMatrixProductPolicyRelated(item) {
+  const source = String(item?.source || '').toLowerCase();
+  const key = String(item?.policyKey || '').toLowerCase();
+  return source.includes('product_policy') || source.includes('product-policy') || key.includes('policy');
+}
+
 const state = {
   auth: null,
   user: null,
@@ -276,6 +348,8 @@ const state = {
     featureLimitKeys: [],
     featureFlagKeys: [],
     productPolicyKeys: [],
+    featureLimitPlanKeys: [...FALLBACK_DYNAMIC_PLAN_FILTER_KEYS],
+    featureLimitPlanWarning: '',
     planMatrixPolicyKeys: [],
     planMatrixPlanKeys: [],
     planMatrixModules: [],
@@ -1139,15 +1213,35 @@ async function loadAdminControlData() {
     return;
   }
   if (state.activeTab === 'featureLimits') {
-    response = await api(API_PATHS.featureLimits.list);
+    const [limitsResult, plansResult] = await Promise.allSettled([
+      api(API_PATHS.featureLimits.list),
+      loadDynamicSubscriptionPlanFilterKeys(),
+    ]);
+    if (limitsResult.status === 'rejected') throw limitsResult.reason;
+    response = limitsResult.value;
     const allItems = normalizeAdminListResponse(response);
+    const planOptions = plansResult.status === 'fulfilled' ? plansResult.value : { planKeys: [...FALLBACK_DYNAMIC_PLAN_FILTER_KEYS], warning: PLAN_FILTER_FALLBACK_WARNING };
+    const itemPlanKeys = uniqueSortedOptions(allItems.map((item) => item.plan || item.plan_key || item.planKey));
     state.adminOptions.featureLimitKeys = uniqueSortedOptions(allItems.map((item) => item.featureKey || item.feature_key));
+    state.adminOptions.featureLimitPlanKeys = uniqueSortedOptions([
+      ...(planOptions.planKeys || FALLBACK_DYNAMIC_PLAN_FILTER_KEYS),
+      ...itemPlanKeys,
+    ]);
+    state.adminOptions.featureLimitPlanWarning = planOptions.warning || '';
     const filteredItems = allItems.filter((item) => {
       const key = item.featureKey || item.feature_key;
-      const plan = item.plan || '';
-      return equalsFilter(key, filters.featureLimitKey) && equalsFilter(plan, filters.plan);
+      const plan = item.plan || item.plan_key || item.planKey || '';
+      return equalsFilter(key, filters.featureLimitKey) && planFilterMatches(plan, filters.plan);
     });
-    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
+    state.data = {
+      content: filteredItems,
+      planFilterWarning: planOptions.warning || '',
+      planFilterEndpointError: planOptions.error || '',
+      page: 0,
+      size: 100,
+      totalElements: filteredItems.length,
+      totalPages: 1,
+    };
     return;
   }
   if (state.activeTab === 'featureFlags') {
@@ -3587,6 +3681,8 @@ function renderPlanMatrixTable(plans, items) {
           el('div', { class: 'actions compact-actions' }, [
             el('button', { class: 'btn small', text: 'Edit value', onclick: () => openPlanPolicyValueModal({ matrixItem: item, planKey: plans[0]?.planKey }) }),
             el('button', { class: 'btn ghost small', text: 'Edit policy', onclick: () => openPolicyDefinitionModal(item.definition || { policyKey: item.policyKey, moduleKey: item.moduleKey, displayNameEn: item.label }) }),
+            isPlanMatrixFeatureLimitRelated(item) ? el('button', { class: 'btn ghost small', text: 'Feature Limits', onclick: () => goToFeatureLimitsForPolicy(item.policyKey) }) : null,
+            isPlanMatrixProductPolicyRelated(item) ? el('button', { class: 'btn ghost small', text: 'Product Policy', onclick: () => goToProductPoliciesForPolicy(item.policyKey) }) : null,
           ]),
         ]),
       ]));
@@ -3931,10 +4027,15 @@ async function submitPlanPolicyValueModal() {
 
 function renderFeatureLimitToolbar() {
   const feature = select(['', ...(state.adminOptions.featureLimitKeys || [])], state.adminFilters.featureLimitKey || '', (value) => { state.adminFilters.featureLimitKey = value; });
-  const plan = select(['', 'FREE', 'PRO'], state.adminFilters.plan, (value) => { state.adminFilters.plan = value; });
+  const planOptions = buildDynamicPlanFilterOptions(state.adminOptions.featureLimitPlanKeys || FALLBACK_DYNAMIC_PLAN_FILTER_KEYS);
+  const plan = select(planOptions, state.adminFilters.plan || '', (value) => { state.adminFilters.plan = value; });
   return renderControlToolbar([
     el('div', {}, [el('label', { text: 'Feature key' }), feature, el('small', { class: 'field-help', text: 'Loaded from backend feature limit keys.' })]),
-    el('div', {}, [el('label', { text: 'Plan' }), plan]),
+    el('div', {}, [
+      el('label', { text: 'Plan' }),
+      plan,
+      el('small', { class: 'field-help', text: state.adminOptions.featureLimitPlanWarning ? 'Fallback: ALL/FREE/PRO plus any loaded row plans.' : 'Loaded from dynamic subscription plans.' }),
+    ]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.featureLimitKey = ''; state.adminFilters.plan = ''; loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
@@ -3961,6 +4062,7 @@ function renderFeatureLimitItem(item) {
       ]),
       el('div', { class: 'actions' }, [
         el('button', { class: 'btn small', text: 'Edit limit', onclick: () => openFeatureLimitModal(item) }),
+        el('button', { class: 'btn ghost small', text: 'View in Plan Matrix', onclick: () => goToPlanMatrixPolicy(item.featureKey || item.feature_key || id) }),
       ]),
     ],
   });
@@ -4103,7 +4205,10 @@ function renderProductPolicyItem(item) {
         ['Updated', formatDate(item.updatedAt || item.updated_at)], ['Updated By', item.updatedBy || item.updated_by],
       ]),
       el('details', { class: 'nested-details' }, [el('summary', { text: 'View JSON value' }), el('pre', { text: compactJson(value) })]),
-      el('div', { class: 'actions' }, [el('button', { class: 'btn small', text: 'Edit policy', onclick: () => openProductPolicyModal(item) })]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn small', text: 'Edit policy', onclick: () => openProductPolicyModal(item) }),
+        el('button', { class: 'btn ghost small', text: 'Search Plan Matrix', onclick: () => goToPlanMatrixPolicy(key) }),
+      ]),
     ],
   });
 }
@@ -6181,6 +6286,7 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'featureLimits') {
     children.push(renderAdminControlHero('Feature Limits', 'Control quota, preset, wallet, dashboard, and collaboration limits from backend policy.', 'Use this page for limits such as Smart Capture 20/week, OCR 20/month, expense presets, wallet slots, group limits, and dashboard history. Changes are audited and should keep local app fallback compatibility.'));
     children.push(renderFeatureLimitToolbar());
+    if (state.data?.planFilterWarning) children.push(el('div', { class: 'notice warning inline-notice dynamic-plan-warning', text: state.data.planFilterWarning }));
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Limit changes affect user entitlement and quota. Save actions now bump the mobile policy revision, so mobile devices can refresh the cached policy only after Admin changes.'));
     children.push(renderControlList(items, renderFeatureLimitItem, 'No feature limits found.'));
