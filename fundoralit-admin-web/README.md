@@ -11,6 +11,7 @@ A small static admin web for a solo developer. It is designed for GitHub Pages /
 - Lists reward review survey answers from `/api/subscription/feedback-trial/admin/surveys`
 - Closes / reopens reward review surveys
 - Lists review prompt summary from `/api/review-prompts/admin/states`
+- Reviews privacy-safe Global Learning candidates for Smart Capture and OCR Receipt 4A on one shared page
 
 ## Security rules
 

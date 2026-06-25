@@ -84,6 +84,24 @@ const API_PATHS = {
     current: '/api/config/mobile-policy',
     revision: '/api/config/mobile-policy/revision',
   },
+  planMatrix: {
+    current: '/api/config/plan-matrix',
+  },
+  policyDefinitions: {
+    list: '/api/admin/policy-definitions',
+    create: '/api/admin/policy-definitions',
+    update: (id) => `/api/admin/policy-definitions/${encodeURIComponent(id)}`,
+  },
+  subscriptionPlans: {
+    list: '/api/admin/subscription-plans',
+    create: '/api/admin/subscription-plans',
+    update: (id) => `/api/admin/subscription-plans/${encodeURIComponent(id)}`,
+  },
+  planPolicyValues: {
+    list: '/api/admin/plan-policy-values',
+    create: '/api/admin/plan-policy-values',
+    update: (id) => `/api/admin/plan-policy-values/${encodeURIComponent(id)}`,
+  },
   policyVersions: {
     list: '/api/admin/policy-versions',
     get: (id) => `/api/admin/policy-versions/${encodeURIComponent(id)}`,
@@ -258,12 +276,18 @@ const state = {
     featureLimitKeys: [],
     featureFlagKeys: [],
     productPolicyKeys: [],
+    planMatrixPolicyKeys: [],
+    planMatrixPlanKeys: [],
+    planMatrixModules: [],
   },
   adminFilters: {
     featureKey: '',
     featureLimitKey: '',
     featureFlagKey: '',
     productPolicyKey: '',
+    planMatrixModule: '',
+    planMatrixStatus: '',
+    planMatrixSearch: '',
     globalLearningSourceType: '',
     plan: '',
     userEmail: '',
@@ -293,6 +317,8 @@ const headerInfoSlot = document.getElementById('headerInfoSlot');
 
 const ADMIN_ENUMS = {
   featureLimitPeriods: ['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'],
+  policyValueTypes: ['NUMBER', 'BOOLEAN', 'TEXT', 'JSON'],
+  policyPeriods: ['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY', 'LIFETIME'],
   featureFlagTargetPlans: ['', 'ALL', 'FREE', 'PRO'],
   productPolicyPlatforms: ['', 'ALL', 'ANDROID', 'IOS', 'WEB', 'SERVER'],
   announcementTypes: ['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE'],
@@ -359,6 +385,10 @@ function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong
     : 'You do not have permission to perform this admin action. Please check FUNDORA_ADMIN_EMAILS / backend admin permission settings.';
   if (status === 404) {
     const url = String(errorOrMessage?.url || '');
+    if (url.includes('/api/config/plan-matrix')) return 'Plan Matrix backend endpoint is not deployed yet. Deploy the dynamic policy backend first, then refresh this page.';
+    if (url.includes('/api/admin/policy-definitions')) return 'Policy Definition backend endpoint is not deployed yet. Deploy the dynamic policy registry backend first.';
+    if (url.includes('/api/admin/subscription-plans')) return 'Subscription Plan backend endpoint is not deployed yet. Deploy the dynamic plan backend first.';
+    if (url.includes('/api/admin/plan-policy-values')) return 'Plan Policy Value backend endpoint is not deployed yet. Deploy the dynamic policy value backend first.';
     if (url.includes('/api/admin/policy-versions')) return 'Policy version backend endpoint is not deployed yet, or the selected policy version no longer exists.';
     if (url.includes('/api/admin/review-prompt-policy')) return 'Review Prompt Policy backend endpoint is not deployed yet. Deploy the backend endpoint or use the Product Policy fallback for review_prompt_policy.';
     if (url.includes('/api/admin/rate-limit-overrides')) return 'Rate Limit Override backend endpoint is not deployed yet, or the selected override no longer exists.';
@@ -544,13 +574,14 @@ const NAV_GROUPS = [
     title: 'Product Control',
     items: [
       { id: 'emergencyConsole', label: 'Emergency Console', helper: 'One-click safety', description: 'Disable risky OCR, Smart Capture, collaboration, upload, backup, and maintenance functions without shipping a new app build.', info: 'Use this page only for operational safety. Actions require audit reason, exact confirmation phrase, and admin password re-authentication.' },
+      { id: 'planMatrix', label: 'Plan Matrix', helper: 'Dynamic policy table', description: 'View and maintain plan limits from one dynamic source of truth across admin, mobile, paywall, and backend enforcement.', info: 'Use this page to audit what users see against what backends enforce. Plan columns are loaded dynamically, so adding PLUS, TEAM, or STUDENT does not require UI code changes.' },
       { id: 'featureLimits', label: 'Feature Limits', helper: 'Quota policy', description: 'Control plan limits such as Smart Capture, OCR, presets, wallets, buckets, and group features.', info: 'Change limits carefully. These values affect what free and Pro users can do. Audit reasons are required for policy changes.' },
       { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
       { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, collaboration plan limits, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app and collaboration backend should keep local fallbacks if remote policy is unavailable.' },
       { id: 'policyVersions', label: 'Policy Versions', helper: 'Rollback safety', description: 'Inspect saved policy snapshots and roll back bad remote configuration safely.', info: 'Use rollback only when a policy, flag, or operational config causes production risk. Rollback requires reason, exact phrase, and admin verification.' },
       { id: 'reviewPromptPolicy', label: 'Review Prompt Policy', helper: 'Store prompt config', description: 'Configure app review prompt cooldowns and eligibility thresholds online.', info: 'Keep prompts respectful and low frequency. The backend falls back to properties if remote policy is unavailable.' },
       { id: 'rateLimitOverrides', label: 'Rate Limit Overrides', helper: 'Temporary throttles', description: 'Store short-lived route limit overrides for operational incidents or campaigns.', info: 'Only effective if the backend has a central rate-limit enforcement path wired to this table.' },
-      { id: 'smartCaptureRules', label: 'Smart Capture Rules', helper: 'Manual approval', description: 'Review privacy-safe anonymous Smart Capture rule candidates before activation.', info: 'Only aggregate hashes and counters are shown. No notification text, skeleton text, merchant, payee, payer, counterparty, OCR content, exact amounts, or semantic vectors are stored here. Semantic slot metadata is coarse dictionary categories only.' },
+      { id: 'smartCaptureRules', label: 'Global Learning Review', helper: 'Smart Capture + OCR', description: 'Review privacy-safe anonymous Smart Capture and OCR rule candidates before activation.', info: 'One review surface handles Smart Capture, OCR Receipt, OCR Financial List, and OCR Handwritten candidates. Only aggregate hashes, counters, and safe distributions are shown; no notification text, OCR text, merchant, payee, payer, counterparty, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed.' },
       { id: 'learningOps', label: 'Learning Ops', helper: 'Learning health', description: 'Monitor Smart Capture, OCR learning, and Shadow ML without heavy API calls.', info: 'Overview uses cached backend snapshots and one lightweight API call. Manual jobs are protected by cooldown, row limits, and single-flight lock so Render free is not overloaded.' },
     ],
   },
@@ -1080,6 +1111,10 @@ async function loadAdminControlData() {
     await loadEmergencyConsoleData();
     return;
   }
+  if (state.activeTab === 'planMatrix') {
+    await loadPlanMatrixData();
+    return;
+  }
   if (state.activeTab === 'policyVersions') {
     response = await api(API_PATHS.policyVersions.list, {
       params: {
@@ -1157,16 +1192,17 @@ async function loadAdminControlData() {
       globalLearningKind: 'ocr_receipt',
     }));
     const selectedSource = state.adminFilters.globalLearningSourceType || '';
-    const pendingItems = [...smartItems, ...ocrItems]
-      .filter((item) => !selectedSource || (item.sourceType || item.source_type) === selectedSource);
+    const matchesGlobalLearningSource = (item) => !selectedSource || globalLearningSourceType(item) === selectedSource;
+    const pendingItems = [...smartItems, ...ocrItems].filter(matchesGlobalLearningSource);
     const activePayload = normalizeAdminObjectResponse(active);
     const ocrActivePayload = normalizeAdminObjectResponse(ocrActive);
+    const activeRules = [
+      ...(activePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture', globalLearningKind: 'smart_capture' })),
+      ...(ocrActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' })),
+    ].filter(matchesGlobalLearningSource);
     state.data = {
       content: pendingItems,
-      activeRules: [
-        ...(activePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture', globalLearningKind: 'smart_capture' })),
-        ...(ocrActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' })),
-      ],
+      activeRules,
       page: 0,
       size: 500,
       totalElements: pendingItems.length,
@@ -1725,7 +1761,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['emergencyConsole', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['emergencyConsole', 'planMatrix', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -2981,6 +3017,9 @@ function renderAdminModal() {
   if (state.modal.kind === 'featureLimitEdit') return renderFeatureLimitModal();
   if (state.modal.kind === 'featureFlagEdit') return renderFeatureFlagModal();
   if (state.modal.kind === 'productPolicyEdit') return renderProductPolicyModal();
+  if (state.modal.kind === 'policyDefinitionEdit') return renderPolicyDefinitionModal();
+  if (state.modal.kind === 'subscriptionPlanEdit') return renderSubscriptionPlanModal();
+  if (state.modal.kind === 'planPolicyValueEdit') return renderPlanPolicyValueModal();
   if (state.modal.kind === 'usageAdjust') return renderUsageAdjustModal();
   if (state.modal.kind === 'subscriptionSupportRequest') return renderSubscriptionSupportRequestModal();
   if (state.modal.kind === 'subscriptionSupportReview') return renderSubscriptionSupportReviewModal();
@@ -3198,6 +3237,696 @@ function renderAdminControlHero(title, subtitle, infoText, actions = []) {
 function renderControlToolbar(children, extraClass = '') {
   const className = ['toolbar', 'control-toolbar', extraClass].filter(Boolean).join(' ');
   return el('div', { class: className }, children);
+}
+
+
+
+async function loadPlanMatrixData() {
+  const safe = async (path, fallback, label) => {
+    try {
+      return { value: await api(path), error: '' };
+    } catch (error) {
+      return { value: fallback, error: toFriendlyErrorMessage(error, `${label} endpoint is not deployed yet.`) };
+    }
+  };
+  const [matrixResult, definitionsResult, plansResult, valuesResult] = await Promise.all([
+    safe(API_PATHS.planMatrix.current, {}, 'Plan Matrix'),
+    safe(API_PATHS.policyDefinitions.list, [], 'Policy Definitions'),
+    safe(API_PATHS.subscriptionPlans.list, [], 'Subscription Plans'),
+    safe(API_PATHS.planPolicyValues.list, [], 'Plan Policy Values'),
+  ]);
+  const planMatrix = normalizePlanMatrix(matrixResult.value);
+  const policyDefinitions = normalizeAdminListResponse(definitionsResult.value).map(normalizePolicyDefinitionItem);
+  const subscriptionPlans = normalizeAdminListResponse(plansResult.value).map(normalizeSubscriptionPlanItem);
+  const planPolicyValues = normalizeAdminListResponse(valuesResult.value).map(normalizePlanPolicyValueItem);
+  const matrixPlans = planMatrix.plans.length ? planMatrix.plans : subscriptionPlans;
+  const mergedMatrix = { ...planMatrix, plans: matrixPlans };
+  const matrixItems = flattenPlanMatrixItems(mergedMatrix, policyDefinitions, planPolicyValues);
+  state.adminOptions.planMatrixPolicyKeys = uniqueSortedOptions([
+    ...policyDefinitions.map((item) => item.policyKey),
+    ...planPolicyValues.map((item) => item.policyKey),
+    ...matrixItems.map((item) => item.policyKey),
+  ]);
+  state.adminOptions.planMatrixPlanKeys = uniqueSortedOptions(matrixPlans.map((item) => item.planKey));
+  state.adminOptions.planMatrixModules = uniqueSortedOptions(matrixItems.map((item) => item.moduleKey));
+  state.data = {
+    content: matrixItems,
+    planMatrix: mergedMatrix,
+    policyDefinitions,
+    subscriptionPlans,
+    planPolicyValues,
+    endpointErrors: {
+      planMatrix: matrixResult.error,
+      policyDefinitions: definitionsResult.error,
+      subscriptionPlans: plansResult.error,
+      planPolicyValues: valuesResult.error,
+    },
+    page: 0,
+    size: matrixItems.length,
+    totalElements: matrixItems.length,
+    totalPages: 1,
+  };
+}
+
+function normalizePlanMatrix(response) {
+  const raw = normalizeAdminObjectResponse(response);
+  const payload = normalizeAdminObjectResponse(raw.planMatrix || raw.matrix || raw);
+  const plans = normalizePlanArray(payload.plans || payload.planColumns || payload.columns || []);
+  const sections = Array.isArray(payload.sections) ? payload.sections : [];
+  return {
+    revision: payload.revision || payload.policyRevision || payload.version || '',
+    updatedAt: payload.updatedAt || payload.updated_at || payload.generatedAt || payload.generated_at || '',
+    source: payload.source || 'backend',
+    plans,
+    sections: sections.map((section, index) => ({
+      key: section.key || section.sectionKey || section.moduleKey || `section_${index + 1}`,
+      title: section.title || section.label || section.name || humanizeKey(section.key || section.moduleKey || `Section ${index + 1}`),
+      items: Array.isArray(section.items) ? section.items : Array.isArray(section.rows) ? section.rows : [],
+    })),
+  };
+}
+
+function normalizePlanArray(rawPlans) {
+  const list = Array.isArray(rawPlans) ? rawPlans : [];
+  return list.map((plan, index) => normalizeSubscriptionPlanItem(plan, index)).filter((plan) => plan.planKey);
+}
+
+function normalizePolicyDefinitionItem(item = {}, index = 0) {
+  const policyKey = item.policyKey || item.policy_key || item.key || item.featureKey || item.feature_key || '';
+  return {
+    ...item,
+    id: getItemId(item) || item.policyDefinitionId || item.policy_definition_id || policyKey,
+    policyKey,
+    moduleKey: item.moduleKey || item.module_key || item.module || item.sectionKey || item.section_key || 'general',
+    displayNameEn: item.displayNameEn || item.display_name_en || item.nameEn || item.name_en || item.label || humanizeKey(policyKey),
+    displayNameZh: item.displayNameZh || item.display_name_zh || item.nameZh || item.name_zh || '',
+    displayNameMs: item.displayNameMs || item.display_name_ms || item.nameMs || item.name_ms || '',
+    description: item.description || '',
+    valueType: String(item.valueType || item.value_type || 'NUMBER').toUpperCase(),
+    unit: item.unit || '',
+    supportsUnlimited: asBoolean(item.supportsUnlimited ?? item.supports_unlimited, true),
+    supportsPeriod: asBoolean(item.supportsPeriod ?? item.supports_period, false),
+    allowedPeriods: normalizeCsvList(item.allowedPeriods ?? item.allowed_periods ?? item.allowedPeriodTypes ?? item.allowed_period_types ?? []),
+    defaultPeriod: String(item.defaultPeriod || item.default_period || 'NONE').toUpperCase(),
+    visibleInPlanMatrix: asBoolean(item.visibleInPlanMatrix ?? item.visible_in_plan_matrix, true),
+    enforcedBy: normalizeCsvList(item.enforcedBy ?? item.enforced_by ?? []),
+    sortOrder: Number(item.sortOrder ?? item.sort_order ?? index + 1) || index + 1,
+    enabled: item.enabled !== false,
+  };
+}
+
+function normalizeSubscriptionPlanItem(item = {}, index = 0) {
+  const planKey = String(item.planKey || item.plan_key || item.key || item.code || item.id || '').toUpperCase();
+  return {
+    ...item,
+    id: getItemId(item) || item.planId || item.plan_id || planKey,
+    planKey,
+    displayNameEn: item.displayNameEn || item.display_name_en || item.nameEn || item.name_en || item.label || item.name || humanizeKey(planKey),
+    displayNameZh: item.displayNameZh || item.display_name_zh || item.nameZh || item.name_zh || '',
+    displayNameMs: item.displayNameMs || item.display_name_ms || item.nameMs || item.name_ms || '',
+    sortOrder: Number(item.sortOrder ?? item.sort_order ?? index + 1) || index + 1,
+    enabled: item.enabled !== false,
+    publicVisible: asBoolean(item.publicVisible ?? item.public_visible, true),
+    isPaid: asBoolean(item.isPaid ?? item.is_paid, planKey !== 'FREE'),
+  };
+}
+
+function normalizePlanPolicyValueItem(item = {}) {
+  const policyKey = item.policyKey || item.policy_key || item.featureKey || item.feature_key || '';
+  const planKey = String(item.planKey || item.plan_key || item.plan || '').toUpperCase();
+  return {
+    ...item,
+    id: getItemId(item) || item.planPolicyValueId || item.plan_policy_value_id || `${policyKey}:${planKey}`,
+    policyKey,
+    planKey,
+    value: item.value ?? item.valueNumber ?? item.value_number ?? item.valueText ?? item.value_text ?? item.valueBoolean ?? item.value_boolean ?? item.limitCount ?? item.limit_count ?? '',
+    valueNumber: item.valueNumber ?? item.value_number ?? item.limitCount ?? item.limit_count ?? null,
+    valueText: item.valueText ?? item.value_text ?? '',
+    valueBoolean: item.valueBoolean ?? item.value_boolean ?? null,
+    unlimited: asBoolean(item.unlimited ?? item.isUnlimited ?? item.is_unlimited, false),
+    periodType: String(item.periodType || item.period_type || 'NONE').toUpperCase(),
+    enabled: item.enabled !== false,
+    updatedAt: item.updatedAt || item.updated_at || '',
+    source: item.source || 'plan_policy_values',
+  };
+}
+
+function normalizeCsvList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean);
+  if (value && typeof value === 'object') return Object.values(value).map((item) => String(item || '').trim()).filter(Boolean);
+  return String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function flattenPlanMatrixItems(matrix, definitions, values) {
+  const definitionByKey = new Map((definitions || []).map((item) => [item.policyKey, item]));
+  const valueByKeyPlan = new Map((values || []).map((item) => [`${item.policyKey}::${item.planKey}`, item]));
+  const rows = [];
+  (matrix.sections || []).forEach((section) => {
+    (section.items || []).forEach((rawItem, index) => {
+      const policyKey = rawItem.policyKey || rawItem.policy_key || rawItem.featureKey || rawItem.feature_key || rawItem.key || '';
+      const definition = definitionByKey.get(policyKey) || normalizePolicyDefinitionItem({ policyKey, moduleKey: section.key, label: rawItem.label || rawItem.name || humanizeKey(policyKey) }, index);
+      const valueMap = normalizeMatrixValueMap(rawItem.values || rawItem.planValues || rawItem.plan_values || {}, matrix.plans, valueByKeyPlan, policyKey);
+      rows.push({
+        ...rawItem,
+        policyKey,
+        label: rawItem.label || rawItem.displayName || rawItem.display_name || definition.displayNameEn || humanizeKey(policyKey),
+        moduleKey: rawItem.moduleKey || rawItem.module_key || definition.moduleKey || section.key,
+        sectionKey: section.key,
+        sectionTitle: section.title,
+        values: valueMap,
+        source: rawItem.source || definition.source || 'plan_matrix',
+        enforcedBy: normalizeCsvList(rawItem.enforcedBy ?? rawItem.enforced_by ?? definition.enforcedBy ?? []),
+        status: normalizeMatrixStatus(rawItem.status || calculateMatrixRowStatus(valueMap, matrix.plans, definition)),
+        updatedAt: rawItem.updatedAt || rawItem.updated_at || rawItem.lastUpdatedAt || rawItem.last_updated_at || '',
+        definition,
+      });
+    });
+  });
+  // If the matrix endpoint is not deployed yet, still show editable rows from policy definitions and values.
+  if (!rows.length) {
+    const allKeys = uniqueSortedOptions([...(definitions || []).map((item) => item.policyKey), ...(values || []).map((item) => item.policyKey)]);
+    allKeys.forEach((policyKey, index) => {
+      const definition = definitionByKey.get(policyKey) || normalizePolicyDefinitionItem({ policyKey }, index);
+      const valueMap = normalizeMatrixValueMap({}, matrix.plans, valueByKeyPlan, policyKey);
+      rows.push({
+        policyKey,
+        label: definition.displayNameEn || humanizeKey(policyKey),
+        moduleKey: definition.moduleKey || 'general',
+        sectionKey: definition.moduleKey || 'general',
+        sectionTitle: humanizeKey(definition.moduleKey || 'General'),
+        values: valueMap,
+        source: 'registry_fallback',
+        enforcedBy: definition.enforcedBy,
+        status: normalizeMatrixStatus(calculateMatrixRowStatus(valueMap, matrix.plans, definition)),
+        updatedAt: '',
+        definition,
+      });
+    });
+  }
+  return rows.sort((a, b) => String(a.sectionTitle || '').localeCompare(String(b.sectionTitle || '')) || Number(a.definition?.sortOrder || 0) - Number(b.definition?.sortOrder || 0) || String(a.label).localeCompare(String(b.label)));
+}
+
+function normalizeMatrixValueMap(rawValues, plans, valueByKeyPlan, policyKey) {
+  const map = {};
+  const source = rawValues && typeof rawValues === 'object' ? rawValues : {};
+  (plans || []).forEach((plan) => {
+    const planKey = plan.planKey;
+    const rawValue = source[planKey] ?? source[planKey?.toLowerCase?.()] ?? valueByKeyPlan.get(`${policyKey}::${planKey}`) ?? null;
+    map[planKey] = normalizeMatrixPlanValue(rawValue);
+  });
+  return map;
+}
+
+function normalizeMatrixPlanValue(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === '') return { display: 'Missing', status: 'MISSING_VALUE', raw: rawValue };
+  if (typeof rawValue !== 'object') return { display: String(rawValue), value: rawValue, raw: rawValue, status: 'OK' };
+  const unlimited = asBoolean(rawValue.unlimited ?? rawValue.isUnlimited ?? rawValue.is_unlimited, false);
+  const enabled = rawValue.enabled !== false;
+  const periodType = String(rawValue.periodType || rawValue.period_type || rawValue.period || 'NONE').toUpperCase();
+  const value = rawValue.value ?? rawValue.valueNumber ?? rawValue.value_number ?? rawValue.limitCount ?? rawValue.limit_count ?? rawValue.valueText ?? rawValue.value_text ?? rawValue.valueBoolean ?? rawValue.value_boolean ?? '';
+  const display = rawValue.display || rawValue.label || rawValue.userDisplay || rawValue.user_display || formatPlanValueDisplay({ unlimited, value, periodType, enabled });
+  const status = normalizeMatrixStatus(rawValue.status || (enabled ? 'OK' : 'DISABLED'));
+  return { ...rawValue, unlimited, enabled, periodType, value, display, status, raw: rawValue };
+}
+
+function formatPlanValueDisplay({ unlimited, value, periodType, enabled = true }) {
+  if (!enabled) return 'Disabled';
+  if (unlimited) return 'Unlimited';
+  const text = value === null || value === undefined || value === '' ? 'Missing' : String(value);
+  if (!periodType || periodType === 'NONE') return text;
+  return `${text} / ${humanizeKey(periodType).toLowerCase()}`;
+}
+
+function normalizeMatrixStatus(value) {
+  const raw = String(value || 'OK').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (['MISSING', 'MISSING_VALUE', 'MISSING_PLAN_VALUE'].includes(raw)) return 'MISSING_VALUE';
+  if (['FALLBACK', 'USING_FALLBACK'].includes(raw)) return 'USING_FALLBACK';
+  if (['MISMATCH', 'BACKEND_MISMATCH', 'MOBILE_FALLBACK_MISMATCH'].includes(raw)) return 'MISMATCH';
+  if (['DISABLED', 'OFF'].includes(raw)) return 'DISABLED';
+  return raw || 'OK';
+}
+
+function calculateMatrixRowStatus(values, plans, definition) {
+  if (definition?.enabled === false || definition?.visibleInPlanMatrix === false) return 'DISABLED';
+  const planKeys = (plans || []).map((plan) => plan.planKey).filter(Boolean);
+  if (planKeys.some((planKey) => normalizeMatrixStatus(values?.[planKey]?.status) === 'MISSING_VALUE')) return 'MISSING_VALUE';
+  if (planKeys.some((planKey) => normalizeMatrixStatus(values?.[planKey]?.status) === 'MISMATCH')) return 'MISMATCH';
+  if (planKeys.some((planKey) => normalizeMatrixStatus(values?.[planKey]?.status) === 'USING_FALLBACK')) return 'USING_FALLBACK';
+  return 'OK';
+}
+
+function matrixStatusBadge(status) {
+  const normalized = normalizeMatrixStatus(status);
+  const classMap = { OK: 'success', MISSING_VALUE: 'warn', USING_FALLBACK: 'info', MISMATCH: 'danger', DISABLED: 'neutral' };
+  return el('span', { class: `badge ${classMap[normalized] || 'neutral'}`, text: humanizeKey(normalized) });
+}
+
+function renderPlanMatrixPage() {
+  const data = state.data || {};
+  const matrix = data.planMatrix || { plans: [], sections: [] };
+  const plans = matrix.plans || [];
+  const items = filterPlanMatrixItems(data.content || []);
+  const endpointErrors = Object.entries(data.endpointErrors || {}).filter(([, message]) => Boolean(message));
+  return el('div', { class: 'plan-matrix-page' }, [
+    endpointErrors.length ? el('div', { class: 'notice warning inline-notice' }, [
+      el('strong', { text: 'Some dynamic policy endpoints are not deployed yet.' }),
+      el('ul', {}, endpointErrors.map(([key, message]) => el('li', { text: `${humanizeKey(key)}: ${message}` }))),
+    ]) : null,
+    renderPlanMatrixToolbar(plans),
+    renderPlanMatrixSummary(matrix, items, data),
+    renderPlanMatrixTable(plans, items),
+    renderPlanRegistrySections(data),
+  ]);
+}
+
+function filterPlanMatrixItems(items) {
+  const moduleFilter = state.adminFilters.planMatrixModule || '';
+  const statusFilter = state.adminFilters.planMatrixStatus || '';
+  const search = String(state.adminFilters.planMatrixSearch || '').trim().toLowerCase();
+  return (items || []).filter((item) => {
+    const haystack = [item.policyKey, item.label, item.moduleKey, item.sectionTitle, item.source, ...(item.enforcedBy || [])].join(' ').toLowerCase();
+    return equalsFilter(item.moduleKey, moduleFilter)
+      && equalsFilter(normalizeMatrixStatus(item.status), statusFilter)
+      && (!search || haystack.includes(search));
+  });
+}
+
+function renderPlanMatrixToolbar(plans) {
+  const modules = ['', ...(state.adminOptions.planMatrixModules || [])];
+  const statuses = ['', 'OK', 'MISSING_VALUE', 'USING_FALLBACK', 'MISMATCH', 'DISABLED'];
+  const moduleSelect = select(modules, state.adminFilters.planMatrixModule || '', (value) => { state.adminFilters.planMatrixModule = value; render(); });
+  const statusSelect = select(statuses, state.adminFilters.planMatrixStatus || '', (value) => { state.adminFilters.planMatrixStatus = value; render(); });
+  const search = el('input', { placeholder: 'Search feature, module, source...', value: state.adminFilters.planMatrixSearch || '' });
+  search.addEventListener('input', () => { state.adminFilters.planMatrixSearch = search.value; render(); });
+  return renderControlToolbar([
+    el('div', {}, [el('label', { text: 'Module' }), moduleSelect]),
+    el('div', {}, [el('label', { text: 'Status' }), statusSelect]),
+    el('div', {}, [el('label', { text: 'Search' }), search]),
+    el('div', { class: 'toolbar-context wide' }, [
+      el('span', { text: `${plans.length || 0} dynamic plan column${plans.length === 1 ? '' : 's'}` }),
+      renderInfoHint('Columns come from backend subscription_plans/plan matrix response. The UI does not hardcode Free/Pro.', { compact: true, label: 'Dynamic plan columns' }),
+    ]),
+    el('button', { class: 'btn', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.planMatrixModule = ''; state.adminFilters.planMatrixStatus = ''; state.adminFilters.planMatrixSearch = ''; loadData(); } }),
+  ], 'plan-matrix-toolbar');
+}
+
+function renderPlanMatrixSummary(matrix, items, data) {
+  const counts = items.reduce((acc, item) => {
+    const key = normalizeMatrixStatus(item.status);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+  return el('div', { class: 'stats-grid plan-matrix-stats' }, [
+    stat('Policy rows', items.length),
+    stat('Plans', matrix.plans?.length || 0),
+    stat('OK rows', counts.OK || 0),
+    stat('Needs attention', (counts.MISSING_VALUE || 0) + (counts.MISMATCH || 0) + (counts.USING_FALLBACK || 0)),
+    stat('Revision', matrix.revision || '-'),
+    stat('Updated', matrix.updatedAt ? formatDate(matrix.updatedAt) : '-'),
+  ]);
+}
+
+function renderPlanMatrixTable(plans, items) {
+  if (!plans.length) {
+    return el('div', { class: 'card empty-state compact-empty' }, [
+      el('strong', { text: 'No plans returned yet.' }),
+      el('p', { class: 'muted', text: 'Deploy the backend subscription plan endpoint or create at least one plan from this page.' }),
+    ]);
+  }
+  if (!items.length) return el('div', { class: 'card empty-state compact-empty' }, [el('strong', { text: 'No plan matrix rows match the filters.' })]);
+  const header = el('tr', {}, [
+    el('th', { text: 'Feature' }),
+    el('th', { text: 'Module' }),
+    ...plans.map((plan) => el('th', { text: plan.displayNameEn || humanizeKey(plan.planKey) })),
+    el('th', { text: 'Source' }),
+    el('th', { text: 'Enforced By' }),
+    el('th', { text: 'Status' }),
+    el('th', { text: 'Updated' }),
+    el('th', { text: 'Actions' }),
+  ]);
+  const grouped = groupBySection(items);
+  const bodyRows = [];
+  Object.entries(grouped).forEach(([sectionTitle, rows]) => {
+    bodyRows.push(el('tr', { class: 'plan-section-row' }, [
+      el('td', { colspan: String(8 + plans.length), text: sectionTitle || 'General' }),
+    ]));
+    rows.forEach((item) => {
+      bodyRows.push(el('tr', {}, [
+        el('td', {}, [
+          el('strong', { text: item.label || humanizeKey(item.policyKey) }),
+          el('small', { class: 'field-help block', text: item.policyKey || '-' }),
+        ]),
+        el('td', { text: humanizeKey(item.moduleKey || '-') }),
+        ...plans.map((plan) => renderPlanMatrixValueCell(item, plan)),
+        el('td', { text: item.source || '-' }),
+        el('td', { text: (item.enforcedBy || []).length ? item.enforcedBy.join(', ') : 'Not reported' }),
+        el('td', {}, [matrixStatusBadge(item.status)]),
+        el('td', { text: item.updatedAt ? formatDate(item.updatedAt) : '-' }),
+        el('td', {}, [
+          el('div', { class: 'actions compact-actions' }, [
+            el('button', { class: 'btn small', text: 'Edit value', onclick: () => openPlanPolicyValueModal({ matrixItem: item, planKey: plans[0]?.planKey }) }),
+            el('button', { class: 'btn ghost small', text: 'Edit policy', onclick: () => openPolicyDefinitionModal(item.definition || { policyKey: item.policyKey, moduleKey: item.moduleKey, displayNameEn: item.label }) }),
+          ]),
+        ]),
+      ]));
+    });
+  });
+  return el('section', { class: 'card plan-matrix-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('h3', { text: 'Plan Matrix Table' }), el('p', { class: 'muted', text: 'Dynamic plan columns. Edit values from any row without changing admin frontend code.' })]),
+      renderInfoHint('If backend returns mobile fallback/mismatch status, this table surfaces it. Otherwise fallback is shown as Not reported instead of guessing.', { label: 'Close-loop details' }),
+    ]),
+    el('div', { class: 'table-scroll plan-matrix-scroll' }, [
+      el('table', { class: 'matrix-table' }, [el('thead', {}, [header]), el('tbody', {}, bodyRows)]),
+    ]),
+  ]);
+}
+
+function renderPlanMatrixValueCell(item, plan) {
+  const value = item.values?.[plan.planKey] || { display: 'Missing', status: 'MISSING_VALUE' };
+  return el('td', { class: `plan-value-cell ${normalizeMatrixStatus(value.status).toLowerCase()}` }, [
+    el('button', {
+      class: 'link-button plan-value-button',
+      type: 'button',
+      title: `Edit ${item.policyKey} for ${plan.planKey}`,
+      onclick: () => openPlanPolicyValueModal({ matrixItem: item, planKey: plan.planKey, valueRecord: value.raw && typeof value.raw === 'object' ? value.raw : null }),
+    }, [
+      el('strong', { text: value.display || '-' }),
+      value.periodType && value.periodType !== 'NONE' ? el('span', { text: humanizeKey(value.periodType) }) : null,
+    ]),
+  ]);
+}
+
+function groupBySection(items) {
+  return (items || []).reduce((acc, item) => {
+    const key = item.sectionTitle || humanizeKey(item.sectionKey || item.moduleKey || 'General');
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(item);
+    return acc;
+  }, {});
+}
+
+function renderPlanRegistrySections(data) {
+  return el('div', { class: 'plan-registry-grid' }, [
+    renderPolicyDefinitionRegistry(data.policyDefinitions || []),
+    renderSubscriptionPlanRegistry(data.subscriptionPlans || []),
+    renderPlanPolicyValueRegistry(data.planPolicyValues || []),
+  ]);
+}
+
+function renderPolicyDefinitionRegistry(items) {
+  return renderRegistryCard('Policy Registry', 'Defines what each policy means, how it is displayed, and which systems enforce it.', 'Add policy', () => openPolicyDefinitionModal(null), items, (item) => el('article', { class: 'registry-row' }, [
+    el('div', {}, [el('strong', { text: item.displayNameEn || humanizeKey(item.policyKey) }), el('small', { text: item.policyKey })]),
+    el('span', { class: 'badge neutral', text: humanizeKey(item.moduleKey) }),
+    el('span', { class: `badge ${item.enabled ? 'success' : 'neutral'}`, text: item.enabled ? 'Enabled' : 'Disabled' }),
+    el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openPolicyDefinitionModal(item) }),
+  ]));
+}
+
+function renderSubscriptionPlanRegistry(items) {
+  return renderRegistryCard('Subscription Plans', 'Controls dynamic plan columns. Do not hardcode only Free/Pro.', 'Add plan', () => openSubscriptionPlanModal(null), items, (item) => el('article', { class: 'registry-row' }, [
+    el('div', {}, [el('strong', { text: item.displayNameEn || humanizeKey(item.planKey) }), el('small', { text: item.planKey })]),
+    el('span', { class: `badge ${item.publicVisible ? 'success' : 'neutral'}`, text: item.publicVisible ? 'Public' : 'Hidden' }),
+    el('span', { class: `badge ${item.isPaid ? 'credit' : 'info'}`, text: item.isPaid ? 'Paid' : 'Free' }),
+    el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openSubscriptionPlanModal(item) }),
+  ]));
+}
+
+function renderPlanPolicyValueRegistry(items) {
+  return renderRegistryCard('Plan Policy Values', 'Concrete values per plan. Example: Smart Capture FREE 20 / MONTHLY.', 'Add value', () => openPlanPolicyValueModal({}), items.slice(0, 80), (item) => el('article', { class: 'registry-row' }, [
+    el('div', {}, [el('strong', { text: `${item.policyKey} · ${item.planKey}` }), el('small', { text: formatPlanValueDisplay(item) })]),
+    el('span', { class: `badge ${item.enabled ? 'success' : 'neutral'}`, text: item.enabled ? 'Enabled' : 'Disabled' }),
+    el('span', { class: 'badge info', text: item.source || 'policy value' }),
+    el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openPlanPolicyValueModal({ valueItem: item }) }),
+  ]));
+}
+
+function renderRegistryCard(title, helper, actionText, actionHandler, items, renderer) {
+  return el('section', { class: 'card registry-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('h3', { text: title }), el('p', { class: 'muted', text: helper })]),
+      el('button', { class: 'btn small', text: actionText, onclick: actionHandler }),
+    ]),
+    items.length ? el('div', { class: 'registry-list' }, items.map(renderer)) : el('div', { class: 'empty-state compact-empty' }, [el('strong', { text: 'No records loaded yet.' })]),
+  ]);
+}
+
+function buildPolicyDefinitionModalState(item) {
+  const normalized = item ? normalizePolicyDefinitionItem(item) : normalizePolicyDefinitionItem({ enabled: true, supportsUnlimited: true, supportsPeriod: false, visibleInPlanMatrix: true, valueType: 'NUMBER', defaultPeriod: 'NONE' });
+  return {
+    kind: 'policyDefinitionEdit',
+    id: item ? normalized.id : '',
+    isCreate: !item,
+    item: normalized,
+    policyKey: normalized.policyKey || '',
+    moduleKey: normalized.moduleKey || '',
+    displayNameEn: normalized.displayNameEn || '',
+    displayNameZh: normalized.displayNameZh || '',
+    displayNameMs: normalized.displayNameMs || '',
+    description: normalized.description || '',
+    valueType: normalized.valueType || 'NUMBER',
+    unit: normalized.unit || '',
+    supportsUnlimited: normalized.supportsUnlimited !== false,
+    supportsPeriod: Boolean(normalized.supportsPeriod),
+    allowedPeriods: (normalized.allowedPeriods || []).join(', '),
+    defaultPeriod: normalized.defaultPeriod || 'NONE',
+    visibleInPlanMatrix: normalized.visibleInPlanMatrix !== false,
+    enforcedBy: (normalized.enforcedBy || []).join(', '),
+    sortOrder: normalized.sortOrder || 100,
+    enabled: normalized.enabled !== false,
+  };
+}
+
+function openPolicyDefinitionModal(item) {
+  state.modal = buildPolicyDefinitionModalState(item);
+  render();
+}
+
+function renderPolicyDefinitionModal() {
+  const modal = state.modal;
+  const makeInput = (key, label, attrs = {}) => {
+    const input = el(attrs.tag || 'input', { ...(attrs.tag ? {} : { type: attrs.type || 'text' }), value: modal[key] ?? '', 'data-field-key': key, placeholder: attrs.placeholder || '' });
+    if (attrs.tag === 'textarea') input.value = modal[key] || '';
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key), attrs.help ? el('small', { class: 'field-help', text: attrs.help }) : null]);
+  };
+  const valueType = select(ADMIN_ENUMS.policyValueTypes, modal.valueType || 'NUMBER', (value) => { modal.valueType = value; }); valueType.setAttribute('data-field-key', 'valueType');
+  const defaultPeriod = select(ADMIN_ENUMS.policyPeriods, modal.defaultPeriod || 'NONE', (value) => { modal.defaultPeriod = value; }); defaultPeriod.setAttribute('data-field-key', 'defaultPeriod');
+  const supportsUnlimited = el('input', { type: 'checkbox' }); supportsUnlimited.checked = Boolean(modal.supportsUnlimited); supportsUnlimited.addEventListener('change', () => { modal.supportsUnlimited = supportsUnlimited.checked; });
+  const supportsPeriod = el('input', { type: 'checkbox' }); supportsPeriod.checked = Boolean(modal.supportsPeriod); supportsPeriod.addEventListener('change', () => { modal.supportsPeriod = supportsPeriod.checked; });
+  const visible = el('input', { type: 'checkbox' }); visible.checked = Boolean(modal.visibleInPlanMatrix); visible.addEventListener('change', () => { modal.visibleInPlanMatrix = visible.checked; });
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  return renderControlModal(modal.isCreate ? 'Add policy definition' : 'Edit policy definition', 'Policy Registry', [
+    renderMetaGrid([['Mode', modal.isCreate ? 'Create' : 'Edit'], ['Policy ID', modal.id || 'New']]),
+    el('div', { class: 'form-grid two' }, [
+      makeInput('policyKey', 'Policy key', { placeholder: 'smart_capture_quota' }),
+      makeInput('moduleKey', 'Module key', { placeholder: 'smart_capture' }),
+      makeInput('displayNameEn', 'Display name EN'),
+      makeInput('displayNameZh', 'Display name ZH'),
+      makeInput('displayNameMs', 'Display name MS'),
+      el('div', { class: modalFieldClass('valueType') }, [el('label', { text: 'Value type' }), valueType, renderFieldError('valueType')]),
+      makeInput('unit', 'Unit', { placeholder: 'saves, slots, months...' }),
+      el('div', { class: modalFieldClass('defaultPeriod') }, [el('label', { text: 'Default period' }), defaultPeriod, renderFieldError('defaultPeriod')]),
+      makeInput('allowedPeriods', 'Allowed periods', { placeholder: 'NONE, WEEKLY, MONTHLY', help: 'Comma-separated. Leave empty to allow NONE only.' }),
+      makeInput('enforcedBy', 'Enforced by', { placeholder: 'mobile, core_backend' }),
+      makeInput('sortOrder', 'Sort order', { type: 'number' }),
+    ]),
+    makeInput('description', 'Description', { tag: 'textarea' }),
+    el('div', { class: 'form-grid two' }, [
+      el('label', { class: 'check-row' }, [supportsUnlimited, el('span', { text: 'Supports unlimited' })]),
+      el('label', { class: 'check-row' }, [supportsPeriod, el('span', { text: 'Supports period' })]),
+      el('label', { class: 'check-row' }, [visible, el('span', { text: 'Visible in Plan Matrix' })]),
+      el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+    ]),
+  ], submitPolicyDefinitionModal, true);
+}
+
+async function submitPolicyDefinitionModal() {
+  const modal = state.modal;
+  const policyKey = requireMaxLength(modal.policyKey, 'Policy key', 120, { required: true });
+  if (!policyKey.ok) return validationError(policyKey.message, 'policyKey');
+  if (!/^[a-z0-9_.-]+$/i.test(policyKey.value)) return validationError('Policy key can only contain letters, numbers, dot, underscore, and hyphen.', 'policyKey');
+  const moduleKey = requireMaxLength(modal.moduleKey, 'Module key', 120, { required: true });
+  if (!moduleKey.ok) return validationError(moduleKey.message, 'moduleKey');
+  const displayNameEn = requireMaxLength(modal.displayNameEn, 'Display name EN', 160, { required: true });
+  if (!displayNameEn.ok) return validationError(displayNameEn.message, 'displayNameEn');
+  const valueType = requireOneOf(modal.valueType, ADMIN_ENUMS.policyValueTypes, 'Value type');
+  if (!valueType.ok) return validationError(valueType.message, 'valueType');
+  const defaultPeriod = requireOneOf(modal.defaultPeriod || 'NONE', ADMIN_ENUMS.policyPeriods, 'Default period');
+  if (!defaultPeriod.ok) return validationError(defaultPeriod.message, 'defaultPeriod');
+  const sortOrder = parseWholeNumber(modal.sortOrder, 'Sort order', { required: false, min: 0, max: 100000 });
+  if (!sortOrder.ok) return validationError(sortOrder.message, 'sortOrder');
+  const body = {
+    policyKey: policyKey.value,
+    moduleKey: moduleKey.value,
+    displayNameEn: displayNameEn.value,
+    displayNameZh: blankToNull(modal.displayNameZh),
+    displayNameMs: blankToNull(modal.displayNameMs),
+    description: blankToNull(modal.description),
+    valueType: valueType.value,
+    unit: blankToNull(modal.unit),
+    supportsUnlimited: Boolean(modal.supportsUnlimited),
+    supportsPeriod: Boolean(modal.supportsPeriod),
+    allowedPeriods: normalizeCsvList(modal.allowedPeriods),
+    defaultPeriod: defaultPeriod.value,
+    visibleInPlanMatrix: Boolean(modal.visibleInPlanMatrix),
+    enforcedBy: normalizeCsvList(modal.enforcedBy),
+    sortOrder: sortOrder.value ?? 100,
+    enabled: Boolean(modal.enabled),
+  };
+  const path = modal.isCreate ? API_PATHS.policyDefinitions.create : API_PATHS.policyDefinitions.update(modal.id || body.policyKey);
+  const action = modal.isCreate ? performPostAction : performPatchAction;
+  await action(path, modal.isCreate ? 'Policy definition created.' : 'Policy definition updated.', body);
+}
+
+function openSubscriptionPlanModal(item) {
+  const normalized = item ? normalizeSubscriptionPlanItem(item) : normalizeSubscriptionPlanItem({ enabled: true, publicVisible: true, isPaid: true });
+  state.modal = {
+    kind: 'subscriptionPlanEdit',
+    id: item ? normalized.id : '',
+    isCreate: !item,
+    planKey: normalized.planKey || '',
+    displayNameEn: normalized.displayNameEn || '',
+    displayNameZh: normalized.displayNameZh || '',
+    displayNameMs: normalized.displayNameMs || '',
+    sortOrder: normalized.sortOrder || 100,
+    enabled: normalized.enabled !== false,
+    publicVisible: normalized.publicVisible !== false,
+    isPaid: Boolean(normalized.isPaid),
+  };
+  render();
+}
+
+function renderSubscriptionPlanModal() {
+  const modal = state.modal;
+  const makeInput = (key, label, attrs = {}) => {
+    const input = el('input', { type: attrs.type || 'text', value: modal[key] ?? '', 'data-field-key': key, placeholder: attrs.placeholder || '' });
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
+  };
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const publicVisible = el('input', { type: 'checkbox' }); publicVisible.checked = Boolean(modal.publicVisible); publicVisible.addEventListener('change', () => { modal.publicVisible = publicVisible.checked; });
+  const isPaid = el('input', { type: 'checkbox' }); isPaid.checked = Boolean(modal.isPaid); isPaid.addEventListener('change', () => { modal.isPaid = isPaid.checked; });
+  return renderControlModal(modal.isCreate ? 'Add subscription plan' : 'Edit subscription plan', 'Plans', [
+    renderMetaGrid([['Mode', modal.isCreate ? 'Create' : 'Edit'], ['Plan ID', modal.id || 'New']]),
+    el('div', { class: 'form-grid two' }, [
+      makeInput('planKey', 'Plan key', { placeholder: 'PLUS' }),
+      makeInput('displayNameEn', 'Display name EN'),
+      makeInput('displayNameZh', 'Display name ZH'),
+      makeInput('displayNameMs', 'Display name MS'),
+      makeInput('sortOrder', 'Sort order', { type: 'number' }),
+    ]),
+    el('div', { class: 'form-grid two' }, [
+      el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+      el('label', { class: 'check-row' }, [publicVisible, el('span', { text: 'Public visible' })]),
+      el('label', { class: 'check-row' }, [isPaid, el('span', { text: 'Paid plan' })]),
+    ]),
+  ], submitSubscriptionPlanModal);
+}
+
+async function submitSubscriptionPlanModal() {
+  const modal = state.modal;
+  const planKey = requireMaxLength(modal.planKey, 'Plan key', 60, { required: true });
+  if (!planKey.ok) return validationError(planKey.message, 'planKey');
+  if (!/^[A-Z0-9_.-]+$/i.test(planKey.value)) return validationError('Plan key can only contain letters, numbers, dot, underscore, and hyphen.', 'planKey');
+  const displayNameEn = requireMaxLength(modal.displayNameEn, 'Display name EN', 160, { required: true });
+  if (!displayNameEn.ok) return validationError(displayNameEn.message, 'displayNameEn');
+  const sortOrder = parseWholeNumber(modal.sortOrder, 'Sort order', { required: false, min: 0, max: 100000 });
+  if (!sortOrder.ok) return validationError(sortOrder.message, 'sortOrder');
+  const body = {
+    planKey: planKey.value.toUpperCase(),
+    displayNameEn: displayNameEn.value,
+    displayNameZh: blankToNull(modal.displayNameZh),
+    displayNameMs: blankToNull(modal.displayNameMs),
+    sortOrder: sortOrder.value ?? 100,
+    enabled: Boolean(modal.enabled),
+    publicVisible: Boolean(modal.publicVisible),
+    isPaid: Boolean(modal.isPaid),
+  };
+  const path = modal.isCreate ? API_PATHS.subscriptionPlans.create : API_PATHS.subscriptionPlans.update(modal.id || body.planKey);
+  const action = modal.isCreate ? performPostAction : performPatchAction;
+  await action(path, modal.isCreate ? 'Subscription plan created.' : 'Subscription plan updated.', body);
+}
+
+function openPlanPolicyValueModal({ matrixItem = null, planKey = '', valueRecord = null, valueItem = null } = {}) {
+  const sourceItem = valueItem || normalizePlanPolicyValueItem(valueRecord || {});
+  const policyKey = sourceItem.policyKey || matrixItem?.policyKey || state.adminOptions.planMatrixPolicyKeys?.[0] || '';
+  const selectedPlan = String(sourceItem.planKey || planKey || state.adminOptions.planMatrixPlanKeys?.[0] || '').toUpperCase();
+  const valueFromMatrix = matrixItem?.values?.[selectedPlan] || {};
+  const raw = valueItem || sourceItem || valueFromMatrix.raw || {};
+  state.modal = {
+    kind: 'planPolicyValueEdit',
+    id: valueItem ? valueItem.id : (raw.id || raw.planPolicyValueId || raw.plan_policy_value_id || ''),
+    isCreate: !(valueItem || raw.id || raw.planPolicyValueId || raw.plan_policy_value_id),
+    matrixItem,
+    policyKey,
+    planKey: selectedPlan,
+    value: raw.value ?? raw.valueNumber ?? raw.value_number ?? raw.limitCount ?? raw.limit_count ?? valueFromMatrix.value ?? '',
+    unlimited: asBoolean(raw.unlimited ?? raw.isUnlimited ?? raw.is_unlimited ?? valueFromMatrix.unlimited, false),
+    periodType: String(raw.periodType || raw.period_type || valueFromMatrix.periodType || 'NONE').toUpperCase(),
+    enabled: raw.enabled !== false,
+  };
+  render();
+}
+
+function renderPlanPolicyValueModal() {
+  const modal = state.modal;
+  const policies = ['', ...(state.adminOptions.planMatrixPolicyKeys || [])];
+  const plans = ['', ...(state.adminOptions.planMatrixPlanKeys || [])];
+  const policySelect = select(policies, modal.policyKey || '', (value) => { modal.policyKey = value; }); policySelect.setAttribute('data-field-key', 'policyKey');
+  const planSelect = select(plans, modal.planKey || '', (value) => { modal.planKey = value; }); planSelect.setAttribute('data-field-key', 'planKey');
+  const value = el('input', { type: 'text', value: modal.value ?? '', placeholder: '20, true, custom text...', 'data-field-key': 'value' }); value.addEventListener('input', () => { modal.value = value.value; });
+  const definition = (state.data?.policyDefinitions || []).find((item) => item.policyKey === modal.policyKey) || modal.matrixItem?.definition || {};
+  const allowedPeriods = definition.supportsPeriod ? ['NONE', ...normalizeCsvList(definition.allowedPeriods).filter((item) => item !== 'NONE')] : ['NONE'];
+  const periodOptions = uniqueSortedOptions(allowedPeriods.length ? allowedPeriods : ADMIN_ENUMS.policyPeriods);
+  const period = select(periodOptions.length ? periodOptions : ['NONE'], modal.periodType || 'NONE', (next) => { modal.periodType = next; }); period.setAttribute('data-field-key', 'periodType');
+  const unlimited = el('input', { type: 'checkbox' }); unlimited.checked = Boolean(modal.unlimited); unlimited.addEventListener('change', () => { modal.unlimited = unlimited.checked; });
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  return renderControlModal(modal.isCreate ? 'Add plan policy value' : 'Edit plan policy value', 'Plan Value', [
+    renderMetaGrid([['Mode', modal.isCreate ? 'Create' : 'Edit'], ['Value ID', modal.id || 'New'], ['Policy definition', definition.displayNameEn || definition.policyKey || 'Not loaded']]),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: modalFieldClass('policyKey') }, [el('label', { text: 'Policy key' }), policySelect, renderFieldError('policyKey')]),
+      el('div', { class: modalFieldClass('planKey') }, [el('label', { text: 'Plan key' }), planSelect, renderFieldError('planKey')]),
+      el('div', { class: modalFieldClass('value') }, [el('label', { text: 'Value' }), value, renderFieldError('value'), el('small', { class: 'field-help', text: 'Required unless Unlimited is checked.' })]),
+      el('div', { class: modalFieldClass('periodType') }, [el('label', { text: 'Period type' }), period, renderFieldError('periodType')]),
+    ]),
+    el('div', { class: 'form-grid two' }, [
+      el('label', { class: 'check-row' }, [unlimited, el('span', { text: 'Unlimited' })]),
+      el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+    ]),
+    el('div', { class: 'compact-guidance warning' }, [el('strong', { text: 'Close-loop warning' }), renderInfoHint('Changing value/period here changes what users see once backend plan-matrix and entitlement endpoints are deployed. Enforcement must read the same policy key.', { compact: true, label: 'Plan value safety' })]),
+  ], submitPlanPolicyValueModal);
+}
+
+async function submitPlanPolicyValueModal() {
+  const modal = state.modal;
+  const policyKey = requireMaxLength(modal.policyKey, 'Policy key', 120, { required: true });
+  if (!policyKey.ok) return validationError(policyKey.message, 'policyKey');
+  const planKey = requireMaxLength(modal.planKey, 'Plan key', 60, { required: true });
+  if (!planKey.ok) return validationError(planKey.message, 'planKey');
+  if (!modal.unlimited && normalizedTrim(modal.value) === '') return validationError('Value is required unless Unlimited is checked.', 'value');
+  const definition = (state.data?.policyDefinitions || []).find((item) => item.policyKey === modal.policyKey) || modal.matrixItem?.definition || {};
+  const allowed = definition.supportsPeriod ? ['NONE', ...normalizeCsvList(definition.allowedPeriods).filter((item) => item !== 'NONE')] : ['NONE'];
+  const period = requireOneOf(modal.periodType || 'NONE', allowed.length ? allowed : ADMIN_ENUMS.policyPeriods, 'Period type');
+  if (!period.ok) return validationError(period.message, 'periodType');
+  const rawValue = normalizedTrim(modal.value);
+  const numericValue = rawValue !== '' && /^-?\d+(\.\d+)?$/.test(rawValue) ? Number(rawValue) : null;
+  const booleanValue = /^(true|false)$/i.test(rawValue) ? rawValue.toLowerCase() === 'true' : null;
+  const body = {
+    policyKey: policyKey.value,
+    planKey: planKey.value.toUpperCase(),
+    value: rawValue || null,
+    valueNumber: numericValue,
+    valueBoolean: booleanValue,
+    valueText: rawValue || null,
+    unlimited: Boolean(modal.unlimited),
+    periodType: period.value,
+    enabled: Boolean(modal.enabled),
+  };
+  const path = modal.isCreate ? API_PATHS.planPolicyValues.create : API_PATHS.planPolicyValues.update(modal.id || `${body.policyKey}:${body.planKey}`);
+  const action = modal.isCreate ? performPostAction : performPatchAction;
+  await action(path, modal.isCreate ? 'Plan policy value created.' : 'Plan policy value updated.', body);
 }
 
 function renderFeatureLimitToolbar() {
@@ -3988,30 +4717,27 @@ function renderGlobalLearningSourceFilter() {
 }
 
 
-async function decideSmartCaptureCandidate(item, approve) {
-  const isOcr = item.globalLearningKind === 'ocr_receipt' || ['receipt_single', 'ocr_financial_list', 'ocr_handwritten'].includes(item.sourceType || item.source_type);
-  if (!confirm(`${approve ? 'Approve' : 'Reject'} this global learning candidate?`)) return;
-  try {
-    state.loading = true;
-    render();
-    const paths = isOcr ? API_PATHS.ocrReceiptRules : API_PATHS.smartCaptureRules;
-    await api(
-      approve ? paths.approve(item.id) : paths.reject(item.id),
-      { method: 'POST', body: approve ? { rolloutPercentage: 100 } : {} }
-    );
-    setMessage(approve ? 'Suggestion rule approved at 100% rollout with review-only safeguards.' : 'Candidate rejected for 30 days.');
-    await loadData();
-  } catch (error) {
-    setMessage(error.message || 'Unable to update Smart Capture candidate.', true);
-    state.loading = false;
-    render();
-  }
+const OCR_GLOBAL_LEARNING_SOURCE_TYPES = new Set(['receipt_single', 'ocr_financial_list', 'ocr_handwritten']);
+
+function globalLearningSourceType(item) {
+  const raw = item.sourceType || item.source_type || (item.globalLearningKind === 'ocr_receipt' ? 'receipt_single' : 'smart_capture');
+  return String(raw || 'smart_capture').toLowerCase();
 }
 
-function renderSmartCaptureRuleCandidate(item) {
-  const sourceType = item.sourceType || item.source_type || 'smart_capture';
-  const isOcr = ['receipt_single', 'ocr_financial_list', 'ocr_handwritten'].includes(sourceType);
-  const groups = {
+function isOcrGlobalLearningItem(item) {
+  return item.globalLearningKind === 'ocr_receipt' || OCR_GLOBAL_LEARNING_SOURCE_TYPES.has(globalLearningSourceType(item));
+}
+
+function renderGlobalLearningSourceLabel(sourceType) {
+  if (sourceType === 'smart_capture') return 'Smart Capture';
+  if (sourceType === 'receipt_single') return 'OCR Receipt';
+  if (sourceType === 'ocr_financial_list') return 'OCR Financial List';
+  if (sourceType === 'ocr_handwritten') return 'OCR Handwritten';
+  return humanizeKey(sourceType || 'Global Learning');
+}
+
+function getGlobalLearningGroups(item) {
+  return {
     action: parseJsonObject(item.actionDistributionJson || item.action_distribution_json),
     confidence: parseJsonObject(item.confidenceDistributionJson || item.confidence_distribution_json),
     sourceTrust: parseJsonObject(item.sourceTrustDistributionJson || item.source_trust_distribution_json),
@@ -4025,12 +4751,152 @@ function renderSmartCaptureRuleCandidate(item) {
     categoryFamily: parseJsonObject(item.categoryFamilyDistributionJson || item.category_family_distribution_json),
     walletType: parseJsonObject(item.walletTypeDistributionJson || item.wallet_type_distribution_json),
   };
+}
+
+function getResolverReasonCodes(item) {
+  const raw = item.resolverReasonCodesJson || item.resolver_reason_codes_json || item.reasonCodesJson || item.reason_codes_json || '[]';
+  if (Array.isArray(raw)) return raw.map((value) => String(value)).filter(Boolean);
+  if (raw && typeof raw === 'object') return Object.keys(raw).filter(Boolean);
+  const text = String(raw || '').trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return parsed.map((value) => String(value)).filter(Boolean);
+    if (parsed && typeof parsed === 'object') return Object.keys(parsed).filter(Boolean);
+  } catch (_) {
+    // Fall through to single safe label.
+  }
+  return [text];
+}
+
+function renderCompactDistributionChips(title, distribution, emptyText = 'No aggregate data yet.') {
+  const entries = Object.entries(distribution || {})
+    .map(([key, value]) => [key, Number(value)])
+    .filter(([, value]) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8);
+  return el('div', { class: 'compact-chip-row' }, [
+    el('span', { class: 'compact-chip-title', text: title }),
+    entries.length
+      ? el('div', { class: 'distribution-chip-list compact-chips' }, entries.map(([key, value]) => (
+          el('span', { class: 'distribution-chip', text: `${normalizeDistributionLabel(key)} ${formatNumber(value)}` })
+        )))
+      : el('span', { class: 'muted compact-text', text: emptyText }),
+  ]);
+}
+
+async function decideGlobalLearningCandidate(item, approve) {
+  const isOcr = isOcrGlobalLearningItem(item);
+  const actionCopy = approve
+    ? (isOcr ? 'Approve this review-only OCR rule?' : 'Approve this review-only rule?')
+    : 'Reject this global learning candidate?';
+  if (!confirm(actionCopy)) return;
+  try {
+    state.loading = true;
+    render();
+    const paths = isOcr ? API_PATHS.ocrReceiptRules : API_PATHS.smartCaptureRules;
+    await api(
+      approve ? paths.approve(item.id) : paths.reject(item.id),
+      { method: 'POST', body: approve ? { rolloutPercentage: 100 } : {} }
+    );
+    setMessage(approve ? `${isOcr ? 'OCR ' : ''}suggestion rule approved at 100% rollout with review-only safeguards.` : 'Candidate rejected for 30 days.');
+    await loadData();
+  } catch (error) {
+    setMessage(error.message || 'Unable to update global learning candidate.', true);
+    state.loading = false;
+    render();
+  }
+}
+
+function decideSmartCaptureCandidate(item, approve) {
+  return decideGlobalLearningCandidate(item, approve);
+}
+
+function renderOcrCandidateInsight(item, groups) {
+  const sourceType = globalLearningSourceType(item);
+  const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
+  return el('div', { class: 'candidate-insight-card compact-candidate-insight' }, [
+    el('div', { class: 'candidate-insight-header' }, [
+      el('span', { class: 'mini-badge info', text: `${renderGlobalLearningSourceLabel(sourceType)} candidate` }),
+      el('span', { class: 'mini-badge success', text: 'Privacy-safe aggregate' }),
+      el('span', { class: 'mini-badge neutral', text: 'Review-only' }),
+      el('span', { class: 'mini-badge muted', text: ruleCategory }),
+    ]),
+    el('p', { text: 'OCR approval only updates global suggestion rules. It never enables quick-save or auto-save, and local OCR keeps working if global rules are disabled.' }),
+    renderCompactDistributionChips('Category', groups.categoryFamily, 'No category distribution.'),
+    renderCompactDistributionChips('Wallet', groups.walletType, 'No wallet distribution.'),
+  ]);
+}
+
+function renderOcrGlobalLearningRuleCandidate(item, groups) {
+  const sourceType = globalLearningSourceType(item);
+  const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
+  const suggestedAction = item.suggestedAction || item.suggested_action || 'REVIEW';
+  const reasonCodes = getResolverReasonCodes(item);
+  return renderCollapsibleItem({
+    title: item.plainSummary || item.plain_summary || `${renderGlobalLearningSourceLabel(sourceType)} pattern` || 'OCR candidate',
+    subtitle: `${renderGlobalLearningSourceLabel(sourceType)} · ${item.structureSignatureHash || item.structure_signature_hash || '-'} · ${item.patternHash || item.pattern_hash || '-'}`,
+    statusNode: el('span', { class: `badge ${ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: ruleCategory }),
+    children: [
+      renderOcrCandidateInsight(item, groups),
+      renderMetaGrid([
+        ['Source type', renderGlobalLearningSourceLabel(sourceType)],
+        ['Rule category', ruleCategory],
+        ['Suggested action', suggestedAction],
+        ['Samples', item.sampleCount ?? item.sample_count ?? '-'],
+        ['Unique users', item.uniqueUserCount ?? item.unique_user_count ?? '-'],
+        ['Correction rate', formatPercent(item.correctionRate ?? item.correction_rate)],
+        ['Conflict rate', formatPercent(item.conflictRate ?? item.conflict_rate)],
+        ['Disagreement rate', formatPercent(item.disagreementRate ?? item.disagreement_rate)],
+        ['Privacy status', item.privacyStatus || item.privacy_status || 'safe'],
+        ['Created', formatDate(item.createdAt || item.created_at)],
+      ]),
+      el('div', { class: 'compact-distribution-stack' }, [
+        renderCompactDistributionChips('Action', groups.action),
+        renderCompactDistributionChips('Confidence', groups.confidence),
+        renderCompactDistributionChips('Category family', groups.categoryFamily),
+        renderCompactDistributionChips('Wallet type', groups.walletType),
+      ]),
+      el('details', { class: 'nested-details' }, [
+        el('summary', { text: `Reason codes${reasonCodes.length ? ` (${reasonCodes.length})` : ''}` }),
+        reasonCodes.length
+          ? el('div', { class: 'distribution-chip-list compact-chips' }, reasonCodes.map((code) => el('span', { class: 'distribution-chip', text: normalizeDistributionLabel(code) })))
+          : el('p', { class: 'muted compact-text', text: 'No resolver reason codes returned.' }),
+      ]),
+      el('details', { class: 'nested-details' }, [
+        el('summary', { text: 'Raw aggregate JSON' }),
+        el('pre', { class: 'json-preview', text: safeJson({
+          sourceType,
+          ruleCategory,
+          suggestedAction,
+          reasonCodes,
+          action: groups.action,
+          confidence: groups.confidence,
+          categoryFamily: groups.categoryFamily,
+          walletType: groups.walletType,
+          transactionType: groups.transactionType,
+          privacy: groups.privacy,
+        }) }),
+      ]),
+      el('div', { class: 'privacy-note inline-note' }, [
+        el('span', { text: 'OCR safety: no OCR text, merchant, payee, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed.' }),
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn primary small', text: 'Approve review-only OCR rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
+        el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideGlobalLearningCandidate(item, false) }),
+      ]),
+    ],
+  });
+}
+
+function renderSmartCaptureGlobalLearningRuleCandidate(item, groups) {
+  const sourceType = globalLearningSourceType(item);
   const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
   const suggestedType = item.suggestedFinalType || item.suggested_final_type || '';
   const resolverReasonCodes = item.resolverReasonCodesJson || item.resolver_reason_codes_json || '[]';
   return renderCollapsibleItem({
     title: item.plainSummary || item.plain_summary || ruleCategory || 'Smart Capture candidate',
-    subtitle: `${sourceType} Â· ${isOcr ? (item.structureSignatureHash || item.structure_signature_hash || '-') : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-')} Â· ${item.patternHash || item.pattern_hash || '-'}`,
+    subtitle: `${sourceType} · ${item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-'} · ${item.patternHash || item.pattern_hash || '-'}`,
     statusNode: el('span', { class: `badge ${ruleCategory === 'BLOCK_NON_TRANSACTION' ? 'danger' : ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: ruleCategory }),
     children: [
       renderSmartCaptureCandidateInsight(item, groups),
@@ -4096,26 +4962,59 @@ function renderSmartCaptureRuleCandidate(item) {
         el('span', { text: 'Review tip: approve only if the summary is clearly privacy-safe and the candidate cannot turn internal/top-up or promo signals into expense/income quick-save behavior.' }),
       ]),
       el('div', { class: 'actions' }, [
-        el('button', { class: 'btn primary small', text: 'Approve review-only rule', onclick: () => decideSmartCaptureCandidate(item, true) }),
-        el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideSmartCaptureCandidate(item, false) }),
+        el('button', { class: 'btn primary small', text: 'Approve review-only rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
+        el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideGlobalLearningCandidate(item, false) }),
       ]),
     ],
   });
 }
 
-function renderSmartCaptureActiveRule(item) {
+function renderGlobalLearningRuleCandidate(item) {
+  const groups = getGlobalLearningGroups(item);
+  return isOcrGlobalLearningItem(item)
+    ? renderOcrGlobalLearningRuleCandidate(item, groups)
+    : renderSmartCaptureGlobalLearningRuleCandidate(item, groups);
+}
+
+function renderSmartCaptureRuleCandidate(item) {
+  return renderGlobalLearningRuleCandidate(item);
+}
+
+function renderGlobalLearningActiveRule(item) {
+  const isOcr = isOcrGlobalLearningItem(item);
+  const sourceType = globalLearningSourceType(item);
+  const ruleCategory = item.ruleCategory || item.rule_category || 'GLOBAL';
+  const action = item.finalType || item.final_type || item.action || item.suggestedAction || item.suggested_action || 'REVIEW';
+  const patternHash = item.patternHash || item.pattern_hash || '-';
+  const signature = isOcr
+    ? (item.structureSignatureHash || item.structure_signature_hash || '-')
+    : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-');
+  const allowQuickAction = item.allowQuickAction ?? item.allow_quick_action;
+  const allowAutoSave = item.allowAutoSave ?? item.allow_auto_save;
   return renderCollapsibleItem({
-    title: `${item.ruleCategory || 'GLOBAL'} \u00B7 ${item.finalType || item.action || 'REVIEW'}`,
-    subtitle: `${item.sourcePackageName || '-'} \u00B7 ${item.patternHash || '-'}`,
+    title: `${renderGlobalLearningSourceLabel(sourceType)} · ${ruleCategory} · ${action}`,
+    subtitle: `${signature} · ${patternHash}`,
     statusNode: el('span', { class: 'badge success', text: item.status || 'ACTIVE' }),
-    children: [renderMetaGrid([
-      ['Rollout', `${item.rolloutPercentage ?? 100}%`],
-      ['Force review', item.forceReview ? 'Yes' : 'No'],
-      ['Quick action', item.allowQuickAction ? 'Allowed' : 'Disabled'],
-      ['Version', item.version],
-      ['Updated', formatDate(item.updatedAt)],
-    ])],
+    children: [
+      renderMetaGrid([
+        ['Source type', renderGlobalLearningSourceLabel(sourceType)],
+        ['Pattern hash', patternHash],
+        ['Rollout', `${item.rolloutPercentage ?? item.rollout_percentage ?? 100}%`],
+        ['Force review', item.forceReview ?? item.force_review ? 'Yes' : 'No'],
+        ['Quick action', allowQuickAction ? 'Allowed' : 'Disabled'],
+        ['Auto-save', allowAutoSave ? 'Allowed' : 'Disabled'],
+        ['Version', item.version],
+        ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      isOcr ? el('div', { class: 'privacy-note inline-note' }, [
+        el('span', { text: 'OCR active rule is global suggestion only. It must stay review-only and must not expose receipt content.' }),
+      ]) : null,
+    ],
   });
+}
+
+function renderSmartCaptureActiveRule(item) {
+  return renderGlobalLearningActiveRule(item);
 }
 
 function renderAnnouncementItem(item) {
@@ -5272,6 +6171,13 @@ function renderAdminControlPage() {
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Use short expiry windows and clear reasons. Do not create permanent high limits unless backend capacity has been verified.'));
     children.push(renderControlList(items, renderRateLimitOverrideItem, 'No rate limit overrides found.'));
+  } else if (state.activeTab === 'planMatrix') {
+    children.push(renderAdminControlHero('Plan Matrix', 'Dynamic table for plan limits, policy definitions, and plan policy values.', 'This page is the close-loop policy cockpit: user-facing display, backend enforcement metadata, source, status, and editable plan values are shown in one place.', [
+      el('button', { class: 'btn', text: 'Add policy definition', onclick: () => openPolicyDefinitionModal(null) }),
+      el('button', { class: 'btn secondary', text: 'Add plan', onclick: () => openSubscriptionPlanModal(null) }),
+      el('button', { class: 'btn ghost', text: 'Add value', onclick: () => openPlanPolicyValueModal({}) }),
+    ]));
+    children.push(renderPlanMatrixPage());
   } else if (state.activeTab === 'featureLimits') {
     children.push(renderAdminControlHero('Feature Limits', 'Control quota, preset, wallet, dashboard, and collaboration limits from backend policy.', 'Use this page for limits such as Smart Capture 20/week, OCR 20/month, expense presets, wallet slots, group limits, and dashboard history. Changes are audited and should keep local app fallback compatibility.'));
     children.push(renderFeatureLimitToolbar());
@@ -5292,13 +6198,14 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'learningOps') {
     children.push(renderLearningOpsPage());
   } else if (state.activeTab === 'smartCaptureRules') {
-    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'Candidates contain source types, structural hashes, semantic slot hashes/summaries, resolver outcome counters, and privacy-safe distributions only. No notification text, OCR text, merchant, payee, payer, exact amount, account/card number, transaction ID, or image URL is displayed. Approved global rules stay review-only and cannot quick-save or auto-save.'));
+    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'One page reviews Smart Capture, OCR Receipt, OCR Financial List, and OCR Handwritten candidates. Approved rules stay review-only and cannot quick-save or auto-save.'));
     children.push(renderGlobalLearningSourceFilter());
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Approval creates suggestion rules only: forceReview=true, allowQuickAction=false, allowAutoSave=false. Personal local learning remains higher priority than global rules.'));
-    children.push(renderControlList(items, renderSmartCaptureRuleCandidate, 'No pending global learning rule candidates.'));
+    children.push(renderPolicySafetyNote('OCR safety: no OCR text, merchant, payee, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed. Local OCR still works when OCR global rules are disabled.'));
+    children.push(renderControlList(items, renderGlobalLearningRuleCandidate, 'No pending global learning rule candidates.'));
     children.push(el('h2', { text: 'Active rules' }));
-    children.push(renderControlList(state.data?.activeRules || [], renderSmartCaptureActiveRule, 'No active global Smart Capture rules.'));
+    children.push(renderControlList(state.data?.activeRules || [], renderGlobalLearningActiveRule, 'No active global learning rules.'));
   } else if (state.activeTab === 'usage') {
     children.push(renderAdminControlHero('Usage & Quota', 'Support lookup for user usage counters and idempotent save events.', 'Use this to debug OCR or Smart Capture quota issues. Adjustments require an audit reason and should be rare.'));
     children.push(renderUsageToolbar());

@@ -3864,3 +3864,88 @@ summary:focus-visible {
     justify-content: center;
   }
 }
+
+/* Global Learning Review compact OCR cards */
+.mini-badge.neutral {
+  border-color: #E2E8F0;
+  background: #F8FAFC;
+  color: #475569;
+}
+.mini-badge.warn {
+  border-color: #FDE68A;
+  background: #FFFBEB;
+  color: #92400E;
+}
+.mini-badge.danger {
+  border-color: #FECACA;
+  background: #FEF2F2;
+  color: #B91C1C;
+}
+.compact-candidate-insight {
+  padding: 12px 14px;
+  gap: 8px;
+}
+.compact-distribution-stack {
+  display: grid;
+  gap: 10px;
+  margin: 10px 0;
+}
+.compact-chip-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.compact-chip-title {
+  color: var(--muted-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+  padding-top: 5px;
+}
+.distribution-chip-list.compact-chips {
+  gap: 6px;
+}
+.distribution-chip-list.compact-chips .distribution-chip {
+  min-height: 24px;
+  padding: 4px 8px;
+  font-size: 0.74rem;
+}
+@media (max-width: 700px) {
+  .compact-chip-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Dynamic Plan Matrix management */
+.plan-matrix-page { display: grid; gap: 16px; }
+.plan-matrix-toolbar { align-items: end; }
+.plan-matrix-stats { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.plan-matrix-card { display: grid; gap: 16px; overflow: hidden; }
+.table-scroll,
+.plan-matrix-scroll { width: 100%; overflow-x: auto; border: 1px solid var(--border); border-radius: 18px; background: #fff; }
+.matrix-table { width: 100%; min-width: 980px; border-collapse: collapse; font-size: 13px; }
+.matrix-table th,
+.matrix-table td { padding: 12px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+.matrix-table th { position: sticky; top: 0; z-index: 1; background: var(--card-soft); color: var(--muted-strong); font-size: 11px; font-weight: 900; letter-spacing: 0.06em; text-transform: uppercase; }
+.matrix-table tbody tr:hover:not(.plan-section-row) { background: var(--primary-soft-2); }
+.plan-section-row td { background: var(--bg-strong); color: var(--primary-dark); font-size: 12px; font-weight: 900; letter-spacing: 0.08em; text-transform: uppercase; }
+.field-help.block { display: block; margin-top: 4px; }
+.plan-value-cell { min-width: 128px; }
+.plan-value-cell.missing_value { background: var(--warning-soft); }
+.plan-value-cell.mismatch { background: var(--danger-soft); }
+.plan-value-cell.using_fallback { background: var(--primary-soft-2); }
+.plan-value-cell.disabled { background: var(--card-soft); }
+.link-button { appearance: none; border: 0; background: none; padding: 0; color: inherit; text-align: left; cursor: pointer; }
+.link-button:hover strong { color: var(--primary); text-decoration: underline; }
+.plan-value-button { display: grid; gap: 2px; }
+.plan-value-button span { color: var(--muted); font-size: 11px; }
+.plan-registry-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.registry-card { display: grid; align-content: start; gap: 14px; min-width: 0; }
+.registry-list { display: grid; gap: 10px; max-height: 520px; overflow: auto; padding-right: 4px; }
+.registry-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 8px; align-items: center; padding: 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--card-soft); }
+.registry-row strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.registry-row small { display: block; color: var(--muted); overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .registry-row { grid-template-columns: minmax(0, 1fr); align-items: start; }
+  .matrix-table { min-width: 860px; }
+}
