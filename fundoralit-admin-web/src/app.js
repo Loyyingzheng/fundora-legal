@@ -118,6 +118,11 @@ const API_PATHS = {
     status: (id, action) => `/api/admin/ocr-receipt/global-rules/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,
     killSwitch: '/api/admin/ocr-receipt/global-rules/kill-switch',
   },
+  learningOps: {
+    overview: '/api/admin/learning-ops/overview',
+    jobs: '/api/admin/learning-ops/jobs',
+    runJob: '/api/admin/learning-ops/jobs',
+  },
 };
 
 function toLocalDateString(date) {
@@ -238,6 +243,17 @@ const state = {
   },
   analyticsLoading: false,
   analyticsError: '',
+  learningOps: {
+    overview: null,
+    jobs: [],
+    jobsLoaded: false,
+    jobsLoading: false,
+    showRunHistory: false,
+    actionLoading: '',
+    jobResult: null,
+    overviewError: '',
+    jobsError: '',
+  },
   adminOptions: {
     featureLimitKeys: [],
     featureFlagKeys: [],
@@ -535,6 +551,7 @@ const NAV_GROUPS = [
       { id: 'reviewPromptPolicy', label: 'Review Prompt Policy', helper: 'Store prompt config', description: 'Configure app review prompt cooldowns and eligibility thresholds online.', info: 'Keep prompts respectful and low frequency. The backend falls back to properties if remote policy is unavailable.' },
       { id: 'rateLimitOverrides', label: 'Rate Limit Overrides', helper: 'Temporary throttles', description: 'Store short-lived route limit overrides for operational incidents or campaigns.', info: 'Only effective if the backend has a central rate-limit enforcement path wired to this table.' },
       { id: 'smartCaptureRules', label: 'Smart Capture Rules', helper: 'Manual approval', description: 'Review privacy-safe anonymous Smart Capture rule candidates before activation.', info: 'Only aggregate hashes and counters are shown. No notification text, skeleton text, merchant, payee, payer, counterparty, OCR content, exact amounts, or semantic vectors are stored here. Semantic slot metadata is coarse dictionary categories only.' },
+      { id: 'learningOps', label: 'Learning Ops', helper: 'Learning health', description: 'Monitor Smart Capture, OCR learning, and Shadow ML without heavy API calls.', info: 'Overview uses cached backend snapshots and one lightweight API call. Manual jobs are protected by cooldown, row limits, and single-flight lock so Render free is not overloaded.' },
     ],
   },
   {
@@ -1118,6 +1135,10 @@ async function loadAdminControlData() {
     state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
     return;
   }
+  if (state.activeTab === 'learningOps') {
+    await loadLearningOpsOverview();
+    return;
+  }
   if (state.activeTab === 'smartCaptureRules') {
     const [pending, active, ocrPending, ocrActive] = await Promise.all([
       api(API_PATHS.smartCaptureRules.candidates, { params: { status: 'PENDING' } }),
@@ -1211,6 +1232,121 @@ async function loadAdminControlData() {
     });
     state.data = unwrapPage(response);
   }
+}
+
+
+function normalizeLearningOpsOverview(response) {
+  const value = normalizeAdminObjectResponse(response);
+  return value && typeof value === 'object' ? value : {};
+}
+
+async function loadLearningOpsOverview({ silent = false } = {}) {
+  if (!silent) {
+    state.learningOps.overviewError = '';
+  }
+  try {
+    const overview = normalizeLearningOpsOverview(await api(API_PATHS.learningOps.overview));
+    state.learningOps.overview = overview;
+    state.learningOps.overviewError = '';
+    state.data = { content: [], learningOpsOverview: overview, page: 0, size: 1, totalElements: 0, totalPages: 1 };
+    return overview;
+  } catch (error) {
+    const friendly = error?.status === 404
+      ? 'Learning Ops backend endpoint is not deployed yet. Deploy the 4A backend first, then refresh this page.'
+      : toFriendlyErrorMessage(error, 'Learning Ops overview could not be loaded.');
+    state.learningOps.overviewError = friendly;
+    state.learningOps.overview = null;
+    state.data = { content: [], learningOpsOverview: null, loadError: friendly, page: 0, size: 1, totalElements: 0, totalPages: 1 };
+    return null;
+  }
+}
+
+function getLearningOpsResultValue(result, keys, fallback = '-') {
+  if (!result || typeof result !== 'object') return fallback;
+  const keyList = Array.isArray(keys) ? keys : [keys];
+  for (const key of keyList) {
+    const value = result[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  const nested = result.result || result.data || result.payload;
+  if (nested && typeof nested === 'object') {
+    for (const key of keyList) {
+      const value = nested[key];
+      if (value !== undefined && value !== null && value !== '') return value;
+    }
+  }
+  return fallback;
+}
+
+async function runLearningOpsJob(jobType, windowKey = '7D') {
+  if (!jobType || state.learningOps.actionLoading) return;
+  state.learningOps.actionLoading = jobType;
+  state.learningOps.jobResult = null;
+  state.learningOps.overviewError = '';
+  setMessage('');
+  render();
+  try {
+    const response = normalizeAdminObjectResponse(await api(API_PATHS.learningOps.runJob, {
+      method: 'POST',
+      body: { jobType, window: windowKey, dryRun: false },
+    }));
+    state.learningOps.jobResult = response;
+    const status = String(response.status || response.jobStatus || '').toUpperCase();
+    if (status === 'RUNNING') {
+      setMessage('Job started. Refresh overview later.');
+    } else {
+      setMessage(`Learning Ops job ${status || 'completed'}.`);
+    }
+    await loadLearningOpsOverview({ silent: true });
+  } catch (error) {
+    state.learningOps.jobResult = { status: 'FAILED', jobType, error: toFriendlyErrorMessage(error) };
+    setMessage(error, true);
+  } finally {
+    state.learningOps.actionLoading = '';
+    render();
+  }
+}
+
+async function refreshLearningOpsOverview() {
+  state.loading = true;
+  state.error = '';
+  render();
+  try {
+    await loadLearningOpsOverview({ silent: true });
+  } finally {
+    state.loading = false;
+    render();
+  }
+}
+
+async function loadLearningOpsJobs() {
+  if (state.learningOps.jobsLoading) return;
+  state.learningOps.showRunHistory = true;
+  state.learningOps.jobsLoading = true;
+  state.learningOps.jobsError = '';
+  render();
+  try {
+    const response = await api(API_PATHS.learningOps.jobs, { params: { limit: 20 } });
+    state.learningOps.jobs = normalizeAdminListResponse(response);
+    if (!state.learningOps.jobs.length) {
+      const payload = normalizeAdminObjectResponse(response);
+      if (Array.isArray(payload.jobs)) state.learningOps.jobs = payload.jobs;
+      else if (Array.isArray(payload.latestJobs)) state.learningOps.jobs = payload.latestJobs;
+    }
+    state.learningOps.jobsLoaded = true;
+  } catch (error) {
+    state.learningOps.jobsError = error?.status === 404
+      ? 'Learning Ops job history endpoint is not deployed yet.'
+      : toFriendlyErrorMessage(error, 'Learning Ops jobs could not be loaded.');
+  } finally {
+    state.learningOps.jobsLoading = false;
+    render();
+  }
+}
+
+function hideLearningOpsRunHistory() {
+  state.learningOps.showRunHistory = false;
+  render();
 }
 
 
@@ -1589,7 +1725,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['emergencyConsole', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['emergencyConsole', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -4840,6 +4976,273 @@ function renderRateLimitOverrideDeleteModal() {
   ], submitRateLimitOverrideDeleteModal, true);
 }
 
+
+function getLearningOpsSection(overview, keys) {
+  const keyList = Array.isArray(keys) ? keys : [keys];
+  for (const key of keyList) {
+    const value = overview?.[key];
+    if (value && typeof value === 'object') return value;
+  }
+  return {};
+}
+
+function getLearningOpsField(obj, keys, fallback = '-') {
+  if (!obj || typeof obj !== 'object') return fallback;
+  const keyList = Array.isArray(keys) ? keys : [keys];
+  for (const key of keyList) {
+    const value = obj[key];
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return fallback;
+}
+
+function formatLearningOpsNumber(value) {
+  return value === '-' ? '-' : formatMetricValue(value);
+}
+
+function formatLearningOpsPercent(value) {
+  return value === '-' ? '-' : formatPercent(value);
+}
+
+function formatLearningOpsDate(value) {
+  return value === '-' ? '-' : formatDate(value);
+}
+
+function getLearningOpsStatusBadge(status) {
+  const value = String(status || 'UNKNOWN').toUpperCase();
+  const tone = ['SUCCESS', 'OK', 'HEALTHY', 'ACTIVE', 'SHADOW'].includes(value)
+    ? 'success'
+    : ['FAILED', 'ERROR', 'DANGER'].includes(value)
+      ? 'danger'
+      : ['WARNING', 'WARN', 'SKIPPED', 'RUNNING', 'DRAFT'].includes(value)
+        ? 'warn'
+        : 'neutral';
+  return el('span', { class: `badge ${tone}`, text: value || 'UNKNOWN' });
+}
+
+function renderLearningOpsMetricRows(rows) {
+  return el('div', { class: 'learning-ops-metrics' }, rows.map(([label, value, hint, danger]) => el('div', { class: danger ? 'learning-ops-metric danger' : 'learning-ops-metric' }, [
+    el('span', { text: label }),
+    el('strong', { text: value === undefined || value === null || value === '' ? '-' : value }),
+    hint ? el('small', { text: hint }) : null,
+  ])));
+}
+
+function renderLearningOpsHealthCard(title, subtitle, status, rows, actions = []) {
+  return el('article', { class: 'card learning-ops-card' }, [
+    el('div', { class: 'section-title-row learning-ops-card-head' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: subtitle }),
+        el('h3', { text: title }),
+      ]),
+      getLearningOpsStatusBadge(status),
+    ]),
+    renderLearningOpsMetricRows(rows),
+    actions.length ? el('div', { class: 'actions compact-actions learning-ops-card-actions' }, actions) : null,
+  ]);
+}
+
+function renderLearningOpsPipeline() {
+  const mainSteps = ['Mobile Feedback', 'Privacy Guard', 'Learning Events', 'Aggregates', 'Rule Candidates', 'Admin Approval', 'Active Global Rules', 'Mobile Sync'];
+  const mlSteps = ['Learning Events', 'Dataset Summary', 'Shadow Model', 'Shadow Evaluation', 'Canary / Active later'];
+  const renderSteps = (steps) => el('div', { class: 'learning-ops-flow' }, steps.map((step, index) => el('div', { class: 'learning-ops-flow-step' }, [
+    el('span', { text: step }),
+    index < steps.length - 1 ? el('b', { text: '\u2192', 'aria-hidden': 'true' }) : null,
+  ])));
+  return el('section', { class: 'card learning-ops-pipeline' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Closed loop' }), el('h3', { text: 'Learning pipeline' })]),
+      renderInfoHint('This page observes the closed loop only. Candidate approval remains in Global Learning Review and ML remains shadow-only in 4A.', { label: 'Learning pipeline details' }),
+    ]),
+    el('p', { class: 'muted section-helper', text: 'Current rule-learning loop' }),
+    renderSteps(mainSteps),
+    el('p', { class: 'muted section-helper', text: 'Future ML branch' }),
+    renderSteps(mlSteps),
+  ]);
+}
+
+function renderLearningOpsActionButton(label, jobType, windowKey = '7D', tone = '') {
+  const loading = state.learningOps.actionLoading === jobType;
+  const busy = Boolean(state.learningOps.actionLoading || state.loading);
+  return el('button', {
+    class: `btn ${tone}`.trim(),
+    text: loading ? 'Running...' : label,
+    disabled: busy,
+    onclick: () => runLearningOpsJob(jobType, windowKey),
+  });
+}
+
+function renderLearningOpsActions() {
+  return el('section', { class: 'card learning-ops-actions' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Manual protected jobs' }), el('h3', { text: 'Action panel' })]),
+      renderInfoHint('These buttons call one protected jobs endpoint. The backend should enforce cooldown, row limits, and single-flight lock. This page does not poll.', { label: 'Learning Ops job safety' }),
+    ]),
+    el('div', { class: 'learning-ops-action-grid' }, [
+      el('div', { class: 'learning-ops-action-group' }, [
+        el('strong', { text: 'Learning Health' }),
+        renderLearningOpsActionButton('Run All Health Check', 'REFRESH_ALL_SNAPSHOTS', '7D'),
+        el('button', { class: 'btn ghost', text: state.loading ? 'Refreshing...' : 'Refresh Overview', disabled: state.loading || Boolean(state.learningOps.actionLoading), onclick: refreshLearningOpsOverview }),
+      ]),
+      el('div', { class: 'learning-ops-action-group' }, [
+        el('strong', { text: 'Smart Capture' }),
+        renderLearningOpsActionButton('Generate Smart Capture Candidates', 'GENERATE_SMART_CAPTURE_CANDIDATES', '7D'),
+        el('button', { class: 'btn ghost', text: 'Open Global Learning Review', disabled: Boolean(state.learningOps.actionLoading), onclick: () => setActiveTab('smartCaptureRules') }),
+      ]),
+      el('div', { class: 'learning-ops-action-group' }, [
+        el('strong', { text: 'OCR Receipt' }),
+        renderLearningOpsActionButton('Generate OCR Candidates', 'GENERATE_OCR_RECEIPT_CANDIDATES', '7D'),
+      ]),
+      el('div', { class: 'learning-ops-action-group' }, [
+        el('strong', { text: 'Smart Capture Shadow ML' }),
+        renderLearningOpsActionButton('Build Dataset Summary', 'BUILD_SMART_CAPTURE_ML_DATASET_SUMMARY', '30D'),
+        renderLearningOpsActionButton('Train Shadow Model', 'TRAIN_SMART_CAPTURE_SHADOW_MODEL', '30D', 'secondary'),
+        renderLearningOpsActionButton('Evaluate Shadow Model', 'EVALUATE_SMART_CAPTURE_SHADOW_MODEL', '30D'),
+      ]),
+    ]),
+  ]);
+}
+
+function renderLearningOpsJobResult() {
+  const result = state.learningOps.jobResult;
+  if (!result) return null;
+  const status = getLearningOpsResultValue(result, ['status', 'jobStatus'], 'UNKNOWN');
+  const error = getLearningOpsResultValue(result, ['error', 'errorMessage', 'message'], '');
+  return el('section', { class: 'card learning-ops-job-result' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Last job response' }), el('h3', { text: getLearningOpsResultValue(result, ['jobType', 'job_type'], 'Learning Ops job') })]),
+      getLearningOpsStatusBadge(status),
+    ]),
+    renderMetaGrid([
+      ['Status', status],
+      ['Rows scanned', formatLearningOpsNumber(getLearningOpsResultValue(result, ['rowsScanned', 'rows_scanned']))],
+      ['Rows changed', formatLearningOpsNumber(getLearningOpsResultValue(result, ['rowsChanged', 'rows_changed']))],
+      ['Candidates created', formatLearningOpsNumber(getLearningOpsResultValue(result, ['candidatesCreated', 'candidates_created']))],
+      ['Duration', getLearningOpsResultValue(result, ['durationMs', 'duration_ms', 'durationMillis'], '-') === '-' ? '-' : `${formatLearningOpsNumber(getLearningOpsResultValue(result, ['durationMs', 'duration_ms', 'durationMillis']))} ms`],
+      ['Message / Error', error || '-'],
+    ]),
+  ]);
+}
+
+function renderLearningOpsRunHistory() {
+  const rows = state.learningOps.jobs || [];
+  return el('section', { class: 'card learning-ops-history' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Lazy loaded' }), el('h3', { text: 'Run History' })]),
+      el('div', { class: 'actions compact-actions' }, [
+        state.learningOps.showRunHistory
+          ? el('button', { class: 'btn ghost small', text: 'Hide', disabled: state.learningOps.jobsLoading, onclick: hideLearningOpsRunHistory })
+          : el('button', { class: 'btn ghost small', text: 'Open Run History', disabled: state.learningOps.jobsLoading, onclick: loadLearningOpsJobs }),
+        state.learningOps.showRunHistory ? el('button', { class: 'btn small', text: state.learningOps.jobsLoading ? 'Loading...' : 'Refresh Jobs', disabled: state.learningOps.jobsLoading, onclick: loadLearningOpsJobs }) : null,
+      ]),
+    ]),
+    !state.learningOps.showRunHistory ? el('p', { class: 'muted section-helper', text: 'Job history is not loaded on page open. Open it only when you need details.' }) : null,
+    state.learningOps.jobsError ? el('div', { class: 'notice warning inline-notice', text: state.learningOps.jobsError }) : null,
+    state.learningOps.showRunHistory && state.learningOps.jobsLoading ? renderLoadingState('Loading job history...', 'This is a single manual request, not background polling.') : null,
+    state.learningOps.showRunHistory && !state.learningOps.jobsLoading && !rows.length ? el('div', { class: 'card empty-state compact-empty' }, [el('strong', { text: 'No Learning Ops jobs found.' })]) : null,
+    state.learningOps.showRunHistory && !state.learningOps.jobsLoading && rows.length ? el('div', { class: 'table-wrap learning-ops-table-wrap' }, [
+      el('table', { class: 'admin-table learning-ops-table' }, [
+        el('thead', {}, [el('tr', {}, ['Job Type', 'Status', 'Window', 'Triggered By', 'Started At', 'Duration', 'Rows Scanned', 'Rows Changed', 'Candidates Created', 'Error'].map((header) => el('th', { text: header })))]),
+        el('tbody', {}, rows.map((job) => el('tr', {}, [
+          el('td', { text: getLearningOpsField(job, ['jobType', 'job_type']) }),
+          el('td', {}, [getLearningOpsStatusBadge(getLearningOpsField(job, ['status']))]),
+          el('td', { text: getLearningOpsField(job, ['windowKey', 'window_key', 'window']) }),
+          el('td', { text: getLearningOpsField(job, ['triggeredBy', 'triggered_by']) }),
+          el('td', { text: formatLearningOpsDate(getLearningOpsField(job, ['startedAt', 'started_at'])) }),
+          el('td', { text: getLearningOpsField(job, ['durationMs', 'duration_ms']) === '-' ? '-' : `${formatLearningOpsNumber(getLearningOpsField(job, ['durationMs', 'duration_ms']))} ms` }),
+          el('td', { text: formatLearningOpsNumber(getLearningOpsField(job, ['rowsScanned', 'rows_scanned'])) }),
+          el('td', { text: formatLearningOpsNumber(getLearningOpsField(job, ['rowsChanged', 'rows_changed'])) }),
+          el('td', { text: formatLearningOpsNumber(getLearningOpsField(job, ['candidatesCreated', 'candidates_created'])) }),
+          el('td', { text: getLearningOpsField(job, ['errorMessage', 'error_message'], '-') }),
+        ]))),
+      ]),
+    ]) : null,
+  ]);
+}
+
+function renderLearningOpsPage() {
+  const overview = state.data?.learningOpsOverview || state.learningOps.overview || {};
+  const smart = getLearningOpsSection(overview, ['smartCapture', 'smart_capture']);
+  const ocr = getLearningOpsSection(overview, ['ocrReceipt', 'ocr_receipt']);
+  const ml = getLearningOpsSection(overview, ['smartCaptureMl', 'smart_capture_ml', 'mlShadow']);
+  const overviewError = state.data?.loadError || state.learningOps.overviewError;
+  const internalFalseExpense = getLearningOpsField(ml, ['internalFalseExpenseRate7d', 'internal_false_expense_rate_7d', 'internalFalseExpenseRate'], '-');
+  const marketingFalseTransaction = getLearningOpsField(ml, ['marketingFalseTransactionRate7d', 'marketing_false_transaction_rate_7d', 'marketingFalseTransactionRate'], '-');
+  const dangerUnavailable = internalFalseExpense === '-' || marketingFalseTransaction === '-';
+  const dangerHigh = !dangerUnavailable && (Number(internalFalseExpense) > 0.02 || Number(marketingFalseTransaction) > 0.02);
+
+  const smartRows = [
+    ['Events 24h', formatLearningOpsNumber(getLearningOpsField(smart, ['events24h', 'events_24h']))],
+    ['Events 7d', formatLearningOpsNumber(getLearningOpsField(smart, ['events7d', 'events_7d']))],
+    ['Unique users 7d', formatLearningOpsNumber(getLearningOpsField(smart, ['uniqueUsers7d', 'unique_users_7d']))],
+    ['Privacy rejected 7d', formatLearningOpsNumber(getLearningOpsField(smart, ['privacyRejected7d', 'privacy_rejected_7d']))],
+    ['Pending candidates', formatLearningOpsNumber(getLearningOpsField(smart, ['pendingCandidates', 'pending_candidates']))],
+    ['Active rules', formatLearningOpsNumber(getLearningOpsField(smart, ['activeRules', 'active_rules']))],
+    ['Last candidate run', getLearningOpsField(smart, ['lastCandidateRunStatus', 'last_candidate_run_status'])],
+    ['Last run at', formatLearningOpsDate(getLearningOpsField(smart, ['lastCandidateRunAt', 'last_candidate_run_at']))],
+    ['Last event at', formatLearningOpsDate(getLearningOpsField(smart, ['lastEventAt', 'last_event_at']))],
+  ];
+  const ocrRows = [
+    ['Events 24h', formatLearningOpsNumber(getLearningOpsField(ocr, ['events24h', 'events_24h']))],
+    ['Events 7d', formatLearningOpsNumber(getLearningOpsField(ocr, ['events7d', 'events_7d']))],
+    ['Unique users 7d', formatLearningOpsNumber(getLearningOpsField(ocr, ['uniqueUsers7d', 'unique_users_7d']))],
+    ['Privacy rejected 7d', formatLearningOpsNumber(getLearningOpsField(ocr, ['privacyRejected7d', 'privacy_rejected_7d']))],
+    ['Pending candidates', formatLearningOpsNumber(getLearningOpsField(ocr, ['pendingCandidates', 'pending_candidates']))],
+    ['Active rules', formatLearningOpsNumber(getLearningOpsField(ocr, ['activeRules', 'active_rules']))],
+    ['Amount edited 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['amountEditedRate7d', 'amount_edited_rate_7d']))],
+    ['Parser changed 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['parserChangedRate7d', 'parser_changed_rate_7d']))],
+    ['Multi candidate 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['multiCandidateRate7d', 'multi_candidate_rate_7d']))],
+    ['Poor quality 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['poorQualityRate7d', 'poor_quality_rate_7d']))],
+    ['Last candidate run', getLearningOpsField(ocr, ['lastCandidateRunStatus', 'last_candidate_run_status'])],
+    ['Last run at', formatLearningOpsDate(getLearningOpsField(ocr, ['lastCandidateRunAt', 'last_candidate_run_at']))],
+    ['Last event at', formatLearningOpsDate(getLearningOpsField(ocr, ['lastEventAt', 'last_event_at']))],
+  ];
+  const mlRows = [
+    ['Enabled', getLearningOpsField(ml, ['enabled']) === '-' ? '-' : String(Boolean(getLearningOpsField(ml, ['enabled']))).toUpperCase()],
+    ['Latest model version', getLearningOpsField(ml, ['latestModelVersion', 'latest_model_version'])],
+    ['Model status', getLearningOpsField(ml, ['latestModelStatus', 'latest_model_status'])],
+    ['Mode', getLearningOpsField(ml, ['latestModelMode', 'latest_model_mode'])],
+    ['Training samples', formatLearningOpsNumber(getLearningOpsField(ml, ['trainingSampleCount', 'training_sample_count']))],
+    ['Usable samples', formatLearningOpsNumber(getLearningOpsField(ml, ['usableSampleCount', 'usable_sample_count']))],
+    ['Shadow samples 7d', formatLearningOpsNumber(getLearningOpsField(ml, ['shadowSamples7d', 'shadow_samples_7d']))],
+    ['Agreement 7d', formatLearningOpsPercent(getLearningOpsField(ml, ['agreementRate7d', 'agreement_rate_7d']))],
+    ['Expense precision', formatLearningOpsPercent(getLearningOpsField(ml, ['expensePrecision7d', 'expense_precision_7d']))],
+    ['Income precision', formatLearningOpsPercent(getLearningOpsField(ml, ['incomePrecision7d', 'income_precision_7d']))],
+    ['Internal transfer precision', formatLearningOpsPercent(getLearningOpsField(ml, ['internalTransferPrecision7d', 'internal_transfer_precision_7d']))],
+    ['Marketing precision', formatLearningOpsPercent(getLearningOpsField(ml, ['marketingPrecision7d', 'marketing_precision_7d']))],
+    ['Noise precision', formatLearningOpsPercent(getLearningOpsField(ml, ['noisePrecision7d', 'noise_precision_7d']))],
+    ['Internal false expense', formatLearningOpsPercent(internalFalseExpense), 'danger metric', true],
+    ['Marketing false transaction', formatLearningOpsPercent(marketingFalseTransaction), 'danger metric', true],
+    ['Last training at', formatLearningOpsDate(getLearningOpsField(ml, ['lastTrainingRunAt', 'last_training_run_at']))],
+    ['Last evaluation at', formatLearningOpsDate(getLearningOpsField(ml, ['lastEvaluationRunAt', 'last_evaluation_run_at']))],
+  ];
+
+  return el('div', { class: 'learning-ops-page' }, [
+    renderAdminControlHero('Learning Ops', 'Verify Smart Capture, OCR Global Learning, and Shadow ML health without heavy backend load.', 'Overview uses cached backend snapshots. Manual jobs are protected by cooldown, row limits, and single-flight lock.', [
+      el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh Overview', disabled: state.loading || Boolean(state.learningOps.actionLoading), onclick: refreshLearningOpsOverview }),
+      el('button', { class: 'btn small', text: 'Open Global Learning Review', disabled: Boolean(state.learningOps.actionLoading), onclick: () => setActiveTab('smartCaptureRules') }),
+    ]),
+    overviewError ? el('div', { class: 'notice warning inline-notice', text: overviewError }) : null,
+    state.loading && !overviewError && !Object.keys(overview || {}).length ? renderLoadingState('Loading Learning Ops overview...', 'This page calls only the cached overview endpoint on load.') : null,
+    el('div', { class: 'privacy-note compact-help-row' }, [
+      el('span', { text: 'No notification text, OCR text, merchant, payee, payer, exact amount, account/card number, transaction ID, image URL, embedding, or vector is displayed.' }),
+    ]),
+    renderLearningOpsPipeline(),
+    el('div', { class: 'learning-ops-grid' }, [
+      renderLearningOpsHealthCard('Smart Capture Learning', 'Global feedback loop', getLearningOpsField(smart, ['status'], 'UNKNOWN'), smartRows),
+      renderLearningOpsHealthCard('OCR Receipt Learning', 'Global OCR loop', getLearningOpsField(ocr, ['status'], 'UNKNOWN'), ocrRows),
+      renderLearningOpsHealthCard('Smart Capture Shadow ML', 'Future model safety', getLearningOpsField(ml, ['status', 'latestModelStatus', 'latest_model_status'], 'UNKNOWN'), mlRows),
+    ]),
+    dangerUnavailable || dangerHigh ? el('div', { class: 'compact-guidance warning learning-ops-safety-warning' }, [
+      el('strong', { text: 'Do not activate ML. Keep shadow-only.' }),
+      renderInfoHint('Danger metrics are unavailable or above the safe threshold. Level 4A is for observation and offline evaluation only; it should not change mobile/native behavior.', { compact: true, label: 'Shadow ML safety details' }),
+    ]) : null,
+    renderLearningOpsActions(),
+    renderLearningOpsJobResult(),
+    renderLearningOpsRunHistory(),
+  ]);
+}
+
 function renderAdminControlPage() {
   const items = state.data?.content || [];
   const children = [];
@@ -4886,6 +5289,8 @@ function renderAdminControlPage() {
     children.push(renderProductPolicyToolbar());
     children.push(renderPolicyShortcutGrid());
     children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
+  } else if (state.activeTab === 'learningOps') {
+    children.push(renderLearningOpsPage());
   } else if (state.activeTab === 'smartCaptureRules') {
     children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'Candidates contain source types, structural hashes, semantic slot hashes/summaries, resolver outcome counters, and privacy-safe distributions only. No notification text, OCR text, merchant, payee, payer, exact amount, account/card number, transaction ID, or image URL is displayed. Approved global rules stay review-only and cannot quick-save or auto-save.'));
     children.push(renderGlobalLearningSourceFilter());
@@ -4933,7 +5338,7 @@ function renderAdminControlPage() {
     children.push(renderPagination());
   }
 
-  if (state.loading && !items.length && state.activeTab !== 'featureAnalytics') {
+  if (state.loading && !items.length && !['featureAnalytics', 'learningOps'].includes(state.activeTab)) {
     children.push(renderLoadingState('Loading control data...', 'Please wait until all required sections finish loading.'));
   }
 

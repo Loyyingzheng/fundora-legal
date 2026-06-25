@@ -3729,3 +3729,138 @@ summary:focus-visible {
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* Level 4A Learning Ops: cached snapshots, protected jobs, no polling. */
+.learning-ops-page {
+  display: grid;
+  gap: 16px;
+}
+.learning-ops-pipeline,
+.learning-ops-actions,
+.learning-ops-history,
+.learning-ops-job-result,
+.learning-ops-card {
+  display: grid;
+  gap: 14px;
+}
+.learning-ops-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px;
+}
+.learning-ops-card-head {
+  align-items: flex-start;
+}
+.learning-ops-card h3,
+.learning-ops-pipeline h3,
+.learning-ops-actions h3,
+.learning-ops-history h3,
+.learning-ops-job-result h3 {
+  margin: 0;
+  color: var(--heading);
+}
+.learning-ops-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.learning-ops-metric {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card-soft);
+}
+.learning-ops-metric span {
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--muted-strong);
+}
+.learning-ops-metric strong {
+  font-size: 18px;
+  color: var(--heading);
+  overflow-wrap: anywhere;
+}
+.learning-ops-metric small {
+  color: var(--danger);
+  font-weight: 750;
+}
+.learning-ops-metric.danger {
+  border-color: rgba(220, 38, 38, 0.24);
+  background: var(--danger-soft);
+}
+.learning-ops-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.learning-ops-flow-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+}
+.learning-ops-flow-step span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card-soft);
+  color: var(--heading);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.learning-ops-flow-step b {
+  color: var(--muted-strong);
+}
+.learning-ops-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+.learning-ops-action-group {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--card-soft);
+}
+.learning-ops-action-group strong {
+  color: var(--heading);
+}
+.learning-ops-action-group .btn {
+  width: 100%;
+}
+.learning-ops-table {
+  min-width: 960px;
+}
+.learning-ops-table td:last-child {
+  min-width: 220px;
+  overflow-wrap: anywhere;
+}
+.learning-ops-safety-warning {
+  border-color: rgba(217, 119, 6, 0.32);
+}
+@media (max-width: 720px) {
+  .learning-ops-grid,
+  .learning-ops-action-grid,
+  .learning-ops-metrics {
+    grid-template-columns: 1fr;
+  }
+  .learning-ops-flow {
+    align-items: stretch;
+  }
+  .learning-ops-flow-step {
+    width: 100%;
+  }
+  .learning-ops-flow-step span {
+    flex: 1;
+    justify-content: center;
+  }
+}
