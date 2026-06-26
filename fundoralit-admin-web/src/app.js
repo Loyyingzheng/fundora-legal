@@ -430,6 +430,10 @@ function normalizedTrim(value) {
   return String(value ?? '').trim();
 }
 
+function normalizedEmail(value) {
+  return normalizedTrim(value).toLowerCase();
+}
+
 function blankToNull(value) {
   const text = normalizedTrim(value);
   return text ? text : null;
@@ -663,7 +667,7 @@ const NAV_GROUPS = [
     title: 'User & Usage',
     items: [
       { id: 'usage', label: 'Usage & Quota', helper: 'Support lookup', description: 'Check user usage counters, usage events, remaining quota, and safe quota adjustment history.', info: 'Usage views are for support and debugging. Adjustments should be rare and always require an audit reason.' },
-      { id: 'subscriptionSupport', label: 'Subscription Support', helper: 'Entitlement approval', description: 'Search user subscription state, request entitlement corrections, and approve high-risk subscription support actions.', info: 'Normal support admins can request only. Subscription approvers review and apply changes with audit logs. Do not duplicate this workflow in Reward Surveys, Feedback, Usage, or Feature Limits.' },
+      { id: 'subscriptionSupport', label: 'Subscription Support', helper: 'Entitlement approval', description: 'Search user subscription state, request entitlement corrections, and approve high-risk subscription support actions.', info: 'Support admins can request only and need a separate reviewer. Super admins can request and self-approve emergency corrections. Do not duplicate this workflow in Reward Surveys, Feedback, Usage, or Feature Limits.' },
     ],
   },
   {
@@ -4430,8 +4434,10 @@ function renderSubscriptionSupportRequestItem(item) {
   const view = normalizeSubscriptionRequestItem(item);
   const status = String(view.status || 'PENDING').toUpperCase();
   const permissions = state.data?.permissions || {};
-  const canApprove = Boolean(permissions.approverAdmin) && status === 'PENDING';
-  const canCancelRequest = Boolean(permissions.supportAdmin) && status === 'PENDING';
+  const isOwnRequest = normalizedEmail(view.requestedByEmail) && normalizedEmail(view.requestedByEmail) === normalizedEmail(state.user?.email);
+  const canSelfReview = Boolean(permissions.superAdmin);
+  const canApprove = Boolean(permissions.approverAdmin) && status === 'PENDING' && (!isOwnRequest || canSelfReview);
+  const canCancelRequest = Boolean(permissions.supportAdmin) && status === 'PENDING' && isOwnRequest;
   const titleLeft = view.requestType || 'Subscription support request';
   const titleRight = view.targetUserEmail || view.targetUserId || 'Unknown user';
   const hasUsefulDetail = Boolean(view.targetUserEmail || view.currentTier || view.requestedTier || view.reason || view.beforeJson || view.afterJson);
@@ -4455,7 +4461,9 @@ function renderSubscriptionSupportRequestItem(item) {
         canApprove ? el('button', { class: 'btn success small', text: 'Approve & apply', onclick: () => openSubscriptionSupportReviewModal(item, 'approve') }) : null,
         canApprove ? el('button', { class: 'btn danger small', text: 'Reject request', onclick: () => openSubscriptionSupportReviewModal(item, 'reject') }) : null,
         canCancelRequest ? el('button', { class: 'btn ghost small', text: 'Cancel request', onclick: () => performPostAction(API_PATHS.subscriptionSupport.cancel(view.id), 'Subscription support request cancelled.') }) : null,
-        !canApprove && status === 'PENDING' ? el('span', { class: 'muted', text: permissions.approverAdmin ? '' : 'Only subscription approver can approve/apply.' }) : null,
+        !canApprove && status === 'PENDING' ? el('span', { class: 'muted', text: permissions.approverAdmin
+          ? 'Support admin requesters need another subscription approver or super admin to approve/apply.'
+          : 'Only subscription approver or super admin can approve/apply.' }) : null,
       ]),
     ],
   });
@@ -4473,7 +4481,7 @@ function renderSubscriptionSupportRequestModal() {
   const evidence = el('textarea', { rows: '3', placeholder: 'Optional evidence, support ticket, payment proof, or sync issue note.' });
   evidence.value = modal.evidenceNote || ''; evidence.addEventListener('input', () => { modal.evidenceNote = evidence.value; });
   return renderControlModal('Create subscription support request', 'Entitlement Support', [
-    renderPolicySafetyNote('This creates a request only. Subscription is not changed until a separate approver approves it. Requester cannot approve their own request.'),
+    renderPolicySafetyNote('This creates a request only. Subscription is not changed until approval. Super admins can approve their own requests; support admins need another subscription approver or super admin.'),
     renderMetaGrid([['User Email', modal.targetUserEmail], ['Current Tier', modal.summary?.tier], ['Current Status', modal.summary?.status], ['Current Expiry', formatDate(modal.summary?.expiresAt)]]),
     el('div', { class: 'field' }, [el('label', { text: 'Request type' }), type]),
     ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS'].includes(modal.requestType) ? el('div', { class: modalFieldClass('requestedDays') }, [el('label', { text: 'Requested days' }), days, renderFieldError('requestedDays')]) : null,
@@ -4518,7 +4526,7 @@ function renderSubscriptionSupportReviewModal() {
   const note = el('textarea', { rows: '4', placeholder: modal.decision === 'reject' ? 'Required rejection note.' : 'Optional approval note.', 'data-field-key': 'reviewNote' });
   note.value = modal.reviewNote || ''; note.addEventListener('input', () => { modal.reviewNote = note.value; });
   return renderControlModal(modal.decision === 'approve' ? 'Approve subscription request' : 'Reject subscription request', 'Entitlement Approval', [
-    renderPolicySafetyNote('Approve only after verifying payment/support evidence. This action is audited and requester cannot approve their own request.'),
+    renderPolicySafetyNote('Approve only after verifying payment/support evidence. This action is audited. Super admin self-approval is allowed for emergency support; support admin self-review is blocked.'),
     renderMetaGrid([
       ['User Email', item.targetUserEmail], ['Request Type', item.requestType],
       ['Current', `${item.currentTier || '-'} / ${item.currentStatus || '-'}`],
@@ -6319,7 +6327,7 @@ function renderAdminControlPage() {
     children.push(renderControlList(items, renderUsageItem, 'Search a user or feature to view usage counters.'));
     children.push(renderUsageEvents(state.data?.events || []));
   } else if (state.activeTab === 'subscriptionSupport') {
-    children.push(renderAdminControlHero('Subscription Support', 'Request and approve user entitlement corrections.', 'This page avoids direct one-person edits: support admins create requests, subscription approvers approve/reject, and every applied change is audited.'));
+    children.push(renderAdminControlHero('Subscription Support', 'Request and approve user entitlement corrections.', 'Support admins create requests and need a separate approver/super admin. Super admins can open and approve their own emergency correction. Every applied change is audited.'));
     children.push(renderSubscriptionSupportToolbar());
     children.push(el('div', { class: 'privacy-note' }, [
       el('span', { text: 'How to use: search user email \u2192 create request \u2192 approver opens pending request \u2192 Approve & apply. To cancel a user subscription, create \u201CRequest cancel / Free\u201D; to cancel an unapproved request, use \u201CCancel request\u201D.' }),
