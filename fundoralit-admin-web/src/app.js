@@ -276,6 +276,7 @@ function goToPlanMatrixPolicy(policyKey, moduleKey = '') {
   state.adminFilters.planMatrixStatus = '';
   state.page = 0;
   state.data = { content: [] };
+  state.dataScope = state.activeTab;
   loadData();
 }
 
@@ -285,6 +286,7 @@ function goToFeatureLimitsForPolicy(policyKey) {
   state.adminFilters.plan = '';
   state.page = 0;
   state.data = { content: [] };
+  state.dataScope = state.activeTab;
   loadData();
 }
 
@@ -293,6 +295,7 @@ function goToProductPoliciesForPolicy(policyKey) {
   state.adminFilters.productPolicyKey = String(policyKey || '').trim();
   state.page = 0;
   state.data = { content: [] };
+  state.dataScope = state.activeTab;
   loadData();
 }
 
@@ -378,6 +381,9 @@ const state = {
     subscriptionUserStatus: '',
   },
   navOpen: false,
+  loadRequestSeq: 0,
+  activeLoadRequest: null,
+  dataScope: '',
 };
 
 const authBox = document.getElementById('authBox');
@@ -387,6 +393,63 @@ const headerEyebrow = document.getElementById('headerEyebrow');
 const headerTitle = document.getElementById('headerTitle');
 const headerSubtitle = document.getElementById('headerSubtitle');
 const headerInfoSlot = document.getElementById('headerInfoSlot');
+
+function beginLoadRequest(tab = state.activeTab) {
+  state.loadRequestSeq = Number(state.loadRequestSeq || 0) + 1;
+  const request = {
+    id: state.loadRequestSeq,
+    tab,
+    userEmail: state.user?.email || '',
+  };
+  state.activeLoadRequest = request;
+  return request;
+}
+
+function invalidateLoadRequests() {
+  state.loadRequestSeq = Number(state.loadRequestSeq || 0) + 1;
+  state.activeLoadRequest = null;
+}
+
+function isLoadRequestCurrent(request) {
+  return Boolean(
+    request
+    && state.activeLoadRequest
+    && state.activeLoadRequest.id === request.id
+    && state.activeLoadRequest.tab === request.tab
+    && state.activeTab === request.tab
+    && state.user
+    && (state.user.email || '') === request.userEmail
+  );
+}
+
+function setScopedData(data, request) {
+  if (!isLoadRequestCurrent(request)) return false;
+  state.data = data;
+  state.dataScope = request.tab;
+  return true;
+}
+
+function clearScopedData(tab = state.activeTab) {
+  state.data = null;
+  state.dataScope = tab;
+}
+
+function getScopedData() {
+  return state.dataScope === state.activeTab ? state.data : null;
+}
+
+function ensureActiveDataScope() {
+  if (state.dataScope === state.activeTab) return;
+  clearScopedData(state.activeTab);
+}
+
+function finishLoadRequest(request, { renderAfter = true } = {}) {
+  if (!isLoadRequestCurrent(request)) return false;
+  state.loading = false;
+  if (state.activeLoadRequest?.id === request.id) state.activeLoadRequest = null;
+  if (renderAfter) render();
+  return true;
+}
 
 
 const ADMIN_ENUMS = {
@@ -715,9 +778,12 @@ function setActiveTab(tabId) {
     render();
     return;
   }
+  invalidateLoadRequests();
   state.activeTab = tabId;
   state.page = 0;
-  state.data = null;
+  clearScopedData(tabId);
+  state.loading = false;
+  state.analyticsLoading = false;
   state.message = '';
   state.error = '';
   state.analyticsError = '';
@@ -946,9 +1012,12 @@ async function getFirebaseRestIdToken(forceRefresh = false) {
 }
 
 async function signOutAdmin() {
+  invalidateLoadRequests();
   clearAuthSession();
   state.user = null;
-  state.data = null;
+  clearScopedData(state.activeTab);
+  state.loading = false;
+  state.analyticsLoading = false;
   state.feedbackOptions = null;
   state.message = '';
   state.error = '';
@@ -1068,8 +1137,9 @@ function setMessage(message, isError = false) {
 
 async function loadData() {
   if (!state.user) return;
+  const loadRequest = beginLoadRequest(state.activeTab);
   if (state.activeTab === 'feedback') {
-    loadFeedbackOptions().catch(() => {});
+    loadFeedbackOptions(loadRequest).catch(() => {});
   }
   state.loading = true;
   state.error = '';
@@ -1077,11 +1147,11 @@ async function loadData() {
 
   try {
     if (state.activeTab === 'analytics') {
-      await loadAnalyticsData();
+      await loadAnalyticsData(loadRequest);
       return;
     }
     if (isAdminControlTab()) {
-      await loadAdminControlData();
+      await loadAdminControlData(loadRequest);
       return;
     }
 
@@ -1103,16 +1173,15 @@ async function loadData() {
         params: { page: state.page, size: 50, sort: 'updatedAt,desc' },
       });
     }
-    state.data = unwrapPage(response);
+    setScopedData(unwrapPage(response), loadRequest);
   } catch (error) {
-    state.data = null;
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    clearScopedData(loadRequest.tab);
     setMessage(error.message || 'Failed to load admin data.', true);
   } finally {
-    state.loading = false;
-    render();
+    finishLoadRequest(loadRequest);
   }
 }
-
 
 async function loadFeedbackOptions() {
   if (state.feedbackOptions || !state.user) return state.feedbackOptions;
@@ -1125,9 +1194,15 @@ async function loadFeedbackOptions() {
   return state.feedbackOptions;
 }
 
-async function loadAnalyticsData() {
+async function loadAnalyticsData(loadRequest = null) {
+  if (!state.user) return;
+  const ownsRequest = !loadRequest;
+  const request = loadRequest || beginLoadRequest('analytics');
+  if (state.activeTab !== 'analytics') return;
+  state.loading = true;
   state.analyticsLoading = true;
   state.analyticsError = '';
+  state.error = '';
   render();
 
   const clampedRange = clampAnalyticsRange(state.analyticsDateRange);
@@ -1156,6 +1231,8 @@ async function loadAnalyticsData() {
   });
 
   const results = await Promise.allSettled(requests);
+  if (!isLoadRequestCurrent(request)) return;
+
   const failedSections = [];
   const nextData = { overview: null, retention: null, funnel: null, features: null, invites: null, smartCapture: null };
 
@@ -1177,20 +1254,19 @@ async function loadAnalyticsData() {
   }
 
   state.analyticsLoading = false;
-  state.loading = false;
-  render();
+  if (ownsRequest) finishLoadRequest(request);
 }
 
 
-async function loadAdminControlData() {
+async function loadAdminControlData(loadRequest) {
   const filters = state.adminFilters;
   let response;
   if (state.activeTab === 'emergencyConsole') {
-    await loadEmergencyConsoleData();
+    await loadEmergencyConsoleData(loadRequest);
     return;
   }
   if (state.activeTab === 'planMatrix') {
-    await loadPlanMatrixData();
+    await loadPlanMatrixData(loadRequest);
     return;
   }
   if (state.activeTab === 'policyVersions') {
@@ -1201,19 +1277,21 @@ async function loadAdminControlData() {
         policyKey: filters.policyVersionPolicyKey,
       },
     });
+    if (!isLoadRequestCurrent(loadRequest)) return;
     const versions = normalizeAdminListResponse(response);
-    state.data = { content: versions, page: 0, size: 200, totalElements: versions.length, totalPages: 1 };
+    setScopedData({ content: versions, page: 0, size: 200, totalElements: versions.length, totalPages: 1 }, loadRequest);
     return;
   }
   if (state.activeTab === 'reviewPromptPolicy') {
-    await loadReviewPromptPolicyData();
+    await loadReviewPromptPolicyData(loadRequest);
     return;
   }
   if (state.activeTab === 'rateLimitOverrides') {
     response = await api(API_PATHS.rateLimitOverrides.list);
+    if (!isLoadRequestCurrent(loadRequest)) return;
     const allItems = normalizeAdminListResponse(response);
     const filteredItems = allItems.filter((item) => String(item.routeGroup || item.route_group || '').toLowerCase().includes(String(filters.rateLimitRouteGroup || '').toLowerCase()));
-    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
+    setScopedData({ content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 }, loadRequest);
     return;
   }
   if (state.activeTab === 'featureLimits') {
@@ -1237,7 +1315,8 @@ async function loadAdminControlData() {
       const plan = item.plan || item.plan_key || item.planKey || '';
       return equalsFilter(key, filters.featureLimitKey) && planFilterMatches(plan, filters.plan);
     });
-    state.data = {
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({
       content: filteredItems,
       planFilterWarning: planOptions.warning || '',
       planFilterEndpointError: planOptions.error || '',
@@ -1245,7 +1324,7 @@ async function loadAdminControlData() {
       size: 100,
       totalElements: filteredItems.length,
       totalPages: 1,
-    };
+    }, loadRequest);
     return;
   }
   if (state.activeTab === 'featureFlags') {
@@ -1257,7 +1336,8 @@ async function loadAdminControlData() {
       const targetPlan = item.targetPlan || item.target_plan || '';
       return equalsFilter(key, filters.featureFlagKey) && equalsFilter(targetPlan, filters.plan);
     });
-    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({ content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 }, loadRequest);
     return;
   }
   if (state.activeTab === 'productPolicies') {
@@ -1265,11 +1345,12 @@ async function loadAdminControlData() {
     const allItems = normalizeAdminListResponse(response);
     state.adminOptions.productPolicyKeys = uniqueSortedOptions(allItems.map((item) => item.policyKey || item.policy_key || getItemId(item)));
     const filteredItems = allItems.filter((item) => equalsFilter(item.policyKey || item.policy_key || getItemId(item), filters.productPolicyKey));
-    state.data = { content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 };
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({ content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 }, loadRequest);
     return;
   }
   if (state.activeTab === 'learningOps') {
-    await loadLearningOpsOverview();
+    await loadLearningOpsOverview({ loadRequest });
     return;
   }
   if (state.activeTab === 'smartCaptureRules') {
@@ -1298,19 +1379,22 @@ async function loadAdminControlData() {
       ...(activePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture', globalLearningKind: 'smart_capture' })),
       ...(ocrActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' })),
     ].filter(matchesGlobalLearningSource);
-    state.data = {
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({
       content: pendingItems,
       activeRules,
       page: 0,
       size: 500,
       totalElements: pendingItems.length,
       totalPages: 1,
-    };
+    }, loadRequest);
     return;
   }
   if (state.activeTab === 'announcements') {
     response = await api(API_PATHS.announcements.list);
-    state.data = { content: normalizeAdminListResponse(response), page: 0, size: 100, totalElements: normalizeAdminListResponse(response).length, totalPages: 1 };
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    const announcementItems = normalizeAdminListResponse(response);
+    setScopedData({ content: announcementItems, page: 0, size: 100, totalElements: announcementItems.length, totalPages: 1 }, loadRequest);
     return;
   }
   if (state.activeTab === 'usage') {
@@ -1320,14 +1404,16 @@ async function loadAdminControlData() {
     const events = filters.userEmail || filters.featureKey || filters.periodKey
       ? await api(API_PATHS.usage.events, { params: { userEmail: filters.userEmail, featureKey: filters.featureKey, periodKey: filters.periodKey } }).catch(() => [])
       : [];
-    state.data = {
-      content: normalizeAdminListResponse(counters),
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    const counterItems = normalizeAdminListResponse(counters);
+    setScopedData({
+      content: counterItems,
       events: normalizeAdminListResponse(events),
       page: 0,
       size: 100,
-      totalElements: normalizeAdminListResponse(counters).length,
+      totalElements: counterItems.length,
       totalPages: 1,
-    };
+    }, loadRequest);
     return;
   }
   if (state.activeTab === 'subscriptionSupport') {
@@ -1340,7 +1426,8 @@ async function loadAdminControlData() {
     const userPayload = normalizeAdminObjectResponse(users);
     const requestItems = Array.isArray(requestPayload.items) ? requestPayload.items : normalizeAdminListResponse(requests);
     const subscriptionUsers = Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users);
-    state.data = {
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({
       content: requestItems,
       subscriptionUsers,
       userSummary: user && !user.lookupError ? normalizeAdminObjectResponse(user) : null,
@@ -1350,21 +1437,22 @@ async function loadAdminControlData() {
       size: 200,
       totalElements: requestItems.length,
       totalPages: 1,
-    };
+    }, loadRequest);
     return;
   }
   if (state.activeTab === 'featureAnalytics') {
     response = await api(API_PATHS.featureInteractions.summary, {
       params: { from: filters.dateFrom, to: filters.dateTo, featureKey: filters.featureKey },
     });
-    state.data = { content: [], summary: normalizeAdminObjectResponse(response), page: 0, size: 100, totalElements: 0, totalPages: 1 };
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({ content: [], summary: normalizeAdminObjectResponse(response), page: 0, size: 100, totalElements: 0, totalPages: 1 }, loadRequest);
     return;
   }
   if (state.activeTab === 'auditLogs') {
     response = await api(API_PATHS.auditLogs.list, {
       params: { action: filters.action, targetType: filters.targetType, page: state.page, size: state.size },
     });
-    state.data = unwrapPage(response);
+    setScopedData(unwrapPage(response), loadRequest);
   }
 }
 
@@ -1374,23 +1462,29 @@ function normalizeLearningOpsOverview(response) {
   return value && typeof value === 'object' ? value : {};
 }
 
-async function loadLearningOpsOverview({ silent = false } = {}) {
+async function loadLearningOpsOverview({ silent = false, loadRequest = null } = {}) {
+  const ownsRequest = !loadRequest;
+  const request = loadRequest || beginLoadRequest('learningOps');
   if (!silent) {
     state.learningOps.overviewError = '';
   }
   try {
     const overview = normalizeLearningOpsOverview(await api(API_PATHS.learningOps.overview));
+    if (!isLoadRequestCurrent(request)) return null;
     state.learningOps.overview = overview;
     state.learningOps.overviewError = '';
-    state.data = { content: [], learningOpsOverview: overview, page: 0, size: 1, totalElements: 0, totalPages: 1 };
+    setScopedData({ content: [], learningOpsOverview: overview, page: 0, size: 1, totalElements: 0, totalPages: 1 }, request);
+    if (ownsRequest) finishLoadRequest(request);
     return overview;
   } catch (error) {
+    if (!isLoadRequestCurrent(request)) return null;
     const friendly = error?.status === 404
       ? 'Learning Ops backend endpoint is not deployed yet. Deploy the 4A backend first, then refresh this page.'
       : toFriendlyErrorMessage(error, 'Learning Ops overview could not be loaded.');
     state.learningOps.overviewError = friendly;
     state.learningOps.overview = null;
-    state.data = { content: [], learningOpsOverview: null, loadError: friendly, page: 0, size: 1, totalElements: 0, totalPages: 1 };
+    setScopedData({ content: [], learningOpsOverview: null, loadError: friendly, page: 0, size: 1, totalElements: 0, totalPages: 1 }, request);
+    if (ownsRequest) finishLoadRequest(request);
     return null;
   }
 }
@@ -1688,7 +1782,7 @@ function renderAuth() {
       try {
         await signInAdminWithPassword(email.value, password.value);
         state.page = 0;
-        state.data = null;
+        clearScopedData(state.activeTab);
         state.message = '';
         state.error = '';
         render();
@@ -2006,7 +2100,7 @@ function getRulesForKind(kind) {
   return (state.data?.activeRules || []).filter((item) => item.globalLearningKind === kind);
 }
 
-async function loadEmergencyConsoleData() {
+async function loadEmergencyConsoleData(loadRequest) {
   const results = await Promise.allSettled([
     api(API_PATHS.featureFlags.list),
     api(API_PATHS.productPolicies.list).catch(() => []),
@@ -2031,6 +2125,7 @@ async function loadEmergencyConsoleData() {
     if (payload?.loadError) loadErrors.push(payload.loadError);
   });
 
+  if (!isLoadRequestCurrent(loadRequest)) return;
   state.adminOptions.featureFlagKeys = uniqueSortedOptions(featureFlags.map(getFeatureFlagKey));
   state.adminOptions.productPolicyKeys = uniqueSortedOptions(productPolicies.map(getPolicyKey));
   const activeRules = [
@@ -2038,7 +2133,7 @@ async function loadEmergencyConsoleData() {
     ...((ocrActive.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' }))),
   ];
 
-  state.data = {
+  setScopedData({
     content: featureFlags,
     featureFlags,
     featureFlagMap: buildFlagMap(featureFlags),
@@ -2052,7 +2147,7 @@ async function loadEmergencyConsoleData() {
     size: featureFlags.length,
     totalElements: featureFlags.length,
     totalPages: 1,
-  };
+  }, loadRequest);
 }
 
 function validateEmergencyPolicyJsonForAdmin(valueJson) {
@@ -3339,7 +3434,7 @@ function renderControlToolbar(children, extraClass = '') {
 
 
 
-async function loadPlanMatrixData() {
+async function loadPlanMatrixData(loadRequest) {
   const safe = async (path, fallback, label) => {
     try {
       return { value: await api(path), error: '' };
@@ -3360,6 +3455,7 @@ async function loadPlanMatrixData() {
   const matrixPlans = planMatrix.plans.length ? planMatrix.plans : subscriptionPlans;
   const mergedMatrix = { ...planMatrix, plans: matrixPlans };
   const matrixItems = flattenPlanMatrixItems(mergedMatrix, policyDefinitions, planPolicyValues);
+  if (!isLoadRequestCurrent(loadRequest)) return;
   state.adminOptions.planMatrixPolicyKeys = uniqueSortedOptions([
     ...policyDefinitions.map((item) => item.policyKey),
     ...planPolicyValues.map((item) => item.policyKey),
@@ -3367,7 +3463,7 @@ async function loadPlanMatrixData() {
   ]);
   state.adminOptions.planMatrixPlanKeys = uniqueSortedOptions(matrixPlans.map((item) => item.planKey));
   state.adminOptions.planMatrixModules = uniqueSortedOptions(matrixItems.map((item) => item.moduleKey));
-  state.data = {
+  setScopedData({
     content: matrixItems,
     planMatrix: mergedMatrix,
     policyDefinitions,
@@ -3383,7 +3479,7 @@ async function loadPlanMatrixData() {
     size: matrixItems.length,
     totalElements: matrixItems.length,
     totalPages: 1,
-  };
+  }, loadRequest);
 }
 
 function normalizePlanMatrix(response) {
@@ -4965,8 +5061,6 @@ function renderOcrGlobalLearningRuleCandidate(item, groups) {
         ['Created', formatDate(item.createdAt || item.created_at)],
       ]),
       el('div', { class: 'compact-distribution-stack' }, [
-        renderCompactDistributionChips('Action', groups.action),
-        renderCompactDistributionChips('Confidence', groups.confidence),
         renderCompactDistributionChips('Category family', groups.categoryFamily),
         renderCompactDistributionChips('Wallet type', groups.walletType),
       ]),
@@ -4992,7 +5086,7 @@ function renderOcrGlobalLearningRuleCandidate(item, groups) {
         }) }),
       ]),
       el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: 'OCR safety: no OCR text, merchant, payee, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed.' }),
+        el('span', { text: 'OCR safety: no OCR text, merchant, payee, note, exact amount, account/card number, receipt id, image URL/path, embedding, or vector is displayed.' }),
       ]),
       el('div', { class: 'actions' }, [
         el('button', { class: 'btn primary small', text: 'Approve review-only OCR rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
@@ -5102,8 +5196,13 @@ function renderGlobalLearningActiveRule(item) {
   const signature = isOcr
     ? (item.structureSignatureHash || item.structure_signature_hash || '-')
     : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-');
-  const allowQuickAction = item.allowQuickAction ?? item.allow_quick_action;
-  const allowAutoSave = item.allowAutoSave ?? item.allow_auto_save;
+  const rawAllowQuickAction = item.allowQuickAction ?? item.allow_quick_action;
+  const rawAllowAutoSave = item.allowAutoSave ?? item.allow_auto_save;
+  const allowQuickAction = isOcr ? false : rawAllowQuickAction;
+  const allowAutoSave = isOcr ? false : rawAllowAutoSave;
+  const ocrServerFlagWarning = isOcr && (rawAllowQuickAction || rawAllowAutoSave)
+    ? 'Server returned an unsafe OCR quick/auto flag. Admin UI treats OCR global rules as review-only; verify backend policy before rollout.'
+    : null;
   return renderCollapsibleItem({
     title: `${renderGlobalLearningSourceLabel(sourceType)} · ${ruleCategory} · ${action}`,
     subtitle: `${signature} · ${patternHash}`,
@@ -5120,8 +5219,9 @@ function renderGlobalLearningActiveRule(item) {
         ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
       isOcr ? el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: 'OCR active rule is global suggestion only. It must stay review-only and must not expose receipt content.' }),
+        el('span', { text: 'OCR active rule is global suggestion only. It must stay review-only and must not expose OCR text, merchant, payee, note, exact amount, image URL/path, account/card number, embedding, or vector.' }),
       ]) : null,
+      ocrServerFlagWarning ? el('div', { class: 'notice warning inline-notice compact-text', text: ocrServerFlagWarning }) : null,
     ],
   });
 }
@@ -5564,10 +5664,11 @@ function renderEmergencyRuleActionModal() {
   ], submitEmergencyRuleActionModal, true);
 }
 
-async function loadReviewPromptPolicyData() {
+async function loadReviewPromptPolicyData(loadRequest) {
   try {
     const response = await api(API_PATHS.reviewPromptPolicy.get);
-    state.data = {
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({
       content: [],
       reviewPromptPolicy: normalizeAdminObjectResponse(response),
       reviewPromptSource: 'dedicated',
@@ -5575,11 +5676,12 @@ async function loadReviewPromptPolicyData() {
       size: 1,
       totalElements: 1,
       totalPages: 1,
-    };
+    }, loadRequest);
     return;
   } catch (error) {
     if (Number(error.status) !== 404) throw error;
     const policies = await api(API_PATHS.productPolicies.list).catch(() => []);
+    if (!isLoadRequestCurrent(loadRequest)) return;
     const items = normalizeAdminListResponse(policies);
     const policyItem = items.find((item) => String(item.policyKey || item.policy_key || '').toLowerCase() === 'review_prompt_policy');
     const fallbackValue = policyItem?.value || policyItem?.policyValue || policyItem?.policy_value || {
@@ -5591,7 +5693,7 @@ async function loadReviewPromptPolicyData() {
       minPositiveActionCount: 1,
       groupInvitePromptCooldownDays: 30,
     };
-    state.data = {
+    setScopedData({
       content: [],
       reviewPromptPolicy: fallbackValue,
       reviewPromptSource: policyItem ? 'productPolicy' : 'localDefault',
@@ -5603,7 +5705,7 @@ async function loadReviewPromptPolicyData() {
       size: 1,
       totalElements: policyItem ? 1 : 0,
       totalPages: 1,
-    };
+    }, loadRequest);
   }
 }
 
@@ -6316,7 +6418,7 @@ function renderAdminControlPage() {
     children.push(renderGlobalLearningSourceFilter());
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Approval creates suggestion rules only: forceReview=true, allowQuickAction=false, allowAutoSave=false. Personal local learning remains higher priority than global rules.'));
-    children.push(renderPolicySafetyNote('OCR safety: no OCR text, merchant, payee, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed. Local OCR still works when OCR global rules are disabled.'));
+    children.push(renderPolicySafetyNote('OCR safety: no OCR text, merchant, payee, note, exact amount, account/card number, receipt id, image URL/path, embedding, or vector is displayed. Local OCR still works when OCR global rules are disabled.'));
     children.push(renderControlList(items, renderGlobalLearningRuleCandidate, 'No pending global learning rule candidates.'));
     children.push(el('h2', { text: 'Active rules' }));
     children.push(renderControlList(state.data?.activeRules || [], renderGlobalLearningActiveRule, 'No active global learning rules.'));
@@ -6482,7 +6584,9 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
 }
 
 function renderSignedIn() {
-  const items = state.data?.content || [];
+  ensureActiveDataScope();
+  const scopedData = getScopedData();
+  const items = scopedData?.content || [];
   const children = [...renderNotice()];
 
   if (state.activeTab === 'analytics') {
