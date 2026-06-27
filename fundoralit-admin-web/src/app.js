@@ -460,6 +460,7 @@ const ADMIN_ENUMS = {
   productPolicyPlatforms: ['', 'ALL', 'ANDROID', 'IOS', 'WEB', 'SERVER'],
   announcementTypes: ['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE', 'OFFER', 'FEATURE_TIP', 'SURVEY'],
   announcementDisplayModes: ['BANNER', 'MODAL'],
+  announcementMediaTypes: ['NONE', 'IMAGE'],
   announcementTargetPlans: ['ALL', 'FREE', 'PRO'],
   announcementTargetPlatforms: ['ALL', 'ANDROID', 'IOS', 'WEB'],
   subscriptionRequestStatuses: ['', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'APPLY_FAILED'],
@@ -480,6 +481,8 @@ const ADMIN_LIMITS = {
   announcementMessageMax: 4000,
   announcementCtaLabelMax: 80,
   announcementCtaActionMax: 512,
+  announcementMediaUrlMax: 1000,
+  announcementMediaAltMax: 160,
   productPolicyJsonMax: 50000,
   minAppVersionMax: 40,
   platformMax: 20,
@@ -5299,6 +5302,7 @@ function renderAnnouncementItem(item) {
         ['Min app version', item.minAppVersion || item.min_app_version], ['Max app version', item.maxAppVersion || item.max_app_version],
         ['Start', formatDate(item.startAt || item.start_at)], ['End', formatDate(item.endAt || item.end_at)],
         ['Dismissible', item.dismissible === false ? 'No' : 'Yes'], ['CTA Clickable', item.clickable === false || item.ctaClickable === false || item.cta_clickable === false ? 'No' : 'Yes'], ['Enabled', item.enabled ? 'Yes' : 'No'],
+        ['Media', item.mediaType || item.media_type || 'NONE'], ['Media URL', item.mediaUrl || item.media_url || '-'],
         ['Created', formatDate(item.createdAt || item.created_at)], ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
       el('details', { class: 'nested-details' }, [
@@ -5345,6 +5349,9 @@ function openAnnouncementModal(item) {
     ctaLabelMs: item?.ctaLabelMs || item?.cta_label_ms || '',
     ctaAction: item?.ctaAction || item?.cta_action || '',
     ctaDestinationMode: guessAnnouncementCtaMode(item?.ctaAction || item?.cta_action || ''),
+    mediaType: item?.mediaType || item?.media_type || 'NONE',
+    mediaUrl: item?.mediaUrl || item?.media_url || '',
+    mediaAltText: item?.mediaAltText || item?.media_alt_text || '',
     clickable: item?.clickable !== false && item?.ctaClickable !== false && item?.cta_clickable !== false,
     reason: '',
   };
@@ -5405,9 +5412,6 @@ function renderAnnouncementModal() {
     if (value === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(modal.ctaAction)) modal.ctaAction = '';
     render();
   });
-  const hasAnyCtaLabelDraft = Boolean(normalizedTrim(modal.ctaLabelEn) || normalizedTrim(modal.ctaLabelZh) || normalizedTrim(modal.ctaLabelMs));
-  const hasCtaDestinationDraft = Boolean(normalizedTrim(modal.ctaAction));
-  const ctaWillRenderDraft = Boolean(modal.clickable && hasAnyCtaLabelDraft && hasCtaDestinationDraft);
   const internalDestination = select(ANNOUNCEMENT_INTERNAL_DESTINATIONS.map((item) => item.value), modal.ctaAction || '', (value) => { modal.ctaAction = value; });
   Array.from(internalDestination.options || []).forEach((option) => {
     const match = ANNOUNCEMENT_INTERNAL_DESTINATIONS.find((item) => item.value === option.value);
@@ -5417,8 +5421,13 @@ function renderAnnouncementModal() {
   externalUrlInput.addEventListener('input', () => { modal.ctaAction = externalUrlInput.value; });
   const customDestinationInput = el('input', { value: modal.ctaAction || '', placeholder: 'Legacy key or supported fundoralit:// deep link' });
   customDestinationInput.addEventListener('input', () => { modal.ctaAction = customDestinationInput.value; });
+  const mediaType = select(ADMIN_ENUMS.announcementMediaTypes, modal.mediaType || 'NONE', (value) => { modal.mediaType = value; if (value === 'NONE') { modal.mediaUrl = ''; modal.mediaAltText = ''; } render(); });
+  const mediaUrlInput = el('input', { value: modal.mediaUrl || '', placeholder: 'https://cdn.example.com/announcement-image.png' });
+  mediaUrlInput.addEventListener('input', () => { modal.mediaUrl = mediaUrlInput.value; });
+  const mediaAltInput = el('input', { value: modal.mediaAltText || '', placeholder: 'Short image description for accessibility' });
+  mediaAltInput.addEventListener('input', () => { modal.mediaAltText = mediaAltInput.value; });
   return renderControlModal(modal.id ? 'Edit announcement' : 'Create announcement', 'Announcement', [
-    renderPolicySafetyNote('Banner is best for normal updates. Modal should be reserved for maintenance or critical notices. The app only stores dismissed announcement IDs locally, not announcement content.'),
+    renderPolicySafetyNote('Banner is compact for lightweight updates. Modal supports richer copy and an optional image. The close button hides it for this app entry only; Don\'t show again stores only the dismissed announcement ID locally.'),
     el('div', { class: 'form-grid two' }, [
       el('div', { class: 'field' }, [el('label', { text: 'Type' }), type]),
       el('div', { class: 'field' }, [el('label', { text: 'Display mode' }), display]),
@@ -5456,12 +5465,18 @@ function renderAnnouncementModal() {
       textArea('messageMs', 'Message MS'),
       textInput('ctaLabelMs', 'Action button label MS \u00B7 optional'),
     ]),
+    el('details', { class: 'nested-details', open: modal.mediaType === 'IMAGE' }, [
+      el('summary', { text: 'Optional media for modal / offer' }),
+      renderPolicySafetyNote('Image media is optional. It is best for MODAL or OFFER messages. Store the file in Supabase Storage/CDN and paste the HTTPS URL here; the app falls back to a built-in illustration when empty.'),
+      el('div', { class: 'form-grid two' }, [
+        el('div', { class: 'field' }, [el('label', { text: 'Media type' }), mediaType]),
+        modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaUrl') }, [el('label', { text: 'Image URL' }), mediaUrlInput, renderFieldError('mediaUrl')]) : null,
+        modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaAltText') }, [el('label', { text: 'Image alt text' }), mediaAltInput, renderFieldError('mediaAltText')]) : null,
+      ]),
+    ]),
     el('details', { class: 'nested-details', open: Boolean(modal.ctaAction || modal.ctaDestinationMode !== 'NONE') }, [
       el('summary', { text: 'Optional action button destination' }),
-      renderPolicySafetyNote('CTA is optional. If the button label or destination is empty, the app will save the announcement but hide the CTA button.'),
-      ctaWillRenderDraft
-        ? renderPolicySafetyNote('This announcement will show a CTA button because it has a label and destination.')
-        : renderPolicySafetyNote('No complete CTA is configured, so the app will show this announcement as read-only content.'),
+      renderPolicySafetyNote('CTA is optional. If the label or destination is empty, the app will save the announcement but hide the CTA button. Use Internal for app screens, External URL for YouTube/help links, or Custom for legacy action keys.'),
       el('div', { class: 'form-grid two' }, [
         el('div', { class: 'field' }, [el('label', { text: 'CTA destination type' }), ctaMode]),
         modal.ctaDestinationMode === 'INTERNAL' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'Internal app destination' }), internalDestination, renderFieldError('ctaAction')]) : null,
@@ -5541,12 +5556,22 @@ async function submitAnnouncementModal() {
   const clickable = Boolean(modal.clickable);
   const ctaDestinationMode = ANNOUNCEMENT_CTA_MODES.includes(modal.ctaDestinationMode) ? modal.ctaDestinationMode : guessAnnouncementCtaMode(ctaAction.value);
   const hasActionDestination = Boolean(ctaAction.value);
-  if (hasActionDestination && ctaDestinationMode === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(ctaAction.value)) {
+  const hasAnyCtaLabel = Boolean(ctaLabelEn.value || ctaLabelZh.value || ctaLabelMs.value);
+  if (clickable && hasActionDestination && ctaDestinationMode === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(ctaAction.value)) {
     return validationError('External URL destination must start with https:// or http://.', 'ctaAction');
   }
-  if (hasActionDestination && ctaDestinationMode === 'INTERNAL' && !isSupportedAnnouncementInternalDestination(ctaAction.value)) {
+  if (clickable && hasActionDestination && ctaDestinationMode === 'INTERNAL' && !isSupportedAnnouncementInternalDestination(ctaAction.value)) {
     return validationError('Choose a supported internal app destination from the dropdown.', 'ctaAction');
   }
+
+  const mediaType = requireOneOf(modal.mediaType || 'NONE', ADMIN_ENUMS.announcementMediaTypes, 'Media type');
+  if (!mediaType.ok) return validationError(mediaType.message, 'mediaType');
+  const mediaUrl = requireMaxLength(modal.mediaUrl, 'Image URL', ADMIN_LIMITS.announcementMediaUrlMax);
+  if (!mediaUrl.ok) return validationError(mediaUrl.message, 'mediaUrl');
+  const mediaAltText = requireMaxLength(modal.mediaAltText, 'Image alt text', ADMIN_LIMITS.announcementMediaAltMax);
+  if (!mediaAltText.ok) return validationError(mediaAltText.message, 'mediaAltText');
+  if (mediaType.value === 'IMAGE' && !mediaUrl.value) return validationError('Image URL is required when media type is IMAGE.', 'mediaUrl');
+  if (mediaType.value === 'IMAGE' && !isExternalAnnouncementUrl(mediaUrl.value)) return validationError('Image URL must start with https:// or http://.', 'mediaUrl');
 
   const reason = requireAuditReason(modal.reason, modal.id ? 'this announcement update' : 'this announcement creation');
   if (!reason.ok) return validationError(reason.message, 'reason');
@@ -5560,10 +5585,13 @@ async function submitAnnouncementModal() {
     minAppVersion: minAppVersion.value, maxAppVersion: maxAppVersion.value,
     startAt: startAt.value, endAt: endAt.value,
     dismissible: Boolean(modal.dismissible), clickable, enabled: Boolean(modal.enabled),
-    ctaLabelEn: ctaLabelEn.value || null,
-    ctaLabelZh: ctaLabelZh.value || null,
-    ctaLabelMs: ctaLabelMs.value || null,
-    ctaAction: hasActionDestination ? ctaAction.value : null,
+    ctaLabelEn: hasAnyCtaLabel ? ctaLabelEn.value || null : null,
+    ctaLabelZh: hasAnyCtaLabel ? ctaLabelZh.value || null : null,
+    ctaLabelMs: hasAnyCtaLabel ? ctaLabelMs.value || null : null,
+    ctaAction: clickable && hasActionDestination ? ctaAction.value : null,
+    mediaType: mediaType.value,
+    mediaUrl: mediaType.value === 'IMAGE' ? mediaUrl.value : null,
+    mediaAltText: mediaType.value === 'IMAGE' ? mediaAltText.value || null : null,
     reason: reason.value,
   };
   try {
