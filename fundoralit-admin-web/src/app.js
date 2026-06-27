@@ -79,6 +79,7 @@ const API_PATHS = {
     create: '/api/admin/announcements',
     update: (id) => `/api/admin/announcements/${encodeURIComponent(id)}`,
     disable: (id) => `/api/admin/announcements/${encodeURIComponent(id)}/disable`,
+    uploadMedia: '/api/admin/announcements/media',
   },
   mobilePolicy: {
     current: '/api/config/mobile-policy',
@@ -460,7 +461,6 @@ const ADMIN_ENUMS = {
   productPolicyPlatforms: ['', 'ALL', 'ANDROID', 'IOS', 'WEB', 'SERVER'],
   announcementTypes: ['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE', 'OFFER', 'FEATURE_TIP', 'SURVEY'],
   announcementDisplayModes: ['BANNER', 'MODAL'],
-  announcementMediaTypes: ['NONE', 'IMAGE'],
   announcementTargetPlans: ['ALL', 'FREE', 'PRO'],
   announcementTargetPlatforms: ['ALL', 'ANDROID', 'IOS', 'WEB'],
   subscriptionRequestStatuses: ['', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'APPLY_FAILED'],
@@ -482,7 +482,7 @@ const ADMIN_LIMITS = {
   announcementCtaLabelMax: 80,
   announcementCtaActionMax: 512,
   announcementMediaUrlMax: 1000,
-  announcementMediaAltMax: 160,
+  announcementMediaAltTextMax: 160,
   productPolicyJsonMax: 50000,
   minAppVersionMax: 40,
   platformMax: 20,
@@ -493,6 +493,9 @@ const ADMIN_LIMITS = {
 };
 
 const ANNOUNCEMENT_CTA_MODES = ['NONE', 'INTERNAL', 'EXTERNAL_URL', 'CUSTOM'];
+const ANNOUNCEMENT_MEDIA_TYPES = ['NONE', 'IMAGE'];
+const ANNOUNCEMENT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+const ANNOUNCEMENT_IMAGE_ALLOWED_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const ANNOUNCEMENT_INTERNAL_DESTINATIONS = [
   { value: '', label: 'Select destination' },
   { value: 'fundoralit://dashboard', label: 'Dashboard' },
@@ -527,6 +530,31 @@ const ANNOUNCEMENT_LEGACY_ACTIONS = new Set([
 function isExternalAnnouncementUrl(value) {
   const text = normalizedTrim(value);
   return /^https?:\/\//i.test(text);
+}
+
+
+function validateAnnouncementImageFile(file) {
+  if (!file) return { ok: false, message: 'Please choose an announcement image.' };
+  if (file.size > ANNOUNCEMENT_IMAGE_MAX_BYTES) return { ok: false, message: 'Announcement image must be 3MB or smaller.' };
+  const type = String(file.type || '').toLowerCase();
+  if (!ANNOUNCEMENT_IMAGE_ALLOWED_TYPES.has(type)) return { ok: false, message: 'Only JPG, PNG, or WebP announcement images are allowed.' };
+  return { ok: true };
+}
+
+function formatBytes(bytes) {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) return '-';
+  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+async function uploadAnnouncementMediaFile(file) {
+  const validation = validateAnnouncementImageFile(file);
+  if (!validation.ok) throw new Error(validation.message);
+  const formData = new FormData();
+  formData.append('file', file);
+  return api(API_PATHS.announcements.uploadMedia, { method: 'POST', formData });
 }
 
 function isSupportedAnnouncementInternalDestination(value) {
@@ -1147,7 +1175,9 @@ async function api(path, options = {}) {
   };
 
   let body;
-  if (options.body !== undefined) {
+  if (options.formData instanceof FormData) {
+    body = options.formData;
+  } else if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(options.body);
   }
@@ -5302,7 +5332,6 @@ function renderAnnouncementItem(item) {
         ['Min app version', item.minAppVersion || item.min_app_version], ['Max app version', item.maxAppVersion || item.max_app_version],
         ['Start', formatDate(item.startAt || item.start_at)], ['End', formatDate(item.endAt || item.end_at)],
         ['Dismissible', item.dismissible === false ? 'No' : 'Yes'], ['CTA Clickable', item.clickable === false || item.ctaClickable === false || item.cta_clickable === false ? 'No' : 'Yes'], ['Enabled', item.enabled ? 'Yes' : 'No'],
-        ['Media', item.mediaType || item.media_type || 'NONE'], ['Media URL', item.mediaUrl || item.media_url || '-'],
         ['Created', formatDate(item.createdAt || item.created_at)], ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
       el('details', { class: 'nested-details' }, [
@@ -5311,9 +5340,14 @@ function renderAnnouncementItem(item) {
           ['Title EN', item.titleEn || item.title_en], ['Message EN', item.messageEn || item.message_en],
           ['Title ZH', item.titleZh || item.title_zh], ['Message ZH', item.messageZh || item.message_zh],
           ['Title MS', item.titleMs || item.title_ms], ['Message MS', item.messageMs || item.message_ms],
-          ['Action Label EN', item.ctaLabelEn || item.cta_label_en], ['Action Label ZH', item.ctaLabelZh || item.cta_label_zh], ['Action Label MS', item.ctaLabelMs || item.cta_label_ms], ['Action Destination', item.ctaAction || item.cta_action], ['Clickable', item.clickable === false || item.ctaClickable === false || item.cta_clickable === false ? 'No' : 'Yes'],
+          ['Action Label EN', item.ctaLabelEn || item.cta_label_en], ['Action Label ZH', item.ctaLabelZh || item.cta_label_zh], ['Action Label MS', item.ctaLabelMs || item.cta_label_ms], ['Action Destination', item.ctaAction || item.cta_action], ['Clickable', item.clickable === false || item.ctaClickable === false || item.cta_clickable === false ? 'No' : 'Yes'], ['Media', item.mediaType || item.media_type || 'NONE'], ['Media URL', item.mediaUrl || item.media_url],
         ]),
       ]),
+      (item.mediaType || item.media_type) === 'IMAGE' && (item.mediaUrl || item.media_url)
+        ? el('a', { href: item.mediaUrl || item.media_url, target: '_blank', rel: 'noopener noreferrer' }, [
+          el('img', { class: 'img-preview announcement-media-preview', src: item.mediaUrl || item.media_url, alt: item.mediaAltText || item.media_alt_text || 'Announcement media preview' }),
+        ])
+        : null,
       el('div', { class: 'actions' }, [
         el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openAnnouncementModal(item) }),
         item.enabled ? el('button', { class: 'btn danger small', text: 'Disable', onclick: () => disableAnnouncement(item) }) : null,
@@ -5349,10 +5383,14 @@ function openAnnouncementModal(item) {
     ctaLabelMs: item?.ctaLabelMs || item?.cta_label_ms || '',
     ctaAction: item?.ctaAction || item?.cta_action || '',
     ctaDestinationMode: guessAnnouncementCtaMode(item?.ctaAction || item?.cta_action || ''),
+    clickable: item?.clickable !== false && item?.ctaClickable !== false && item?.cta_clickable !== false,
     mediaType: item?.mediaType || item?.media_type || 'NONE',
     mediaUrl: item?.mediaUrl || item?.media_url || '',
     mediaAltText: item?.mediaAltText || item?.media_alt_text || '',
-    clickable: item?.clickable !== false && item?.ctaClickable !== false && item?.cta_clickable !== false,
+    mediaUploadFile: null,
+    mediaUploadPreviewUrl: '',
+    mediaUploadName: '',
+    mediaUploadSize: 0,
     reason: '',
   };
   render();
@@ -5412,6 +5450,9 @@ function renderAnnouncementModal() {
     if (value === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(modal.ctaAction)) modal.ctaAction = '';
     render();
   });
+  const hasAnyCtaLabelDraft = Boolean(normalizedTrim(modal.ctaLabelEn) || normalizedTrim(modal.ctaLabelZh) || normalizedTrim(modal.ctaLabelMs));
+  const hasCtaDestinationDraft = Boolean(normalizedTrim(modal.ctaAction));
+  const ctaWillRenderDraft = Boolean(modal.clickable && hasAnyCtaLabelDraft && hasCtaDestinationDraft);
   const internalDestination = select(ANNOUNCEMENT_INTERNAL_DESTINATIONS.map((item) => item.value), modal.ctaAction || '', (value) => { modal.ctaAction = value; });
   Array.from(internalDestination.options || []).forEach((option) => {
     const match = ANNOUNCEMENT_INTERNAL_DESTINATIONS.find((item) => item.value === option.value);
@@ -5421,13 +5462,64 @@ function renderAnnouncementModal() {
   externalUrlInput.addEventListener('input', () => { modal.ctaAction = externalUrlInput.value; });
   const customDestinationInput = el('input', { value: modal.ctaAction || '', placeholder: 'Legacy key or supported fundoralit:// deep link' });
   customDestinationInput.addEventListener('input', () => { modal.ctaAction = customDestinationInput.value; });
-  const mediaType = select(ADMIN_ENUMS.announcementMediaTypes, modal.mediaType || 'NONE', (value) => { modal.mediaType = value; if (value === 'NONE') { modal.mediaUrl = ''; modal.mediaAltText = ''; } render(); });
-  const mediaUrlInput = el('input', { value: modal.mediaUrl || '', placeholder: 'https://cdn.example.com/announcement-image.png' });
+  const mediaType = select(ANNOUNCEMENT_MEDIA_TYPES, modal.mediaType || 'NONE', (value) => {
+    modal.mediaType = value;
+    if (value === 'NONE') {
+      modal.mediaUrl = '';
+      modal.mediaAltText = '';
+      modal.mediaUploadFile = null;
+      modal.mediaUploadPreviewUrl = '';
+    }
+    render();
+  });
+  const mediaUrlInput = el('input', { value: modal.mediaUrl || '', placeholder: 'Uploaded image URL will appear here automatically, or paste a Supabase public URL.' });
   mediaUrlInput.addEventListener('input', () => { modal.mediaUrl = mediaUrlInput.value; });
   const mediaAltInput = el('input', { value: modal.mediaAltText || '', placeholder: 'Short image description for accessibility' });
   mediaAltInput.addEventListener('input', () => { modal.mediaAltText = mediaAltInput.value; });
+  const mediaFileInput = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp' });
+  mediaFileInput.addEventListener('change', () => {
+    const file = mediaFileInput.files && mediaFileInput.files[0] ? mediaFileInput.files[0] : null;
+    if (!file) return;
+    const validation = validateAnnouncementImageFile(file);
+    if (!validation.ok) {
+      validationError(validation.message, 'mediaUrl');
+      mediaFileInput.value = '';
+      return;
+    }
+    if (modal.mediaUploadPreviewUrl) {
+      try { URL.revokeObjectURL(modal.mediaUploadPreviewUrl); } catch (_) {}
+    }
+    modal.mediaType = 'IMAGE';
+    modal.mediaUploadFile = file;
+    modal.mediaUploadPreviewUrl = URL.createObjectURL(file);
+    modal.mediaUploadName = file.name;
+    modal.mediaUploadSize = file.size;
+    if (!normalizedTrim(modal.mediaAltText)) {
+      modal.mediaAltText = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
+    }
+    render();
+  });
+  const clearMediaButton = el('button', {
+    class: 'btn ghost small',
+    type: 'button',
+    text: 'Clear media',
+    onclick: () => {
+      if (modal.mediaUploadPreviewUrl) {
+        try { URL.revokeObjectURL(modal.mediaUploadPreviewUrl); } catch (_) {}
+      }
+      modal.mediaType = 'NONE';
+      modal.mediaUrl = '';
+      modal.mediaAltText = '';
+      modal.mediaUploadFile = null;
+      modal.mediaUploadPreviewUrl = '';
+      modal.mediaUploadName = '';
+      modal.mediaUploadSize = 0;
+      render();
+    },
+  });
+  const mediaPreviewUrl = modal.mediaUploadPreviewUrl || modal.mediaUrl || '';
   return renderControlModal(modal.id ? 'Edit announcement' : 'Create announcement', 'Announcement', [
-    renderPolicySafetyNote('Banner is compact for lightweight updates. Modal supports richer copy and an optional image. The close button hides it for this app entry only; Don\'t show again stores only the dismissed announcement ID locally.'),
+    renderPolicySafetyNote('Banner is best for normal updates. Modal should be reserved for maintenance or critical notices. The app only stores dismissed announcement IDs locally, not announcement content.'),
     el('div', { class: 'form-grid two' }, [
       el('div', { class: 'field' }, [el('label', { text: 'Type' }), type]),
       el('div', { class: 'field' }, [el('label', { text: 'Display mode' }), display]),
@@ -5465,18 +5557,36 @@ function renderAnnouncementModal() {
       textArea('messageMs', 'Message MS'),
       textInput('ctaLabelMs', 'Action button label MS \u00B7 optional'),
     ]),
-    el('details', { class: 'nested-details', open: modal.mediaType === 'IMAGE' }, [
-      el('summary', { text: 'Optional media for modal / offer' }),
-      renderPolicySafetyNote('Image media is optional. It is best for MODAL or OFFER messages. Store the file in Supabase Storage/CDN and paste the HTTPS URL here; the app falls back to a built-in illustration when empty.'),
+    el('details', { class: 'nested-details', open: modal.mediaType === 'IMAGE' || Boolean(modal.mediaUrl || modal.mediaUploadFile) }, [
+      el('summary', { text: 'Optional media / modal image' }),
+      renderPolicySafetyNote('Image media is optional. You can upload directly to the dedicated Supabase announcement bucket. Modal uses it as a large hero image; banner stays lightweight. Leave media as NONE to use the app fallback illustration.'),
       el('div', { class: 'form-grid two' }, [
         el('div', { class: 'field' }, [el('label', { text: 'Media type' }), mediaType]),
-        modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaUrl') }, [el('label', { text: 'Image URL' }), mediaUrlInput, renderFieldError('mediaUrl')]) : null,
+        modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaUrl') }, [
+          el('label', { text: 'Upload image' }),
+          mediaFileInput,
+          el('p', { class: 'muted small', text: modal.mediaUploadFile ? `Selected: ${modal.mediaUploadName || modal.mediaUploadFile.name} · ${formatBytes(modal.mediaUploadSize || modal.mediaUploadFile.size)}` : 'JPG, PNG, or WebP. Max 3MB. The file uploads when you save.' }),
+          renderFieldError('mediaUrl'),
+        ]) : null,
         modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaAltText') }, [el('label', { text: 'Image alt text' }), mediaAltInput, renderFieldError('mediaAltText')]) : null,
       ]),
+      modal.mediaType === 'IMAGE' ? el('details', { class: 'nested-details compact-details' }, [
+        el('summary', { text: 'Advanced: paste existing image URL' }),
+        el('div', { class: modalFieldClass('mediaUrl') }, [el('label', { text: 'Image URL' }), mediaUrlInput, renderFieldError('mediaUrl')]),
+        renderPolicySafetyNote('Use this only for existing public Supabase/CDN URLs. Direct upload above is recommended.'),
+      ]) : null,
+      mediaPreviewUrl ? el('div', { class: 'media-preview-wrap' }, [
+        el('img', { class: 'img-preview announcement-media-preview', src: mediaPreviewUrl, alt: modal.mediaAltText || 'Announcement image preview' }),
+      ]) : null,
+      modal.mediaType === 'IMAGE' ? el('div', { class: 'actions compact-actions' }, [clearMediaButton]) : null,
+      modal.mediaType === 'IMAGE' ? renderPolicySafetyNote('New image files are uploaded before the announcement is saved. If upload fails, the announcement is not changed.') : null,
     ]),
     el('details', { class: 'nested-details', open: Boolean(modal.ctaAction || modal.ctaDestinationMode !== 'NONE') }, [
       el('summary', { text: 'Optional action button destination' }),
-      renderPolicySafetyNote('CTA is optional. If the label or destination is empty, the app will save the announcement but hide the CTA button. Use Internal for app screens, External URL for YouTube/help links, or Custom for legacy action keys.'),
+      renderPolicySafetyNote('CTA is optional. If the button label or destination is empty, the app will save the announcement but hide the CTA button.'),
+      ctaWillRenderDraft
+        ? renderPolicySafetyNote('This announcement will show a CTA button because it has a label and destination.')
+        : renderPolicySafetyNote('No complete CTA is configured, so the app will show this announcement as read-only content.'),
       el('div', { class: 'form-grid two' }, [
         el('div', { class: 'field' }, [el('label', { text: 'CTA destination type' }), ctaMode]),
         modal.ctaDestinationMode === 'INTERNAL' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'Internal app destination' }), internalDestination, renderFieldError('ctaAction')]) : null,
@@ -5554,47 +5664,63 @@ async function submitAnnouncementModal() {
   const ctaAction = requireMaxLength(modal.ctaAction, 'Action destination', ADMIN_LIMITS.announcementCtaActionMax);
   if (!ctaAction.ok) return validationError(ctaAction.message, 'ctaAction');
   const clickable = Boolean(modal.clickable);
+  const mediaType = requireOneOf(modal.mediaType || 'NONE', ANNOUNCEMENT_MEDIA_TYPES, 'Media type');
+  if (!mediaType.ok) return validationError(mediaType.message, 'mediaType');
+  const mediaUrl = requireMaxLength(modal.mediaUrl, 'Media URL', ADMIN_LIMITS.announcementMediaUrlMax);
+  if (!mediaUrl.ok) return validationError(mediaUrl.message, 'mediaUrl');
+  const mediaAltText = requireMaxLength(modal.mediaAltText, 'Media alt text', ADMIN_LIMITS.announcementMediaAltTextMax);
+  if (!mediaAltText.ok) return validationError(mediaAltText.message, 'mediaAltText');
+  if (mediaType.value === 'IMAGE' && mediaUrl.value && !isExternalAnnouncementUrl(mediaUrl.value)) {
+    return validationError('Image URL must start with https:// or http://.', 'mediaUrl');
+  }
   const ctaDestinationMode = ANNOUNCEMENT_CTA_MODES.includes(modal.ctaDestinationMode) ? modal.ctaDestinationMode : guessAnnouncementCtaMode(ctaAction.value);
   const hasActionDestination = Boolean(ctaAction.value);
-  const hasAnyCtaLabel = Boolean(ctaLabelEn.value || ctaLabelZh.value || ctaLabelMs.value);
-  if (clickable && hasActionDestination && ctaDestinationMode === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(ctaAction.value)) {
+  if (hasActionDestination && ctaDestinationMode === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(ctaAction.value)) {
     return validationError('External URL destination must start with https:// or http://.', 'ctaAction');
   }
-  if (clickable && hasActionDestination && ctaDestinationMode === 'INTERNAL' && !isSupportedAnnouncementInternalDestination(ctaAction.value)) {
+  if (hasActionDestination && ctaDestinationMode === 'INTERNAL' && !isSupportedAnnouncementInternalDestination(ctaAction.value)) {
     return validationError('Choose a supported internal app destination from the dropdown.', 'ctaAction');
   }
-
-  const mediaType = requireOneOf(modal.mediaType || 'NONE', ADMIN_ENUMS.announcementMediaTypes, 'Media type');
-  if (!mediaType.ok) return validationError(mediaType.message, 'mediaType');
-  const mediaUrl = requireMaxLength(modal.mediaUrl, 'Image URL', ADMIN_LIMITS.announcementMediaUrlMax);
-  if (!mediaUrl.ok) return validationError(mediaUrl.message, 'mediaUrl');
-  const mediaAltText = requireMaxLength(modal.mediaAltText, 'Image alt text', ADMIN_LIMITS.announcementMediaAltMax);
-  if (!mediaAltText.ok) return validationError(mediaAltText.message, 'mediaAltText');
-  if (mediaType.value === 'IMAGE' && !mediaUrl.value) return validationError('Image URL is required when media type is IMAGE.', 'mediaUrl');
-  if (mediaType.value === 'IMAGE' && !isExternalAnnouncementUrl(mediaUrl.value)) return validationError('Image URL must start with https:// or http://.', 'mediaUrl');
 
   const reason = requireAuditReason(modal.reason, modal.id ? 'this announcement update' : 'this announcement creation');
   if (!reason.ok) return validationError(reason.message, 'reason');
 
   if (state.modal) { state.modal.loading = true; state.modal.error = ''; state.modal.fieldErrors = {}; } else { state.loading = true; state.error = ''; } render();
-  const body = {
-    titleEn: titleEn.value, titleZh: titleZh.value || null, titleMs: titleMs.value || null,
-    messageEn: messageEn.value, messageZh: messageZh.value || null, messageMs: messageMs.value || null,
-    type: type.value, displayMode: displayMode.value, priority: priority.value,
-    targetPlan: targetPlan.value, targetPlatform: targetPlatform.value,
-    minAppVersion: minAppVersion.value, maxAppVersion: maxAppVersion.value,
-    startAt: startAt.value, endAt: endAt.value,
-    dismissible: Boolean(modal.dismissible), clickable, enabled: Boolean(modal.enabled),
-    ctaLabelEn: hasAnyCtaLabel ? ctaLabelEn.value || null : null,
-    ctaLabelZh: hasAnyCtaLabel ? ctaLabelZh.value || null : null,
-    ctaLabelMs: hasAnyCtaLabel ? ctaLabelMs.value || null : null,
-    ctaAction: clickable && hasActionDestination ? ctaAction.value : null,
-    mediaType: mediaType.value,
-    mediaUrl: mediaType.value === 'IMAGE' ? mediaUrl.value : null,
-    mediaAltText: mediaType.value === 'IMAGE' ? mediaAltText.value || null : null,
-    reason: reason.value,
-  };
   try {
+    let finalMediaType = mediaType.value;
+    let finalMediaUrl = mediaType.value === 'IMAGE' ? (mediaUrl.value || null) : null;
+    let finalMediaAltText = mediaType.value === 'IMAGE' ? (mediaAltText.value || null) : null;
+    if (mediaType.value === 'IMAGE' && modal.mediaUploadFile) {
+      const uploaded = await uploadAnnouncementMediaFile(modal.mediaUploadFile);
+      finalMediaType = uploaded?.mediaType || 'IMAGE';
+      finalMediaUrl = uploaded?.mediaUrl || finalMediaUrl;
+      finalMediaAltText = finalMediaAltText || modal.mediaUploadName || 'Announcement image';
+      modal.mediaUrl = finalMediaUrl || '';
+      modal.mediaType = finalMediaType;
+      modal.mediaAltText = finalMediaAltText || '';
+      modal.mediaUploadFile = null;
+      if (modal.mediaUploadPreviewUrl) {
+        try { URL.revokeObjectURL(modal.mediaUploadPreviewUrl); } catch (_) {}
+      }
+      modal.mediaUploadPreviewUrl = '';
+    }
+    const body = {
+      titleEn: titleEn.value, titleZh: titleZh.value || null, titleMs: titleMs.value || null,
+      messageEn: messageEn.value, messageZh: messageZh.value || null, messageMs: messageMs.value || null,
+      type: type.value, displayMode: displayMode.value, priority: priority.value,
+      targetPlan: targetPlan.value, targetPlatform: targetPlatform.value,
+      minAppVersion: minAppVersion.value, maxAppVersion: maxAppVersion.value,
+      startAt: startAt.value, endAt: endAt.value,
+      dismissible: Boolean(modal.dismissible), clickable, enabled: Boolean(modal.enabled),
+      ctaLabelEn: ctaLabelEn.value || null,
+      ctaLabelZh: ctaLabelZh.value || null,
+      ctaLabelMs: ctaLabelMs.value || null,
+      ctaAction: hasActionDestination ? ctaAction.value : null,
+      mediaType: finalMediaType,
+      mediaUrl: finalMediaType === 'IMAGE' ? (finalMediaUrl || null) : null,
+      mediaAltText: finalMediaType === 'IMAGE' ? (finalMediaAltText || null) : null,
+      reason: reason.value,
+    };
     await api(modal.id ? API_PATHS.announcements.update(modal.id) : API_PATHS.announcements.create, { method: modal.id ? 'PATCH' : 'POST', body });
     setMessage(modal.id ? 'Announcement updated.' : 'Announcement created.');
     state.modal = null;
