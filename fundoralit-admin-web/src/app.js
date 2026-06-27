@@ -458,7 +458,7 @@ const ADMIN_ENUMS = {
   policyPeriods: ['NONE', 'DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY', 'LIFETIME'],
   featureFlagTargetPlans: ['', 'ALL', 'FREE', 'PRO'],
   productPolicyPlatforms: ['', 'ALL', 'ANDROID', 'IOS', 'WEB', 'SERVER'],
-  announcementTypes: ['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE'],
+  announcementTypes: ['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE', 'OFFER', 'FEATURE_TIP', 'SURVEY'],
   announcementDisplayModes: ['BANNER', 'MODAL'],
   announcementTargetPlans: ['ALL', 'FREE', 'PRO'],
   announcementTargetPlatforms: ['ALL', 'ANDROID', 'IOS', 'WEB'],
@@ -479,7 +479,7 @@ const ADMIN_LIMITS = {
   announcementTitleMax: 160,
   announcementMessageMax: 4000,
   announcementCtaLabelMax: 80,
-  announcementCtaActionMax: 160,
+  announcementCtaActionMax: 512,
   productPolicyJsonMax: 50000,
   minAppVersionMax: 40,
   platformMax: 20,
@@ -488,6 +488,58 @@ const ADMIN_LIMITS = {
   adminPasswordMax: 200,
   routeGroupMax: 120,
 };
+
+const ANNOUNCEMENT_CTA_MODES = ['NONE', 'INTERNAL', 'EXTERNAL_URL', 'CUSTOM'];
+const ANNOUNCEMENT_INTERNAL_DESTINATIONS = [
+  { value: '', label: 'Select destination' },
+  { value: 'fundoralit://dashboard', label: 'Dashboard' },
+  { value: 'fundoralit://smart-capture/settings', label: 'Smart Capture setup' },
+  { value: 'fundoralit://smart-capture/review', label: 'Smart Capture review' },
+  { value: 'fundoralit://expenses/add', label: 'Add entry / OCR scan' },
+  { value: 'fundoralit://expenses/list', label: 'Transactions list' },
+  { value: 'fundoralit://bills', label: 'Bills' },
+  { value: 'fundoralit://goals', label: 'Saving goals' },
+  { value: 'fundoralit://groups/events', label: 'Group events' },
+  { value: 'fundoralit://analysis/expense', label: 'Expense analysis' },
+  { value: 'fundoralit://premium/status', label: 'Premium status' },
+  { value: 'fundoralit://profile/cloud-backup', label: 'Cloud backup' },
+  { value: 'fundoralit://feedback', label: 'Feedback' },
+];
+const ANNOUNCEMENT_LEGACY_ACTIONS = new Set([
+  'open_smart_capture_settings',
+  'open_smart_capture_review',
+  'open_ocr',
+  'open_add_expense',
+  'open_cloud_backup',
+  'open_feedback',
+  'open_premium_status',
+  'open_dashboard',
+  'open_expenses',
+  'open_bills',
+  'open_goals',
+  'open_group_events',
+  'open_expense_analysis',
+]);
+
+function isExternalAnnouncementUrl(value) {
+  const text = normalizedTrim(value);
+  return /^https?:\/\//i.test(text);
+}
+
+function isSupportedAnnouncementInternalDestination(value) {
+  const text = normalizedTrim(value).toLowerCase();
+  if (!text) return false;
+  if (ANNOUNCEMENT_LEGACY_ACTIONS.has(text)) return true;
+  return ANNOUNCEMENT_INTERNAL_DESTINATIONS.some((item) => item.value && item.value.toLowerCase() === text.split('?')[0].split('#')[0]);
+}
+
+function guessAnnouncementCtaMode(value) {
+  const text = normalizedTrim(value);
+  if (!text) return 'NONE';
+  if (isExternalAnnouncementUrl(text)) return 'EXTERNAL_URL';
+  if (isSupportedAnnouncementInternalDestination(text)) return 'INTERNAL';
+  return 'CUSTOM';
+}
 
 function normalizedTrim(value) {
   return String(value ?? '').trim();
@@ -5292,6 +5344,7 @@ function openAnnouncementModal(item) {
     ctaLabelZh: item?.ctaLabelZh || item?.cta_label_zh || '',
     ctaLabelMs: item?.ctaLabelMs || item?.cta_label_ms || '',
     ctaAction: item?.ctaAction || item?.cta_action || '',
+    ctaDestinationMode: guessAnnouncementCtaMode(item?.ctaAction || item?.cta_action || ''),
     clickable: item?.clickable !== false && item?.ctaClickable !== false && item?.cta_clickable !== false,
     reason: '',
   };
@@ -5328,7 +5381,7 @@ function renderAnnouncementModal() {
     input.addEventListener('input', () => { modal[key] = input.value; });
     return el('div', { class: 'field' }, [el('label', { text: label }), input]);
   };
-  const type = select(['INFO', 'SUCCESS', 'WARNING', 'MAINTENANCE', 'UPDATE'], modal.type, (value) => { modal.type = value; });
+  const type = select(ADMIN_ENUMS.announcementTypes, modal.type, (value) => { modal.type = value; });
   const display = select(['BANNER', 'MODAL'], modal.displayMode, (value) => { modal.displayMode = value; });
   const plan = select(['ALL', 'FREE', 'PRO'], modal.targetPlan, (value) => { modal.targetPlan = value; });
   const platform = select(['ALL', 'ANDROID', 'IOS', 'WEB'], modal.targetPlatform, (value) => { modal.targetPlatform = value; });
@@ -5345,6 +5398,25 @@ function renderAnnouncementModal() {
   const dismissible = el('input', { type: 'checkbox' }); dismissible.checked = Boolean(modal.dismissible); dismissible.addEventListener('change', () => { modal.dismissible = dismissible.checked; });
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
   const clickable = el('input', { type: 'checkbox' }); clickable.checked = Boolean(modal.clickable); clickable.addEventListener('change', () => { modal.clickable = clickable.checked; });
+  const ctaMode = select(ANNOUNCEMENT_CTA_MODES, modal.ctaDestinationMode || guessAnnouncementCtaMode(modal.ctaAction), (value) => {
+    modal.ctaDestinationMode = value;
+    if (value === 'NONE') modal.ctaAction = '';
+    if (value === 'INTERNAL' && isExternalAnnouncementUrl(modal.ctaAction)) modal.ctaAction = '';
+    if (value === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(modal.ctaAction)) modal.ctaAction = '';
+    render();
+  });
+  const hasAnyCtaLabelDraft = Boolean(normalizedTrim(modal.ctaLabelEn) || normalizedTrim(modal.ctaLabelZh) || normalizedTrim(modal.ctaLabelMs));
+  const hasCtaDestinationDraft = Boolean(normalizedTrim(modal.ctaAction));
+  const ctaWillRenderDraft = Boolean(modal.clickable && hasAnyCtaLabelDraft && hasCtaDestinationDraft);
+  const internalDestination = select(ANNOUNCEMENT_INTERNAL_DESTINATIONS.map((item) => item.value), modal.ctaAction || '', (value) => { modal.ctaAction = value; });
+  Array.from(internalDestination.options || []).forEach((option) => {
+    const match = ANNOUNCEMENT_INTERNAL_DESTINATIONS.find((item) => item.value === option.value);
+    if (match) option.textContent = match.label;
+  });
+  const externalUrlInput = el('input', { value: modal.ctaAction || '', placeholder: 'https://youtu.be/your-video or https://youtube.com/watch?v=...' });
+  externalUrlInput.addEventListener('input', () => { modal.ctaAction = externalUrlInput.value; });
+  const customDestinationInput = el('input', { value: modal.ctaAction || '', placeholder: 'Legacy key or supported fundoralit:// deep link' });
+  customDestinationInput.addEventListener('input', () => { modal.ctaAction = customDestinationInput.value; });
   return renderControlModal(modal.id ? 'Edit announcement' : 'Create announcement', 'Announcement', [
     renderPolicySafetyNote('Banner is best for normal updates. Modal should be reserved for maintenance or critical notices. The app only stores dismissed announcement IDs locally, not announcement content.'),
     el('div', { class: 'form-grid two' }, [
@@ -5384,10 +5456,24 @@ function renderAnnouncementModal() {
       textArea('messageMs', 'Message MS'),
       textInput('ctaLabelMs', 'Action button label MS \u00B7 optional'),
     ]),
-    el('details', { class: 'nested-details' }, [
+    el('details', { class: 'nested-details', open: Boolean(modal.ctaAction || modal.ctaDestinationMode !== 'NONE') }, [
       el('summary', { text: 'Optional action button destination' }),
-      renderPolicySafetyNote('Enable CTA clickable only when the destination is a supported app navigation key. If CTA clickable is off, labels are treated as reference text only and the app will not show press animation or chevron.'),
-      textInput('ctaAction', 'Action destination key \u00B7 required only when clickable', 'open_smart_capture_review'),
+      renderPolicySafetyNote('CTA is optional. If the button label or destination is empty, the app will save the announcement but hide the CTA button.'),
+      ctaWillRenderDraft
+        ? renderPolicySafetyNote('This announcement will show a CTA button because it has a label and destination.')
+        : renderPolicySafetyNote('No complete CTA is configured, so the app will show this announcement as read-only content.'),
+      el('div', { class: 'form-grid two' }, [
+        el('div', { class: 'field' }, [el('label', { text: 'CTA destination type' }), ctaMode]),
+        modal.ctaDestinationMode === 'INTERNAL' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'Internal app destination' }), internalDestination, renderFieldError('ctaAction')]) : null,
+        modal.ctaDestinationMode === 'EXTERNAL_URL' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'External URL' }), externalUrlInput, renderFieldError('ctaAction')]) : null,
+        modal.ctaDestinationMode === 'CUSTOM' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'Custom destination' }), customDestinationInput, renderFieldError('ctaAction')]) : null,
+      ]),
+      modal.ctaDestinationMode === 'EXTERNAL_URL'
+        ? renderPolicySafetyNote('External URL should be HTTPS. YouTube links are supported and will open outside the app.')
+        : null,
+      modal.ctaDestinationMode === 'CUSTOM'
+        ? renderPolicySafetyNote('Custom is for backward-compatible keys or supported fundoralit:// deep links. Unknown app routes will be ignored by old clients.')
+        : null,
     ]),
     textArea('reason', 'Audit reason'),
   ], submitAnnouncementModal, true);
@@ -5450,13 +5536,17 @@ async function submitAnnouncementModal() {
   if (!ctaLabelZh.ok) return validationError(ctaLabelZh.message);
   const ctaLabelMs = requireMaxLength(modal.ctaLabelMs, 'Malay action button label', ADMIN_LIMITS.announcementCtaLabelMax);
   if (!ctaLabelMs.ok) return validationError(ctaLabelMs.message);
-  const ctaAction = requireMaxLength(modal.ctaAction, 'Action destination key', ADMIN_LIMITS.announcementCtaActionMax);
-  if (!ctaAction.ok) return validationError(ctaAction.message);
+  const ctaAction = requireMaxLength(modal.ctaAction, 'Action destination', ADMIN_LIMITS.announcementCtaActionMax);
+  if (!ctaAction.ok) return validationError(ctaAction.message, 'ctaAction');
   const clickable = Boolean(modal.clickable);
+  const ctaDestinationMode = ANNOUNCEMENT_CTA_MODES.includes(modal.ctaDestinationMode) ? modal.ctaDestinationMode : guessAnnouncementCtaMode(ctaAction.value);
   const hasActionDestination = Boolean(ctaAction.value);
-  const hasAnyCtaLabel = Boolean(ctaLabelEn.value || ctaLabelZh.value || ctaLabelMs.value);
-  if (clickable && hasAnyCtaLabel && !hasActionDestination) return validationError('Action destination key is required when CTA clickable is enabled and a CTA label is provided.', 'ctaAction');
-  if (clickable && hasActionDestination && !ctaLabelEn.value) return validationError('English action button label is required when a clickable action destination key is provided. Chinese and Malay button labels are optional and will fall back to English.', 'ctaLabelEn');
+  if (hasActionDestination && ctaDestinationMode === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(ctaAction.value)) {
+    return validationError('External URL destination must start with https:// or http://.', 'ctaAction');
+  }
+  if (hasActionDestination && ctaDestinationMode === 'INTERNAL' && !isSupportedAnnouncementInternalDestination(ctaAction.value)) {
+    return validationError('Choose a supported internal app destination from the dropdown.', 'ctaAction');
+  }
 
   const reason = requireAuditReason(modal.reason, modal.id ? 'this announcement update' : 'this announcement creation');
   if (!reason.ok) return validationError(reason.message, 'reason');
@@ -5470,10 +5560,10 @@ async function submitAnnouncementModal() {
     minAppVersion: minAppVersion.value, maxAppVersion: maxAppVersion.value,
     startAt: startAt.value, endAt: endAt.value,
     dismissible: Boolean(modal.dismissible), clickable, enabled: Boolean(modal.enabled),
-    ctaLabelEn: (clickable ? hasActionDestination : hasAnyCtaLabel) ? ctaLabelEn.value || null : null,
-    ctaLabelZh: (clickable ? hasActionDestination : hasAnyCtaLabel) ? ctaLabelZh.value || null : null,
-    ctaLabelMs: (clickable ? hasActionDestination : hasAnyCtaLabel) ? ctaLabelMs.value || null : null,
-    ctaAction: clickable && hasActionDestination ? ctaAction.value : null,
+    ctaLabelEn: ctaLabelEn.value || null,
+    ctaLabelZh: ctaLabelZh.value || null,
+    ctaLabelMs: ctaLabelMs.value || null,
+    ctaAction: hasActionDestination ? ctaAction.value : null,
     reason: reason.value,
   };
   try {
