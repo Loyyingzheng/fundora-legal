@@ -20,12 +20,19 @@ assert(app.includes('function renderSubscriptionPlanModal'), 'Subscription Plan 
 assert(app.includes('function renderPlanPolicyValueModal'), 'Plan Policy Value editor modal is missing.');
 assert(app.includes('WEEKLY') && app.includes('MONTHLY') && app.includes('periodType'), 'Value editor must support weekly/monthly period changes.');
 
+assert(!app.includes("{ id: 'featureLimits', label: 'Feature Limits'"), 'Feature Limits must be removed from Admin navigation.');
+assert(app.includes("return tabId === 'featureLimits' ? 'planMatrix' : tabId"), 'Legacy featureLimits tab must redirect to Plan Matrix.');
+assert(!app.includes("'planMatrix', 'featureLimits'"), 'Admin control tab list must not expose featureLimits.');
+assert(app.includes('Feature Limits is deprecated in Admin UI'), 'Deprecated Feature Limits fallback notice is missing.');
+assert(app.includes('goToPlanMatrixPolicy(policyKey)'), 'Legacy Feature Limits deep links should redirect to Plan Matrix policy search.');
 
-assert(app.includes('function loadDynamicSubscriptionPlanFilterKeys'), 'Old Feature Limits page must fetch dynamic subscription plans for its plan filter.');
-assert(app.includes("API_PATHS.subscriptionPlans.list") && app.includes('PLAN_FILTER_FALLBACK_WARNING'), 'Feature Limits plan filter must be subscription-plans backed and fallback-safe.');
-assert(app.includes('buildDynamicPlanFilterOptions(state.adminOptions.featureLimitPlanKeys'), 'Feature Limits toolbar must render dynamic plan filter options.');
-assert(!app.includes("const plan = select(['', 'FREE', 'PRO'], state.adminFilters.plan"), 'Feature Limits plan filter must not hardcode only FREE/PRO.');
-assert(app.includes('View in Plan Matrix'), 'Feature Limits rows should link to Plan Matrix for close-loop audit.');
-assert(app.includes('Feature Limits') && app.includes('Product Policy') && app.includes('isPlanMatrixFeatureLimitRelated'), 'Plan Matrix rows should include safe cross-links back to old policy pages when related.');
+assert(app.includes('planMatrixPlanPolicyValuePlan'), 'Plan Policy Values plan filter state is missing.');
+assert(app.includes('function renderPlanPolicyValuePlanFilter'), 'Plan Policy Values plan filter UI is missing.');
+assert(app.includes('function buildPlanPolicyValuePlanFilterKeys'), 'Plan Policy Values filter options builder is missing.');
+assert(app.includes('subscriptionPlans || []).filter((plan) => plan.enabled !== false).map((plan) => plan.planKey'), 'Plan Policy Values filter must derive options from subscriptionPlans.');
+assert(app.includes('Frontend-only filter. Uses loaded subscription plans and policy values without another backend call.'), 'Plan Policy Values filter must be frontend-only and documented.');
+assert(app.includes('No policy values found for this plan.'), 'Plan Policy Values plan filter empty state is missing.');
+assert(!app.includes('plan-policy-values?plan='), 'Plan Policy Values filter must not introduce backend filtering calls.');
+assert(!app.includes("text: 'Feature Limits', onclick: () => goToFeatureLimitsForPolicy"), 'Plan Matrix rows should not route admins back to legacy Feature Limits.');
 
 console.log('adminPlanMatrixAudit.test.js passed');

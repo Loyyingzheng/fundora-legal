@@ -310,13 +310,8 @@ function goToPlanMatrixPolicy(policyKey, moduleKey = '') {
 }
 
 function goToFeatureLimitsForPolicy(policyKey) {
-  state.activeTab = 'featureLimits';
-  state.adminFilters.featureLimitKey = String(policyKey || '').trim();
-  state.adminFilters.plan = '';
-  state.page = 0;
-  state.data = { content: [] };
-  state.dataScope = state.activeTab;
-  loadData();
+  // Legacy Feature Limits is deprecated in Admin UI. Plan Matrix is the source of truth.
+  goToPlanMatrixPolicy(policyKey);
 }
 
 function goToProductPoliciesForPolicy(policyKey) {
@@ -395,6 +390,7 @@ const state = {
     planMatrixModule: '',
     planMatrixStatus: '',
     planMatrixSearch: '',
+    planMatrixPlanPolicyValuePlan: '',
     globalLearningSourceType: '',
     plan: '',
     userEmail: '',
@@ -840,7 +836,6 @@ const NAV_GROUPS = [
     items: [
       { id: 'emergencyConsole', label: 'Emergency Console', helper: 'One-click safety', description: 'Disable risky OCR, Smart Capture, collaboration, upload, backup, and maintenance functions without shipping a new app build.', info: 'Use this page only for operational safety. Actions require audit reason, exact confirmation phrase, and admin password re-authentication.' },
       { id: 'planMatrix', label: 'Plan Matrix', helper: 'Dynamic policy table', description: 'View and maintain plan limits from one dynamic source of truth across admin, mobile, paywall, and backend enforcement.', info: 'Use this page to audit what users see against what backends enforce. Plan columns are loaded dynamically, so adding PLUS, TEAM, or STUDENT does not require UI code changes.' },
-      { id: 'featureLimits', label: 'Feature Limits', helper: 'Quota policy', description: 'Control plan limits such as Smart Capture, OCR, presets, wallets, buckets, and group features.', info: 'Change limits carefully. These values affect what free and Pro users can do. Audit reasons are required for policy changes.' },
       { id: 'featureFlags', label: 'Feature Flags', helper: 'Kill switches', description: 'Enable or disable product areas safely without shipping a new app version.', info: 'Use feature flags as operational safety switches. Disable only when needed and record a clear reason.' },
       { id: 'productPolicies', label: 'Product Policy', helper: 'Remote config', description: 'Manage JSON policies for Smart Capture, backup, recovery, collaboration plan limits, and future remote configuration.', info: 'Keep JSON policy small and version-safe. The app and collaboration backend should keep local fallbacks if remote policy is unavailable.' },
       { id: 'policyVersions', label: 'Policy Versions', helper: 'Rollback safety', description: 'Inspect saved policy snapshots and roll back bad remote configuration safely.', info: 'Use rollback only when a policy, flag, or operational config causes production risk. Rollback requires reason, exact phrase, and admin verification.' },
@@ -895,15 +890,20 @@ function toggleNavigation() {
   render();
 }
 
+function normalizeAdminTab(tabId) {
+  return tabId === 'featureLimits' ? 'planMatrix' : tabId;
+}
+
 function setActiveTab(tabId) {
-  const changed = state.activeTab !== tabId;
+  const nextTab = normalizeAdminTab(tabId);
+  const changed = state.activeTab !== nextTab;
   state.navOpen = false;
   if (!changed) {
     render();
     return;
   }
   invalidateLoadRequests();
-  state.activeTab = tabId;
+  state.activeTab = nextTab;
   state.page = 0;
   clearScopedData(tabId);
   state.loading = false;
@@ -2084,7 +2084,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['emergencyConsole', 'planMatrix', 'featureLimits', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['emergencyConsole', 'planMatrix', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -3933,7 +3933,7 @@ function renderPlanMatrixToolbar(plans) {
       renderInfoHint('Columns come from backend subscription_plans/plan matrix response. The UI does not hardcode Free/Pro.', { compact: true, label: 'Dynamic plan columns' }),
     ]),
     el('button', { class: 'btn', text: 'Refresh', onclick: () => loadData() }),
-    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.planMatrixModule = ''; state.adminFilters.planMatrixStatus = ''; state.adminFilters.planMatrixSearch = ''; loadData(); } }),
+    el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.planMatrixModule = ''; state.adminFilters.planMatrixStatus = ''; state.adminFilters.planMatrixSearch = ''; state.adminFilters.planMatrixPlanPolicyValuePlan = ''; loadData(); } }),
   ], 'plan-matrix-toolbar');
 }
 
@@ -3993,7 +3993,6 @@ function renderPlanMatrixTable(plans, items) {
           el('div', { class: 'actions compact-actions' }, [
             el('button', { class: 'btn small', text: 'Edit value', onclick: () => openPlanPolicyValueModal({ matrixItem: item, planKey: plans[0]?.planKey }) }),
             el('button', { class: 'btn ghost small', text: 'Edit policy', onclick: () => openPolicyDefinitionModal(item.definition || { policyKey: item.policyKey, moduleKey: item.moduleKey, displayNameEn: item.label }) }),
-            isPlanMatrixFeatureLimitRelated(item) ? el('button', { class: 'btn ghost small', text: 'Feature Limits', onclick: () => goToFeatureLimitsForPolicy(item.policyKey) }) : null,
             isPlanMatrixProductPolicyRelated(item) ? el('button', { class: 'btn ghost small', text: 'Product Policy', onclick: () => goToProductPoliciesForPolicy(item.policyKey) }) : null,
           ]),
         ]),
@@ -4039,7 +4038,7 @@ function renderPlanRegistrySections(data) {
   return el('div', { class: 'plan-registry-grid' }, [
     renderPolicyDefinitionRegistry(data.policyDefinitions || []),
     renderSubscriptionPlanRegistry(data.subscriptionPlans || []),
-    renderPlanPolicyValueRegistry(data.planPolicyValues || []),
+    renderPlanPolicyValueRegistry(data.planPolicyValues || [], data.subscriptionPlans || []),
   ]);
 }
 
@@ -4061,13 +4060,86 @@ function renderSubscriptionPlanRegistry(items) {
   ]));
 }
 
-function renderPlanPolicyValueRegistry(items) {
-  return renderRegistryCard('Plan Policy Values', 'Concrete values per plan. Example: Smart Capture FREE 20 / MONTHLY.', 'Add value', () => openPlanPolicyValueModal({}), items.slice(0, 80), (item) => el('article', { class: 'registry-row' }, [
-    el('div', {}, [el('strong', { text: `${item.policyKey} · ${item.planKey}` }), el('small', { text: formatPlanValueDisplay(item) })]),
-    el('span', { class: `badge ${item.enabled ? 'success' : 'neutral'}`, text: item.enabled ? 'Enabled' : 'Disabled' }),
-    el('span', { class: 'badge info', text: item.source || 'policy value' }),
-    el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openPlanPolicyValueModal({ valueItem: item }) }),
-  ]));
+function renderPlanPolicyValueRegistry(items, subscriptionPlans = []) {
+  const selectedPlan = state.adminFilters.planMatrixPlanPolicyValuePlan || '';
+  const filteredItems = filterPlanPolicyValueRegistryItems(items, selectedPlan);
+  const visibleItems = filteredItems.slice(0, 80);
+  const addPlanKey = selectedPlan && selectedPlan !== 'ALL' ? selectedPlan : '';
+  return el('section', { class: 'card registry-card plan-policy-value-registry' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [
+        el('h3', { text: 'Plan Policy Values' }),
+        el('p', { class: 'muted', text: 'Concrete values per plan. Example: Smart Capture FREE 20 / MONTHLY.' }),
+      ]),
+      el('button', { class: 'btn small', text: 'Add value', onclick: () => openPlanPolicyValueModal({ planKey: addPlanKey }) }),
+    ]),
+    renderPlanPolicyValuePlanFilter(items, subscriptionPlans, selectedPlan),
+    filteredItems.length
+      ? el('div', { class: 'registry-list' }, visibleItems.map((item) => el('article', { class: 'registry-row' }, [
+        el('div', {}, [el('strong', { text: `${item.policyKey} · ${item.planKey}` }), el('small', { text: formatPlanValueDisplay(item) })]),
+        el('span', { class: `badge ${item.enabled ? 'success' : 'neutral'}`, text: item.enabled ? 'Enabled' : 'Disabled' }),
+        el('span', { class: 'badge info', text: item.source || 'policy value' }),
+        el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openPlanPolicyValueModal({ valueItem: item }) }),
+      ])))
+      : el('div', { class: 'empty-state compact-empty' }, [el('strong', { text: selectedPlan ? 'No policy values found for this plan.' : 'No records loaded yet.' })]),
+    filteredItems.length > visibleItems.length ? el('small', { class: 'field-help block', text: `Showing first ${visibleItems.length} of ${filteredItems.length} matching values. Use search or plan filter to narrow results.` }) : null,
+  ]);
+}
+
+function renderPlanPolicyValuePlanFilter(items = [], subscriptionPlans = [], selectedPlan = '') {
+  const counts = buildPlanPolicyValuePlanCounts(items);
+  const planKeys = buildPlanPolicyValuePlanFilterKeys(subscriptionPlans, items);
+  const searchText = String(state.adminFilters.planMatrixSearch || '').trim();
+  const options = [
+    { planKey: '', label: 'All plans', count: items.length },
+    ...planKeys.map((planKey) => ({ planKey, label: getPlanPolicyValueFilterLabel(planKey, subscriptionPlans), count: counts.get(planKey) || 0 })),
+  ];
+  return el('div', { class: 'plan-policy-value-filter' }, [
+    el('div', {}, [
+      el('strong', { text: 'Filter plan policy values' }),
+      el('small', { class: 'field-help block', text: searchText ? `Also matching search: “${searchText}”` : 'Frontend-only filter. Uses loaded subscription plans and policy values without another backend call.' }),
+    ]),
+    el('div', { class: 'actions compact-actions plan-policy-value-filter-actions' }, options.map((option) => el('button', {
+      class: `btn small ${String(selectedPlan || '') === String(option.planKey || '') ? '' : 'ghost'}`,
+      text: `${option.label} ${option.count}`,
+      onclick: () => {
+        state.adminFilters.planMatrixPlanPolicyValuePlan = option.planKey;
+        render();
+      },
+    }))),
+  ]);
+}
+
+function filterPlanPolicyValueRegistryItems(items = [], selectedPlan = '') {
+  const search = String(state.adminFilters.planMatrixSearch || '').trim().toLowerCase();
+  return (items || []).filter((item) => {
+    const planKey = String(item.planKey || '').toUpperCase();
+    const matchesPlan = !selectedPlan || planKey === String(selectedPlan).toUpperCase();
+    const haystack = [item.policyKey, item.planKey, item.source, formatPlanValueDisplay(item)].join(' ').toLowerCase();
+    return matchesPlan && (!search || haystack.includes(search));
+  });
+}
+
+function buildPlanPolicyValuePlanCounts(items = []) {
+  return (items || []).reduce((acc, item) => {
+    const planKey = String(item.planKey || '').toUpperCase();
+    if (!planKey) return acc;
+    acc.set(planKey, (acc.get(planKey) || 0) + 1);
+    return acc;
+  }, new Map());
+}
+
+function buildPlanPolicyValuePlanFilterKeys(subscriptionPlans = [], items = []) {
+  return uniqueSortedOptions([
+    ...(subscriptionPlans || []).filter((plan) => plan.enabled !== false).map((plan) => plan.planKey),
+    ...(items || []).map((item) => item.planKey),
+  ].filter(Boolean));
+}
+
+function getPlanPolicyValueFilterLabel(planKey, subscriptionPlans = []) {
+  const normalized = String(planKey || '').toUpperCase();
+  const plan = (subscriptionPlans || []).find((item) => String(item.planKey || '').toUpperCase() === normalized);
+  return plan?.displayNameEn || humanizeKey(normalized);
 }
 
 function renderRegistryCard(title, helper, actionText, actionHandler, items, renderer) {
@@ -6765,12 +6837,12 @@ function renderAdminControlPage() {
     ]));
     children.push(renderPlanMatrixPage());
   } else if (state.activeTab === 'featureLimits') {
-    children.push(renderAdminControlHero('Feature Limits', 'Control quota, preset, wallet, dashboard, and collaboration limits from backend policy.', 'Use this page for limits such as Smart Capture 20/week, OCR 20/month, expense presets, wallet slots, group limits, and dashboard history. Changes are audited and should keep local app fallback compatibility.'));
-    children.push(renderFeatureLimitToolbar());
-    if (state.data?.planFilterWarning) children.push(el('div', { class: 'notice warning inline-notice dynamic-plan-warning', text: state.data.planFilterWarning }));
-    children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Limit changes affect user entitlement and quota. Save actions now bump the mobile policy revision, so mobile devices can refresh the cached policy only after Admin changes.'));
-    children.push(renderControlList(items, renderFeatureLimitItem, 'No feature limits found.'));
+    children.push(renderAdminControlHero('Plan Matrix', 'Feature Limits has moved to Plan Matrix.', 'Feature Limits is now legacy fallback data. Use Plan Matrix as the source of truth for Free/Pro plan policy values.'));
+    children.push(el('div', { class: 'notice info inline-notice' }, [
+      el('strong', { text: 'Feature Limits is deprecated in Admin UI.' }),
+      el('p', { text: 'Plan-aware limits such as income_presets FREE = 0 and PRO = 3 must be edited in Plan Matrix.' }),
+      el('button', { class: 'btn small', text: 'Open Plan Matrix', onclick: () => setActiveTab('planMatrix') }),
+    ]));
   } else if (state.activeTab === 'featureFlags') {
     children.push(renderAdminControlHero('Feature Flags', 'Remote kill switches for Smart Capture, OCR, cloud, collaboration, and future features.', 'Flags should be used to safely disable risky features without a new app release. Avoid enabling experimental features such as income auto-save unless the app has strict safety checks.'));
     children.push(renderFeatureFlagToolbar());
