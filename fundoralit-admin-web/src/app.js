@@ -41,6 +41,7 @@ const API_PATHS = {
     features: '/api/analytics/admin/features',
     invites: '/api/analytics/admin/invites',
     smartCapture: '/api/analytics/admin/smart-capture',
+    conversion: '/api/analytics/admin/conversion',
   },
   featureLimits: {
     list: '/api/admin/feature-limits',
@@ -233,6 +234,33 @@ function getMetric(obj, keys, fallback = 0) {
   return fallback;
 }
 
+function toneForMinimum(value, goodThreshold, warningThreshold) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '';
+  if (num >= goodThreshold) return 'good';
+  if (num >= warningThreshold) return 'warn';
+  return 'danger';
+}
+
+function toneForMaximum(value, goodThreshold, warningThreshold) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '';
+  if (num <= goodThreshold) return 'good';
+  if (num <= warningThreshold) return 'warn';
+  return 'danger';
+}
+
+function normalizeAnalyticsList(segment, key) {
+  if (Array.isArray(segment)) return segment;
+  if (!segment || typeof segment !== 'object') return [];
+  const value = segment[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function renderAnalyticsExplanation(text) {
+  return el('p', { class: 'muted analytics-helper-text', text });
+}
+
 const initialAnalyticsPreset = '30d';
 const initialAnalyticsDateRange = getAnalyticsPresetRange(initialAnalyticsPreset);
 
@@ -334,6 +362,7 @@ const state = {
     features: null,
     invites: null,
     smartCapture: null,
+    conversion: null,
   },
   analyticsLoading: false,
   analyticsError: '',
@@ -1318,6 +1347,7 @@ async function loadAnalyticsData(loadRequest = null) {
     ['features', API_PATHS.analytics.features],
     ['invites', API_PATHS.analytics.invites],
     ['smartCapture', API_PATHS.analytics.smartCapture],
+    ['conversion', API_PATHS.analytics.conversion],
   ].map(async ([key, path]) => {
     try {
       const response = await api(path, { params });
@@ -1331,7 +1361,7 @@ async function loadAnalyticsData(loadRequest = null) {
   if (!isLoadRequestCurrent(request)) return;
 
   const failedSections = [];
-  const nextData = { overview: null, retention: null, funnel: null, features: null, invites: null, smartCapture: null };
+  const nextData = { overview: null, retention: null, funnel: null, features: null, invites: null, smartCapture: null, conversion: null };
 
   results.forEach((result) => {
     if (result.status !== 'fulfilled' || !result.value) {
@@ -2751,30 +2781,34 @@ function renderAnalyticsDashboard() {
   const features = normalizeAnalyticsResponse(state.analyticsData.features) || {};
   const invites = normalizeAnalyticsResponse(state.analyticsData.invites) || {};
   const smartCapture = normalizeAnalyticsResponse(state.analyticsData.smartCapture) || {};
+  const conversion = normalizeAnalyticsResponse(state.analyticsData.conversion) || {};
+  const conversionFunnel = normalizeAnalyticsResponse(conversion.funnel) || {};
+  const limitMetrics = normalizeAnalyticsResponse(conversion.limits) || {};
+  const byLimitType = normalizeAnalyticsList(conversion, 'byLimitType');
+  const bySourceScreen = normalizeAnalyticsList(conversion, 'bySourceScreen');
 
   const overviewCards = [
-    ['DAU', formatMetricValue(getMetric(overview, ['dau'])), 'Daily active users.'],
+    ['DAU', formatMetricValue(getMetric(overview, ['dau'])), 'Daily active users today.'],
     ['WAU', formatMetricValue(getMetric(overview, ['wau'])), 'Weekly active users.'],
     ['MAU', formatMetricValue(getMetric(overview, ['mau'])), 'Monthly active users.'],
-    ['Active users', formatMetricValue(getMetric(overview, ['activeUsers'])), 'Users active in the selected period.'],
-    ['New users', formatMetricValue(getMetric(overview, ['newUsers'])), 'New signups or first-time users.'],
-    ['Paid users', formatMetricValue(getMetric(overview, ['paidUsers', 'activePaidUsers'])), 'Users on paid plans.'],
-    ['D7 retention', formatPercent(getMetric(overview, ['d7RetentionRate', 'd7Retention'])), 'Seven-day return rate.'],
-    ['D30 retention', formatPercent(getMetric(overview, ['d30RetentionRate', 'd30Retention'])), 'Thirty-day return rate.'],
-    ['Avg transactions / WAU', formatMetricValue(getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser'])), 'Transactions per weekly active user.'],
-    ['Users with \u22655 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Users reaching the weekly activity threshold.'],
-    ['Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Invites sent through the app.'],
-    ['Smart Capture enabled users', formatMetricValue(getMetric(overview, ['smartCaptureEnabledUsers'])), 'Users with Smart Capture enabled.'],
-    ['Smart Capture candidate saved rate', formatPercent(getMetric(overview, ['smartCaptureCandidateSavedRate', 'candidateSavedRate'])), 'Proportion of candidates saved.'],
-  ].map(([label, value, hint]) => renderAnalyticsCard(label, value, hint));
+    ['New users', formatMetricValue(getMetric(overview, ['newUsers'])), 'New accounts in selected range.'],
+    ['Paid users', formatMetricValue(getMetric(overview, ['paidUsers'])), 'Users with non-free entitlement.'],
+    ['Free to paid', formatPercent(getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion'])), 'Current paid conversion.', toneForMinimum(getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion']), 3, 1)],
+    ['D7 retention', formatPercent(getMetric(overview, ['d7RetentionRate', 'd7Retention'])), 'Cohort D7 retention.', toneForMinimum(getMetric(overview, ['d7RetentionRate', 'd7Retention']), 8, 4)],
+    ['D30 retention', formatPercent(getMetric(overview, ['d30RetentionRate', 'd30Retention'])), 'Cohort D30 retention.', toneForMinimum(getMetric(overview, ['d30RetentionRate', 'd30Retention']), 8, 4)],
+    ['Smart Capture saved rate', formatPercent(getMetric(overview, ['smartCaptureCandidateSavedRate'])), 'Saved / detected candidate rate.'],
+    ['Limit upgrade CTR', formatPercent(getMetric(limitMetrics, ['upgradeClickRate'])), 'Upgrade clicks after limit reached.', toneForMinimum(getMetric(limitMetrics, ['upgradeClickRate']), 20, 8)],
+    ['Limit dismiss rate', formatPercent(getMetric(limitMetrics, ['dismissRate'])), 'Dismisses after limit reached.', toneForMaximum(getMetric(limitMetrics, ['dismissRate']), 35, 60)],
+    ['Trial extension CTR', formatPercent(getMetric(conversionFunnel, ['extensionClickRate'])), 'Clicks on feedback +7 prompt.', toneForMinimum(getMetric(conversionFunnel, ['extensionClickRate']), 25, 10)],
+  ].map(([label, value, hint, tone]) => renderAnalyticsCard(label, value, hint, tone || ''));
 
   const targetCards = [
     renderAnalyticsProgress('D30 retention target', getMetric(overview, ['d30RetentionRate', 'd30Retention']), 8, '%', 'Target >= 8%'),
     renderAnalyticsProgress('Free to paid conversion target', getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion']), 3, '%', 'Target >= 3%'),
+    renderAnalyticsProgress('Limit upgrade CTR target', getMetric(limitMetrics, ['upgradeClickRate']), 20, '%', 'Target >= 20%'),
+    renderAnalyticsProgress('Trial extension CTR target', getMetric(conversionFunnel, ['extensionClickRate']), 25, '%', 'Target >= 25%'),
     renderAnalyticsProgress('Transaction frequency target', getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser']), 5, '', 'Target >= 5 per WAU'),
-    renderAnalyticsCard('Users with \u22655 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
-    renderAnalyticsProgress('Paid users target', getMetric(overview, ['paidUsers', 'activePaidUsers']), 100, '', 'Early validation target 100-300'),
-    renderAnalyticsCard('Invite sent count', formatMetricValue(getMetric(overview, ['inviteSentCount', 'totalInviteSent'])), 'Shows whether Group Event / Group Goal has viral potential.'),
+    renderAnalyticsCard('Users with ≥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
   ];
 
   const retentionTable = renderAnalyticsSection('Retention cohorts', 'Returns for new user cohorts over time.', [
@@ -2787,17 +2821,53 @@ function renderAnalyticsDashboard() {
     ]) : [['No retention cohorts found', '']])
   ]);
 
-  const funnelCards = renderAnalyticsSection('Paywall funnel', 'Conversion stages from paywall view to subscription started.', [
-    renderAnalyticsMiniTable('Funnel summary', [
-      ['Paywall viewed users', formatMetricValue(getMetric(funnel, ['paywallViewedUsers']))],
-      ['Trial started users', formatMetricValue(getMetric(funnel, ['trialStartedUsers']))],
-      ['Subscription started users', formatMetricValue(getMetric(funnel, ['subscriptionStartedUsers']))],
-      ['Conversion rate', formatPercent(getMetric(funnel, ['conversionRate', 'freeToPaidConversion']))],
-      ['Cancellation detected users', formatMetricValue(getMetric(funnel, ['cancellationDetectedUsers']))],
+  const conversionFunnelRows = [
+    ['Paywall viewed users', formatMetricValue(getMetric(conversionFunnel, ['paywallViewedUsers'], getMetric(funnel, ['paywallViewedUsers'])))],
+    ['Trial started users', formatMetricValue(getMetric(conversionFunnel, ['trialStartedUsers'], getMetric(funnel, ['trialStartedUsers'])))],
+    ['Feedback +7 viewed', formatMetricValue(getMetric(conversionFunnel, ['trialExtensionPromptViewedUsers']))],
+    ['Feedback +7 clicked', formatMetricValue(getMetric(conversionFunnel, ['trialExtensionPromptClickedUsers']))],
+    ['Feedback trial granted', formatMetricValue(getMetric(conversionFunnel, ['feedbackTrialGrantedUsers']))],
+    ['Subscription started users', formatMetricValue(getMetric(conversionFunnel, ['subscriptionStartedUsers'], getMetric(funnel, ['subscriptionStartedUsers'])))],
+    ['Paywall → Trial', formatPercent(getMetric(conversionFunnel, ['paywallToTrialRate']))],
+    ['Trial → Subscription', formatPercent(getMetric(conversionFunnel, ['trialToSubscriptionRate']))],
+    ['Feedback +7 CTR', formatPercent(getMetric(conversionFunnel, ['extensionClickRate']))],
+  ];
+
+  const conversionFunnelSection = renderAnalyticsSection('Free to Pro Conversion Funnel', 'Shows where users drop off between paywall, trial, feedback +7 and subscription.', [
+    renderAnalyticsExplanation('High drop-off before Trial Started usually means paywall value or CTA is weak. High drop-off after Trial Started points to trial experience, expiry timing or payment readiness.'),
+    renderAnalyticsMiniTable('Conversion funnel', conversionFunnelRows),
+  ]);
+
+  const limitPerformanceRows = byLimitType.length ? byLimitType.map((row) => [
+    row.limitType || 'unknown',
+    formatMetricValue(getMetric(row, ['shownUsers'])),
+    formatMetricValue(getMetric(row, ['reachedUsers'])),
+    formatMetricValue(getMetric(row, ['upgradeClickedUsers'])),
+    formatMetricValue(getMetric(row, ['dismissedUsers'])),
+    formatPercent(getMetric(row, ['upgradeClickRate'])),
+    formatPercent(getMetric(row, ['dismissRate'])),
+  ]) : [['No limit modal events found', '-', '-', '-', '-', '-', '-']];
+
+  const sourceScreenRows = bySourceScreen.length ? bySourceScreen.map((row) => [
+    row.sourceScreen || 'unknown',
+    formatMetricValue(getMetric(row, ['shownUsers'])),
+    formatMetricValue(getMetric(row, ['upgradeClickedUsers'])),
+    formatPercent(getMetric(row, ['upgradeClickRate'])),
+  ]) : [['No source screen events found', '-', '-', '-']];
+
+  const limitModalSection = renderAnalyticsSection('Limit Modal Performance', 'Measures which limits create real upgrade intent and which ones users dismiss.', [
+    renderAnalyticsExplanation('High Upgrade CTR means this limit is a strong Pro value driver. High Dismiss Rate means the modal may be too aggressive, unclear or shown too early.'),
+    renderAnalyticsMiniTable('Limit Type performance', [
+      ['Limit Type', 'Shown', 'Reached', 'Upgrade Clicked', 'Dismissed', 'Upgrade CTR', 'Dismiss Rate'],
+      ...limitPerformanceRows,
+    ]),
+    renderAnalyticsMiniTable('Source Screen Performance', [
+      ['Source Screen', 'Shown', 'Upgrade Clicked', 'Upgrade CTR'],
+      ...sourceScreenRows,
     ]),
   ]);
 
-  const featuresList = renderAnalyticsSection('Feature adoption', 'Adoption levels for core product interactions.', [
+  const featuresList = renderAnalyticsSection('Feature Value Drivers', 'Adoption levels for core product interactions and Pro value drivers.', [
     renderAnalyticsBarList('Feature usage', [
       { label: 'Transaction users', value: getMetric(features, ['transactionUsers']) },
       { label: 'OCR saved users', value: getMetric(features, ['ocrSavedUsers']) },
@@ -2854,14 +2924,15 @@ function renderAnalyticsDashboard() {
 
   return el('div', {}, [
     renderAnalyticsHero(),
+    renderAnalyticsSection('Executive Summary', 'Quick reads for retention, monetization and conversion health.', [
+      el('div', { class: 'analytics-grid' }, overviewCards),
+    ]),
     renderAnalyticsSection('Product-market fit targets', 'Quick checks for the launch validation targets you care about most.', [
       el('div', { class: 'analytics-target-grid' }, targetCards),
     ]),
-    renderAnalyticsSection('Overview metrics', 'Core activity and retention signals for the selected date range.', [
-      el('div', { class: 'analytics-grid' }, overviewCards),
-    ]),
+    conversionFunnelSection,
+    limitModalSection,
     retentionRows.length ? retentionTable : renderAnalyticsEmptyState(),
-    funnelCards,
     featuresList,
     invitesSection,
     smartCaptureSection,
