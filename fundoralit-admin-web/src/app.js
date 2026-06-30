@@ -526,6 +526,18 @@ const ANNOUNCEMENT_LEGACY_ACTIONS = new Set([
   'open_group_events',
   'open_expense_analysis',
 ]);
+const FEEDBACK_NOTIFICATION_CTA_OPTIONS = [
+  'open_feedback',
+  'open_premium_status',
+  'fundoralit://dashboard',
+  'fundoralit://premium/status',
+  'fundoralit://feedback',
+  'fundoralit://smart-capture/settings',
+  'fundoralit://smart-capture/review',
+  'fundoralit://expenses/list',
+  'fundoralit://goals',
+  'fundoralit://groups/events',
+];
 
 function isExternalAnnouncementUrl(value) {
   const text = normalizedTrim(value);
@@ -1737,6 +1749,8 @@ function openCloseModal(kind, item) {
     userEmail: item.userEmail || extractEmailFromDebugJson(item.debugJson) || '',
     notifyUser: true,
     adminReplyMessage: '',
+    notificationCtaLabel: isReward ? 'View Pro status' : 'View feedback',
+    notificationCtaAction: isReward ? 'open_premium_status' : 'open_feedback',
     defaultPreview: buildDefaultCloseMessage(kind, item),
   };
   render();
@@ -1777,6 +1791,8 @@ async function submitCloseModal() {
   const body = {
     notifyUser: Boolean(state.modal.notifyUser),
     adminReplyMessage: String(state.modal.adminReplyMessage || '').trim() || null,
+    notificationCtaLabel: String(state.modal.notificationCtaLabel || '').trim() || null,
+    notificationCtaAction: String(state.modal.notificationCtaAction || '').trim() || null,
   };
   await performPatchAction(path, kind === 'rewardSurvey' ? 'Reward survey closed.' : 'Feedback closed.', body);
 }
@@ -3082,6 +3098,8 @@ function openFeedbackReviewModal(item, presetStatus = null) {
     reviewReason: item.reviewReason || '',
     reviewEvidence: item.reviewEvidence || '',
     suggestedCreditDays,
+    notificationCtaLabel: 'View feedback',
+    notificationCtaAction: 'open_feedback',
   };
   render();
 }
@@ -3097,6 +3115,8 @@ function openFeedbackCreditModal(item) {
     suggestedCreditDays: suggested,
     reason: item.creditReason || item.reviewReason || buildCreditReason(item),
     notifyUser: true,
+    notificationCtaLabel: 'View Pro status',
+    notificationCtaAction: 'open_premium_status',
   };
   render();
 }
@@ -3105,6 +3125,32 @@ function buildCreditReason(item) {
   const level = String(item.bugLevel || item.severity || 'verified').toLowerCase();
   const module = item.module || 'Fundoralit';
   return `Verified ${level} issue affecting ${module}.`;
+}
+
+function renderFeedbackNotificationCtaFields(modal, { defaultLabel = 'View feedback', defaultAction = 'open_feedback' } = {}) {
+  if (!modal.notificationCtaLabel) modal.notificationCtaLabel = defaultLabel;
+  if (!modal.notificationCtaAction) modal.notificationCtaAction = defaultAction;
+  const labelInput = el('input', {
+    value: modal.notificationCtaLabel || defaultLabel,
+    maxlength: String(LIMITS.announcementCtaLabelMax),
+    placeholder: defaultLabel,
+  });
+  labelInput.addEventListener('input', () => { modal.notificationCtaLabel = labelInput.value; });
+  const actionSelect = select(FEEDBACK_NOTIFICATION_CTA_OPTIONS, modal.notificationCtaAction || defaultAction, (value) => {
+    modal.notificationCtaAction = value || defaultAction;
+  });
+  return el('div', { class: 'form-grid two' }, [
+    el('div', { class: 'field' }, [
+      el('label', { text: 'In-app CTA label' }),
+      labelInput,
+      el('small', { class: 'field-help', text: 'Default for reward/credit messages is “View Pro status” so the user can check the plan view.' }),
+    ]),
+    el('div', { class: 'field' }, [
+      el('label', { text: 'In-app CTA destination' }),
+      actionSelect,
+      el('small', { class: 'field-help', text: 'Admin can keep the safe default or route the user to feedback detail, Pro status, dashboard, or another supported internal screen.' }),
+    ]),
+  ]);
 }
 
 async function submitFeedbackReviewModal() {
@@ -3122,6 +3168,8 @@ async function submitFeedbackReviewModal() {
     reviewReason: String(state.modal.reviewReason || '').trim() || null,
     reviewEvidence: String(state.modal.reviewEvidence || '').trim() || null,
     notifyUser: Boolean(state.modal.notifyUser),
+    notificationCtaLabel: String(state.modal.notificationCtaLabel || '').trim() || null,
+    notificationCtaAction: String(state.modal.notificationCtaAction || '').trim() || null,
   };
   await performPatchAction(API_PATHS.feedback.review(state.modal.id), 'Feedback review updated.', body);
 }
@@ -3135,6 +3183,8 @@ async function submitFeedbackCreditModal() {
     creditDays,
     reason: String(state.modal.reason || '').trim() || buildCreditReason(state.modal.item || {}),
     notifyUser: Boolean(state.modal.notifyUser),
+    notificationCtaLabel: String(state.modal.notificationCtaLabel || '').trim() || null,
+    notificationCtaAction: String(state.modal.notificationCtaAction || '').trim() || null,
   };
   if (state.modal) {
     state.modal.loading = true;
@@ -3346,6 +3396,10 @@ function renderCloseModal() {
           el('label', { text: 'Optional in-app reply message' }),
           bodyText,
         ]),
+        renderFeedbackNotificationCtaFields(state.modal, {
+          defaultLabel: state.modal.kind === 'rewardSurvey' ? 'View Pro status' : 'View feedback',
+          defaultAction: state.modal.kind === 'rewardSurvey' ? 'open_premium_status' : 'open_feedback',
+        }),
         el('details', { class: 'default-preview' }, [
           el('summary', { text: 'Default in-app message preview' }),
           el('pre', { text: state.modal.defaultPreview || '' }),
@@ -3437,6 +3491,7 @@ function renderFeedbackReviewModal() {
         ]),
         el('div', { class: modalFieldClass('reviewReason') }, [el('label', { text: 'Review reason' }), reason, renderFieldError('reviewReason')]),
         el('div', { class: modalFieldClass('reviewEvidence') }, [el('label', { text: 'Evidence / proof for audit' }), evidence, renderFieldError('reviewEvidence')]),
+        renderFeedbackNotificationCtaFields(modal, { defaultLabel: 'View feedback', defaultAction: 'open_feedback' }),
         el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user in app' })]),
         el('small', { class: 'field-help', text: 'Creates an in-app message shown when the user opens Fundoralit. No email/domain is required.' }),
         el('details', { class: 'default-preview' }, [el('summary', { text: 'In-app message preview' }), el('pre', { text: preview })]),
@@ -3487,6 +3542,7 @@ function renderFeedbackCreditModal() {
         ]),
         el('div', { class: modalFieldClass('creditDays') }, [el('label', { text: 'Final credit days' }), daysInput, renderFieldError('creditDays'), el('small', { class: 'field-help', text: 'Recommended: use backend suggestion unless there is a clear reason.' })]),
         el('div', { class: 'field' }, [el('label', { text: 'Credit reason' }), reason]),
+        renderFeedbackNotificationCtaFields(modal, { defaultLabel: 'View Pro status', defaultAction: 'open_premium_status' }),
         el('label', { class: 'check-row' }, [notify, el('span', { text: 'Notify user in app' })]),
         el('small', { class: 'field-help', text: 'When enabled, Fundoralit will show a user-specific in-app message after the backend confirms the reward status. It will not send email.' }),
         el('small', { class: 'field-help warning-text', text: 'If Google Play defer is still pending, the app message should say the credit is being processed, not completed.' }),
