@@ -26,4 +26,10 @@ assert(/\.actions\s+\.btn,[\s\S]*width:\s*100%/.test(styles), 'Mobile action but
 assert(/white-space:\s*normal/.test(styles), 'Buttons/badges must allow wrapping for long text.');
 assert(/\.info-popover[\s\S]*max-width:\s*min\(340px,\s*calc\(100vw/.test(styles), 'Info popovers must be viewport bounded.');
 
+assert(/function\s+createAdminLoginForm/.test(fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8')), 'Login form must be reusable outside the header.');
+assert(/signed-out-login-panel/.test(styles), 'Mobile signed-out card must expose a login panel, not only a header login form.');
+assert(/@media\s*\(max-width:\s*760px\)[\s\S]*\.app-header \.auth-box:has\(\.login-grid\)[\s\S]*display:\s*none/.test(styles), 'Phone layout must hide cramped header login and show the main-card login.');
+assert(/@media\s*\(max-width:\s*760px\)[\s\S]*\.signed-out-login-panel[\s\S]*display:\s*block/.test(styles), 'Phone layout must show signed-out login panel.');
+assert(/@media\s*\(max-width:\s*760px\)[\s\S]*#mainContent[\s\S]*padding:/.test(styles), 'Main content needs mobile safe padding.');
+
 console.log('responsiveWebUiAudit passed');

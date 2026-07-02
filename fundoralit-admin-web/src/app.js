@@ -1891,6 +1891,34 @@ function renderHeader() {
   }
 }
 
+function createAdminLoginForm({ className = 'login-grid', compact = false } = {}) {
+  const email = el('input', { type: 'email', placeholder: 'Admin email', autocomplete: 'email' });
+  const password = el('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
+  const form = el('form', { class: className }, [
+    el('div', { class: 'field' }, [el('label', { text: compact ? 'Email' : 'Firebase Admin Login' }), email]),
+    el('div', { class: 'field' }, [el('label', { text: 'Password' }), password]),
+    el('button', { class: 'btn', type: 'submit', text: 'Sign in' }),
+  ]);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    state.error = '';
+    render();
+    try {
+      await signInAdminWithPassword(email.value, password.value);
+      state.page = 0;
+      clearScopedData(state.activeTab);
+      state.message = '';
+      state.error = '';
+      render();
+      loadData();
+    } catch (error) {
+      setMessage(error.message || 'Login failed.', true);
+      render();
+    }
+  });
+  return form;
+}
+
 function renderAuth() {
   clear(authBox);
   if (!state.auth) {
@@ -1899,31 +1927,7 @@ function renderAuth() {
   }
 
   if (!state.user) {
-    const email = el('input', { type: 'email', placeholder: 'Admin email', autocomplete: 'email' });
-    const password = el('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
-    const form = el('form', { class: 'login-grid' }, [
-      el('div', { class: 'field' }, [el('label', { text: 'Firebase Admin Login' }), email]),
-      el('div', { class: 'field' }, [el('label', { text: 'Password' }), password]),
-      el('button', { class: 'btn', type: 'submit', text: 'Sign in' }),
-    ]);
-    form.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      state.error = '';
-      render();
-      try {
-        await signInAdminWithPassword(email.value, password.value);
-        state.page = 0;
-        clearScopedData(state.activeTab);
-        state.message = '';
-        state.error = '';
-        render();
-        loadData();
-      } catch (error) {
-        setMessage(error.message || 'Login failed.', true);
-        render();
-      }
-    });
-    authBox.appendChild(form);
+    authBox.appendChild(createAdminLoginForm());
     return;
   }
 
@@ -7095,12 +7099,19 @@ function renderAdminShell(children) {
 }
 
 function renderSignedOut() {
-  return el('section', { class: 'card signed-out-card' }, [
+  const children = [
     el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }),
     el('h2', { text: 'Sign in required' }),
     el('p', { class: 'muted', text: 'Use a Firebase account that is allowed by the Core Backend admin allowlist. This frontend does not decide who is admin.' }),
-    ...renderNotice(),
-  ]);
+  ];
+  if (state.auth) {
+    children.push(el('div', { class: 'signed-out-login-panel' }, [
+      el('p', { class: 'muted signed-out-login-help', text: 'Sign in here on phones or small tablets.' }),
+      createAdminLoginForm({ className: 'login-grid signed-out-login-grid', compact: true }),
+    ]));
+  }
+  children.push(...renderNotice());
+  return el('section', { class: 'card signed-out-card' }, children);
 }
 
 function render() {

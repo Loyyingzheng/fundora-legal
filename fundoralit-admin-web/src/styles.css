@@ -4444,3 +4444,256 @@ code {
     width: 100%;
   }
 }
+
+/* Final mobile-first responsiveness guard: keep sign-in and content usable on phones. */
+html,
+body,
+#app {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  min-width: 0;
+}
+
+.app-shell,
+#mainContent,
+.admin-main,
+.page-section,
+.card,
+.item,
+.analytics-section,
+.analytics-hero {
+  min-width: 0;
+}
+
+/* The signed-out login form must not depend on a wide header. */
+.signed-out-login-panel {
+  display: none;
+  width: min(100%, 440px);
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.signed-out-login-help {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+}
+
+.signed-out-login-grid {
+  width: 100%;
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    width: 100%;
+    padding-bottom: max(28px, env(safe-area-inset-bottom));
+  }
+
+  .app-header.topbar {
+    position: sticky;
+    top: 0;
+    width: 100%;
+    min-height: 56px;
+    margin: 0;
+    padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+    border-radius: 0 0 16px 16px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    column-gap: 8px;
+  }
+
+  .header-menu-button,
+  .header-logout-button {
+    width: 40px;
+    height: 40px;
+    border-radius: 14px;
+  }
+
+  .header-logo {
+    width: 34px;
+    height: 34px;
+    border-radius: 12px;
+  }
+
+  .app-header .header-title-block {
+    min-width: 0;
+  }
+
+  .app-header h1 {
+    max-width: 100%;
+    font-size: clamp(16px, 5vw, 20px);
+    line-height: 1.1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .app-header .subtitle,
+  .app-header .eyebrow {
+    display: none;
+  }
+
+  /* On phones the header should stay compact; sign-in lives in the main card. */
+  .app-header .auth-box:has(.login-grid) {
+    display: none;
+  }
+
+  #mainContent {
+    width: 100%;
+    padding: 10px max(10px, env(safe-area-inset-right)) 24px max(10px, env(safe-area-inset-left));
+  }
+
+  .signed-out-card {
+    width: 100%;
+    min-height: 0;
+    padding: 22px 14px;
+    align-content: start;
+  }
+
+  .signed-out-card h2 {
+    font-size: clamp(18px, 6vw, 24px);
+    line-height: 1.15;
+  }
+
+  .signed-out-card p {
+    max-width: 100%;
+  }
+
+  .signed-out-login-panel {
+    display: block;
+  }
+
+  .signed-out-login-grid,
+  .app-header .login-grid {
+    position: static;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .signed-out-login-grid .field,
+  .app-header .login-grid .field {
+    margin-bottom: 0;
+  }
+
+  .signed-out-login-grid label {
+    display: block;
+  }
+
+  .signed-out-login-grid input,
+  .signed-out-login-grid .btn,
+  .app-header .login-grid input,
+  .app-header .login-grid .btn {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .tabs,
+  .toolbar,
+  .analytics-toolbar,
+  .control-toolbar,
+  .feedback-toolbar,
+  .plan-matrix-toolbar,
+  .form-grid.two,
+  .stats-grid,
+  .analytics-grid,
+  .analytics-target-grid,
+  .analytics-funnel-grid,
+  .admin-control-grid,
+  .policy-grid,
+  .usage-grid,
+  .meta-grid,
+  .plan-registry-grid,
+  .learning-ops-grid,
+  .learning-ops-action-grid,
+  .learning-ops-metrics,
+  .audit-json-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .toolbar .wide,
+  .feedback-toolbar .wide {
+    grid-column: auto !important;
+  }
+
+  .row,
+  .actions,
+  .modal-actions,
+  .space-between,
+  .item-head,
+  .analytics-section-head,
+  .section-header-card {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .actions .btn,
+  .modal-actions .btn,
+  .analytics-toolbar-actions .btn,
+  .feedback-actions .btn,
+  .compact-actions .btn,
+  .pagination .btn {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .card,
+  .item,
+  .analytics-section,
+  .analytics-hero,
+  .stat,
+  .analytics-card,
+  .analytics-target-card {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .table-wrap,
+  .data-table-wrap,
+  .audit-table-wrap,
+  .analytics-mini-table,
+  .plan-matrix-scroll,
+  .table-scroll,
+  .learning-ops-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-backdrop {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .modal-card,
+  .modal-card-wide {
+    width: 100%;
+    max-width: 100%;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 380px) {
+  .header-logo {
+    display: inline-block;
+    width: 30px;
+    height: 30px;
+  }
+
+  .app-header.topbar {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .app-header .auth-box,
+  .header-info-slot:empty {
+    display: none;
+  }
+}
