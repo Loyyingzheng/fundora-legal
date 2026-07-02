@@ -3959,3 +3959,488 @@ summary:focus-visible {
   margin: 0 0 14px;
   line-height: 1.55;
 }
+
+/* Responsive admin web hardening ------------------------------------------
+   Final override layer for phone, tablet, foldable and desktop usage. Keep
+   data-heavy screens usable with local horizontal scroll only inside tables,
+   while cards/forms/toolbars wrap instead of overflowing the viewport. */
+:root {
+  --admin-safe-gutter: clamp(10px, 1.4vw, 20px);
+  --admin-control-min: min(100%, 180px);
+}
+
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+img,
+svg,
+canvas,
+video,
+iframe {
+  max-width: 100%;
+}
+
+#app,
+#mainContent,
+.admin-layout,
+.admin-main,
+.page-section,
+.admin-control-page,
+.card,
+.item,
+.analytics-section,
+.analytics-hero,
+.modal-card,
+.modal-body,
+.toolbar,
+.analytics-toolbar,
+.control-toolbar,
+.feedback-toolbar,
+.plan-matrix-toolbar,
+.registry-card,
+.policy-shortcut,
+.analytics-card,
+.analytics-target-card,
+.stat,
+.meta,
+.field,
+.row,
+.actions,
+.space-between,
+.section-header-card,
+.item-head,
+.item-summary-copy,
+.item-summary-right,
+.header-title-block,
+.header-title-row,
+.header-auth-inline,
+.header-user-copy {
+  min-width: 0;
+}
+
+#mainContent,
+.admin-main {
+  padding-left: max(var(--admin-safe-gutter), env(safe-area-inset-left));
+  padding-right: max(var(--admin-safe-gutter), env(safe-area-inset-right));
+}
+
+.card,
+.item,
+.analytics-section,
+.analytics-hero,
+.stat,
+.analytics-card,
+.analytics-target-card,
+.registry-card,
+.policy-shortcut,
+.modal-card {
+  overflow-wrap: anywhere;
+}
+
+button,
+.btn,
+.tab,
+.sidebar-link,
+.nav-menu-button,
+.header-menu-button,
+.header-logout-button,
+.link-button,
+.plan-value-button {
+  max-width: 100%;
+  white-space: normal;
+  line-height: 1.2;
+}
+
+.btn,
+.nav-menu-button,
+.header-menu-button,
+.header-logout-button,
+.sidebar-close,
+.info-hint summary {
+  flex-shrink: 0;
+}
+
+input,
+select,
+textarea {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.toolbar,
+.analytics-toolbar,
+.control-toolbar,
+.feedback-toolbar,
+.plan-matrix-toolbar {
+  grid-template-columns: repeat(auto-fit, minmax(var(--admin-control-min), 1fr));
+  align-items: end;
+}
+
+.toolbar .wide,
+.feedback-toolbar .wide {
+  grid-column: span 2;
+}
+
+.actions,
+.modal-actions,
+.analytics-toolbar-actions,
+.feedback-actions,
+.compact-actions,
+.pagination,
+.chip-row,
+.language-badges {
+  min-width: 0;
+  align-items: center;
+}
+
+.actions .btn,
+.modal-actions .btn,
+.analytics-toolbar-actions .btn,
+.feedback-actions .btn,
+.compact-actions .btn {
+  flex: 0 1 auto;
+}
+
+.item-head,
+.analytics-section-head,
+.modal-head,
+.space-between,
+.section-header-card,
+.analytics-progress-meta,
+.analytics-bar-label,
+.policy-shortcut,
+.sidebar-foot,
+.header-auth-inline {
+  flex-wrap: wrap;
+}
+
+.item-summary-right,
+.analytics-section-head > .row,
+.space-between > .row {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.badge,
+.chip,
+.mini-badge,
+.learning-ops-flow-step span {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+
+.badge {
+  align-items: flex-start;
+}
+
+.table-wrap,
+.data-table-wrap,
+.audit-table-wrap,
+.analytics-mini-table,
+.plan-matrix-scroll,
+.table-scroll,
+.learning-ops-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+}
+
+.admin-table,
+.matrix-table,
+.analytics-table,
+.learning-ops-table {
+  table-layout: auto;
+}
+
+.admin-table th,
+.admin-table td,
+.matrix-table th,
+.matrix-table td,
+.analytics-table td,
+.learning-ops-table th,
+.learning-ops-table td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+pre,
+code {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.info-popover {
+  max-width: min(340px, calc(100vw - 2 * var(--admin-safe-gutter)));
+}
+
+.modal-backdrop {
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+}
+
+.modal-card {
+  max-width: calc(100vw - 24px);
+}
+
+.app-header.topbar {
+  padding-left: max(10px, env(safe-area-inset-left));
+  padding-right: max(10px, env(safe-area-inset-right));
+}
+
+.app-header h1,
+.app-header .subtitle,
+.header-user-copy strong,
+.header-user-copy span,
+.sidebar-link-label,
+.sidebar-link-helper,
+.item-title,
+.item-subtitle,
+.analytics-card-label,
+.stat-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.registry-row {
+  min-width: 0;
+}
+
+@media (max-width: 980px) {
+  :root {
+    --admin-control-min: min(100%, 220px);
+  }
+
+  .topbar,
+  .app-header.topbar {
+    grid-template-columns: auto auto minmax(0, 1fr) auto;
+  }
+
+  .section-header-card,
+  .analytics-section-head,
+  .item-head,
+  .space-between {
+    align-items: flex-start;
+  }
+
+  .control-toolbar.control-toolbar-inline-single,
+  .control-toolbar.control-toolbar-inline-double {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+
+  .control-toolbar.control-toolbar-inline-single > .btn,
+  .control-toolbar.control-toolbar-inline-double > .btn {
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  :root {
+    --admin-safe-gutter: 10px;
+    --admin-control-min: 100%;
+  }
+
+  #mainContent,
+  .admin-main {
+    padding-left: max(10px, env(safe-area-inset-left));
+    padding-right: max(10px, env(safe-area-inset-right));
+  }
+
+  .app-header.topbar {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: center;
+    row-gap: 8px;
+  }
+
+  .app-header .auth-box {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .header-auth-inline {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .header-user-copy {
+    display: grid;
+    text-align: left;
+  }
+
+  .header-user-copy span {
+    display: none;
+  }
+
+  .header-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 13px;
+  }
+
+  .toolbar,
+  .analytics-toolbar,
+  .control-toolbar,
+  .feedback-toolbar,
+  .plan-matrix-toolbar,
+  .form-grid.two,
+  .stats-grid,
+  .analytics-grid,
+  .analytics-target-grid,
+  .analytics-funnel-grid,
+  .admin-control-grid,
+  .policy-grid,
+  .usage-grid,
+  .meta-grid,
+  .plan-registry-grid,
+  .learning-ops-grid,
+  .learning-ops-action-grid,
+  .learning-ops-metrics,
+  .audit-json-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .toolbar .wide,
+  .feedback-toolbar .wide {
+    grid-column: auto !important;
+  }
+
+  .actions,
+  .modal-actions,
+  .analytics-toolbar-actions,
+  .feedback-actions,
+  .compact-actions,
+  .pagination {
+    justify-content: stretch;
+  }
+
+  .actions .btn,
+  .modal-actions .btn,
+  .analytics-toolbar-actions .btn,
+  .feedback-actions .btn,
+  .compact-actions .btn,
+  .pagination .btn {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .item-summary-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .item-toggle {
+    margin-left: auto;
+  }
+
+  .modal-backdrop {
+    align-items: stretch;
+    padding: 0;
+  }
+
+  .modal-card,
+  .modal-card-wide {
+    width: 100%;
+    max-width: 100%;
+    max-height: 100dvh;
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+
+  .modal-head,
+  .modal-actions {
+    flex-shrink: 0;
+  }
+
+  .info-popover,
+  .analytics-hero .analytics-section-head .info-popover,
+  .analytics-section-head .info-popover {
+    left: 0;
+    right: auto;
+    max-width: calc(100vw - 28px);
+  }
+}
+
+@media (max-width: 520px) {
+  .app-header h1 {
+    font-size: clamp(16px, 5.2vw, 20px);
+  }
+
+  .app-header .subtitle,
+  .sidebar-link-helper,
+  .tab-helper {
+    display: none;
+  }
+
+  .card,
+  .item,
+  .analytics-section,
+  .analytics-hero,
+  .stat,
+  .analytics-card,
+  .analytics-target-card {
+    border-radius: 16px;
+    padding: 12px;
+  }
+
+  .item-summary {
+    padding: 12px;
+  }
+
+  .item-body {
+    padding: 0 12px 12px;
+  }
+
+  .tabs {
+    grid-template-columns: 1fr;
+    border-radius: 18px;
+  }
+
+  .tab {
+    min-height: 48px;
+  }
+
+  .sidebar-brand {
+    grid-template-columns: 38px minmax(0, 1fr) 36px;
+  }
+
+  .admin-sidebar {
+    width: min(92vw, 360px) !important;
+  }
+
+  .admin-table,
+  .matrix-table,
+  .learning-ops-table {
+    min-width: 720px;
+  }
+}
+
+@media (max-width: 380px) {
+  .header-logo {
+    display: none;
+  }
+
+  .app-header.topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .header-menu-button,
+  .header-logout-button {
+    width: 38px;
+    height: 38px;
+  }
+
+  .btn.small {
+    width: 100%;
+  }
+}
