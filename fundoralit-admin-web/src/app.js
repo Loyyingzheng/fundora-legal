@@ -9,10 +9,13 @@ const coreApiBaseUrl = normalizeBaseUrl(config.coreApiBaseUrl || '');
 const collaborationApiBaseUrl = normalizeBaseUrl(config.collaborationApiBaseUrl || '');
 const firebaseConfig = config.firebase || {};
 const brandLogoSrc = config.brandLogoSrc || './src/assets/fundora-logo.png';
-const FIREBASE_AUTH_SESSION_KEY = 'fundoralit.admin.firebaseAuthSession.v1';
 const FIREBASE_TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
+const ADMIN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const ADMIN_ABSOLUTE_TIMEOUT_MS = 8 * 60 * 60 * 1000;
 const FIREBASE_IDENTITY_TOOLKIT_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
 const FIREBASE_SECURE_TOKEN_BASE_URL = 'https://securetoken.googleapis.com/v1';
+let memoryAuthSession = null;
+let lastAdminActivityAt = Date.now();
 
 // Centralized admin API path presets.
 // Keep all backend route links here so future backend changes only need one small update.
@@ -1031,7 +1034,7 @@ function el(tag, attrs = {}, children = []) {
     if (value === undefined || value === null || value === false) return;
     if (key === 'class') node.className = value;
     else if (key === 'text') node.textContent = String(value);
-    else if (key === 'html') node.innerHTML = String(value);
+    else if (key === 'html') node.textContent = String(value);
     else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value);
     else node.setAttribute(key, String(value));
   });
@@ -1114,24 +1117,18 @@ async function firebaseFormRequest(baseUrl, endpoint, formBody) {
 }
 
 function getStoredAuthSession() {
-  try {
-    const raw = window.sessionStorage.getItem(FIREBASE_AUTH_SESSION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (!parsed.refreshToken || !parsed.email) return null;
-    return parsed;
-  } catch (_) {
-    return null;
-  }
+  return null;
 }
 
 function saveAuthSession(session) {
-  window.sessionStorage.setItem(FIREBASE_AUTH_SESSION_KEY, JSON.stringify(session));
+  memoryAuthSession = {
+    ...(session || {}),
+    signedInAt: session?.signedInAt || Date.now(),
+  };
 }
 
 function clearAuthSession() {
-  window.sessionStorage.removeItem(FIREBASE_AUTH_SESSION_KEY);
+  memoryAuthSession = null;
 }
 
 function normalizeSignInSession(response, existing = {}) {
@@ -1160,6 +1157,7 @@ function applyAuthSession(session) {
     return null;
   }
   saveAuthSession(session);
+  lastAdminActivityAt = Date.now();
   state.user = createFirebaseRestUser(session);
   return state.user;
 }
@@ -1181,7 +1179,22 @@ async function signInAdminWithPassword(email, password, { persist = true } = {})
   return session;
 }
 
-async function refreshFirebaseAuthSession(existing = getStoredAuthSession()) {
+function assertSessionActive(session = memoryAuthSession) {
+  if (!session) throw new Error('Your admin session expired. Please sign in again.');
+  const now = Date.now();
+  if (now - lastAdminActivityAt > ADMIN_IDLE_TIMEOUT_MS) {
+    clearAuthSession();
+    throw new Error('Your admin session expired after being idle. Please sign in again.');
+  }
+  if (now - Number(session.signedInAt || now) > ADMIN_ABSOLUTE_TIMEOUT_MS) {
+    clearAuthSession();
+    throw new Error('Your admin session reached the maximum duration. Please sign in again.');
+  }
+  lastAdminActivityAt = now;
+}
+
+async function refreshFirebaseAuthSession(existing = memoryAuthSession) {
+  assertSessionActive(existing);
   if (!existing?.refreshToken) throw new Error('Your admin session expired. Please sign in again.');
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
@@ -1195,27 +1208,14 @@ async function refreshFirebaseAuthSession(existing = getStoredAuthSession()) {
 }
 
 async function restoreAuthSession() {
-  const session = getStoredAuthSession();
-  if (!session) {
-    state.user = null;
-    return null;
-  }
-  if (session.idToken && Number(session.expiresAt || 0) - Date.now() > FIREBASE_TOKEN_REFRESH_BUFFER_MS) {
-    return applyAuthSession(session);
-  }
-  try {
-    await refreshFirebaseAuthSession(session);
-    return state.user;
-  } catch (error) {
-    clearAuthSession();
-    state.user = null;
-    state.error = toFriendlyErrorMessage(error.message || error, 'Your admin session expired. Please sign in again.');
-    return null;
-  }
+  clearAuthSession();
+  state.user = null;
+  return null;
 }
 
 async function getFirebaseRestIdToken(forceRefresh = false) {
-  const session = getStoredAuthSession();
+  const session = memoryAuthSession;
+  assertSessionActive(session);
   if (!session) throw new Error('Please sign in first.');
   const shouldRefresh = forceRefresh || !session.idToken || Number(session.expiresAt || 0) - Date.now() <= FIREBASE_TOKEN_REFRESH_BUFFER_MS;
   if (!shouldRefresh) return session.idToken;
@@ -1282,6 +1282,47 @@ async function getToken(forceRefresh = false) {
   return state.user.getIdToken(forceRefresh);
 }
 
+function isIntegrityGuardedAdminRequest(path, method = 'GET') {
+  const normalizedMethod = String(method || 'GET').toUpperCase();
+  const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(normalizedMethod);
+  const normalizedPath = String(path || '');
+  return mutating && (
+    normalizedPath.startsWith('/api/admin/') ||
+    normalizedPath === '/api/usage/reservations' ||
+    normalizedPath === '/api/usage/increment'
+  );
+}
+
+function createAdminIdempotencyKey(prefix = 'admin_action') {
+  const random = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  return `${prefix}-${random}`;
+}
+
+function criticalActionFields(reason, confirmPhrase, idempotencyPrefix = 'critical') {
+  return {
+    reason,
+    confirmPhrase,
+    idempotencyKey: createAdminIdempotencyKey(idempotencyPrefix),
+  };
+}
+
+async function sha256Hex(value) {
+  const bytes = new TextEncoder().encode(String(value || ''));
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function applyAdminRequestIntegrityHeaders(headers, path, method, body) {
+  if (!isIntegrityGuardedAdminRequest(path, method)) return headers;
+  return {
+    ...headers,
+    'X-Fundora-Request-Id': createAdminIdempotencyKey('fundora_request'),
+    'X-Fundora-Timestamp': new Date().toISOString(),
+    'X-Fundora-Nonce': createAdminIdempotencyKey('fundora_nonce'),
+    'X-Fundora-Body-SHA256': await sha256Hex(typeof body === 'string' ? body : ''),
+  };
+}
+
 async function api(path, options = {}) {
   const service = options.service || 'core';
   const baseUrl = service === 'collaboration' ? collaborationApiBaseUrl : coreApiBaseUrl;
@@ -1310,6 +1351,8 @@ async function api(path, options = {}) {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(options.body);
   }
+
+  Object.assign(headers, await applyAdminRequestIntegrityHeaders(headers, path, options.method || 'GET', body));
 
   let response = await fetch(url.toString(), {
     method: options.method || 'GET',
@@ -2502,7 +2545,7 @@ function openEmergencyRuleActionModal(rule, action) {
 
 async function clearCollaborationPolicyCache(reason = '') {
   if (!collaborationApiBaseUrl) return { skipped: true, message: 'Collaboration API base URL is not configured; collaboration backend will refresh after its cache TTL.' };
-  await api(API_PATHS.collaborationPolicy.clearCache, { service: 'collaboration', method: 'POST', body: { reason } });
+  await api(API_PATHS.collaborationPolicy.clearCache, { service: 'collaboration', method: 'POST', body: criticalActionFields(reason, 'CLEAR COLLABORATION CACHE', 'clear_collaboration_cache') });
   return { skipped: false, message: 'Collaboration policy cache cleared.' };
 }
 
@@ -2537,7 +2580,7 @@ async function submitEmergencyActionModal() {
           targetPlan: flag.targetPlan || flag.target_plan || null,
           minAppVersion: flag.minAppVersion || flag.min_app_version || null,
           description: flag.description || null,
-          reason: reason.value,
+          ...criticalActionFields(reason.value, 'UPDATE FEATURE FLAG', 'update_feature_flag'),
         },
         forceTokenRefresh: true,
       });
@@ -2587,7 +2630,13 @@ async function submitEmergencyRuleActionModal() {
   render();
   try {
     await reauthenticateAdminForCriticalAction(password.value);
-    await api(paths.status(id, modal.action), { method: 'POST', body: { reason: reason.value }, forceTokenRefresh: true });
+    const action = String(modal.action || '').toUpperCase();
+    const confirmPhrase = action === 'DELETE'
+      ? 'DELETE GLOBAL RULE'
+      : action === 'PAUSE' || action === 'DISABLE'
+        ? 'DISABLE GLOBAL RULE'
+        : 'ENABLE GLOBAL RULE';
+    await api(paths.status(id, modal.action), { method: 'POST', body: criticalActionFields(reason.value, confirmPhrase, 'global_rule_action'), forceTokenRefresh: true });
     setMessage(`${humanizeKey(rule.globalLearningKind)} rule ${modal.action.toLowerCase()} completed.`);
     state.modal = null;
     await loadData();
@@ -4309,6 +4358,9 @@ function buildPolicyDefinitionModalState(item) {
     enforcedBy: (normalized.enforcedBy || []).join(', '),
     sortOrder: normalized.sortOrder || 100,
     enabled: normalized.enabled !== false,
+    reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE PRODUCT POLICY',
   };
 }
 
@@ -4316,6 +4368,50 @@ function openPolicyDefinitionModal(item) {
   state.modal = buildPolicyDefinitionModalState(item);
   render();
 }
+
+
+function renderPlanPolicyCriticalFields(modal, phrase = 'UPDATE PRODUCT POLICY') {
+  modal.expectedPhrase = modal.expectedPhrase || phrase;
+  modal.reason = modal.reason || '';
+  modal.confirmPhrase = modal.confirmPhrase || '';
+  const reason = el('textarea', {
+    rows: 3,
+    value: modal.reason || '',
+    placeholder: 'Required audit reason, 10-500 characters',
+    'data-field-key': 'reason',
+  });
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const confirm = el('input', {
+    type: 'text',
+    value: modal.confirmPhrase || '',
+    placeholder: phrase,
+    'data-field-key': 'confirmPhrase',
+  });
+  confirm.addEventListener('input', () => { modal.confirmPhrase = confirm.value; });
+  return el('div', { class: 'form-grid two danger-zone' }, [
+    el('div', { class: modalFieldClass('reason') }, [
+      el('label', { text: 'Audit reason' }),
+      reason,
+      renderFieldError('reason'),
+    ]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [
+      el('label', { text: `Type exactly: ${phrase}` }),
+      confirm,
+      renderFieldError('confirmPhrase'),
+    ]),
+  ]);
+}
+
+function validatePlanPolicyCriticalFields(modal) {
+  const reason = requireAuditReason(modal.reason, 'plan policy critical change');
+  if (!reason.ok) return { ok: false, field: 'reason', message: reason.message };
+  const phrase = modal.expectedPhrase || 'UPDATE PRODUCT POLICY';
+  if (normalizedTrim(modal.confirmPhrase) !== phrase) {
+    return { ok: false, field: 'confirmPhrase', message: `Type exactly: ${phrase}` };
+  }
+  return { ok: true, reason: reason.value, confirmPhrase: phrase };
+}
+
 
 function renderPolicyDefinitionModal() {
   const modal = state.modal;
@@ -4353,6 +4449,7 @@ function renderPolicyDefinitionModal() {
       el('label', { class: 'check-row' }, [visible, el('span', { text: 'Visible in Plan Matrix' })]),
       el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     ]),
+    renderPlanPolicyCriticalFields(modal),
   ], submitPolicyDefinitionModal, true);
 }
 
@@ -4371,6 +4468,8 @@ async function submitPolicyDefinitionModal() {
   if (!defaultPeriod.ok) return validationError(defaultPeriod.message, 'defaultPeriod');
   const sortOrder = parseWholeNumber(modal.sortOrder, 'Sort order', { required: false, min: 0, max: 100000 });
   if (!sortOrder.ok) return validationError(sortOrder.message, 'sortOrder');
+  const critical = validatePlanPolicyCriticalFields(modal);
+  if (!critical.ok) return validationError(critical.message, critical.field);
   const body = {
     policyKey: policyKey.value,
     moduleKey: moduleKey.value,
@@ -4388,6 +4487,7 @@ async function submitPolicyDefinitionModal() {
     enforcedBy: normalizeCsvList(modal.enforcedBy),
     sortOrder: sortOrder.value ?? 100,
     enabled: Boolean(modal.enabled),
+    ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_definition'),
   };
   const path = modal.isCreate ? API_PATHS.policyDefinitions.create : API_PATHS.policyDefinitions.update(modal.id || body.policyKey);
   const action = modal.isCreate ? performPostAction : performPatchAction;
@@ -4408,6 +4508,9 @@ function openSubscriptionPlanModal(item) {
     enabled: normalized.enabled !== false,
     publicVisible: normalized.publicVisible !== false,
     isPaid: Boolean(normalized.isPaid),
+    reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE PRODUCT POLICY',
   };
   render();
 }
@@ -4436,6 +4539,7 @@ function renderSubscriptionPlanModal() {
       el('label', { class: 'check-row' }, [publicVisible, el('span', { text: 'Public visible' })]),
       el('label', { class: 'check-row' }, [isPaid, el('span', { text: 'Paid plan' })]),
     ]),
+    renderPlanPolicyCriticalFields(modal),
   ], submitSubscriptionPlanModal);
 }
 
@@ -4448,6 +4552,8 @@ async function submitSubscriptionPlanModal() {
   if (!displayNameEn.ok) return validationError(displayNameEn.message, 'displayNameEn');
   const sortOrder = parseWholeNumber(modal.sortOrder, 'Sort order', { required: false, min: 0, max: 100000 });
   if (!sortOrder.ok) return validationError(sortOrder.message, 'sortOrder');
+  const critical = validatePlanPolicyCriticalFields(modal);
+  if (!critical.ok) return validationError(critical.message, critical.field);
   const body = {
     planKey: planKey.value.toUpperCase(),
     displayNameEn: displayNameEn.value,
@@ -4457,6 +4563,7 @@ async function submitSubscriptionPlanModal() {
     enabled: Boolean(modal.enabled),
     publicVisible: Boolean(modal.publicVisible),
     isPaid: Boolean(modal.isPaid),
+    ...criticalActionFields(critical.reason, critical.confirmPhrase, 'subscription_plan'),
   };
   const path = modal.isCreate ? API_PATHS.subscriptionPlans.create : API_PATHS.subscriptionPlans.update(modal.id || body.planKey);
   const action = modal.isCreate ? performPostAction : performPatchAction;
@@ -4480,6 +4587,9 @@ function openPlanPolicyValueModal({ matrixItem = null, planKey = '', valueRecord
     unlimited: asBoolean(raw.unlimited ?? raw.isUnlimited ?? raw.is_unlimited ?? valueFromMatrix.unlimited, false),
     periodType: String(raw.periodType || raw.period_type || valueFromMatrix.periodType || 'NONE').toUpperCase(),
     enabled: raw.enabled !== false,
+    reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE PRODUCT POLICY',
   };
   render();
 }
@@ -4510,6 +4620,7 @@ function renderPlanPolicyValueModal() {
       el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     ]),
     el('div', { class: 'compact-guidance warning' }, [el('strong', { text: 'Close-loop warning' }), renderInfoHint('Changing value/period here changes what users see once backend plan-matrix and entitlement endpoints are deployed. Enforcement must read the same policy key.', { compact: true, label: 'Plan value safety' })]),
+    renderPlanPolicyCriticalFields(modal),
   ], submitPlanPolicyValueModal);
 }
 
@@ -4524,6 +4635,8 @@ async function submitPlanPolicyValueModal() {
   const allowed = definition.supportsPeriod ? ['NONE', ...normalizeCsvList(definition.allowedPeriods).filter((item) => item !== 'NONE')] : ['NONE'];
   const period = requireOneOf(modal.periodType || 'NONE', allowed.length ? allowed : ADMIN_ENUMS.policyPeriods, 'Period type');
   if (!period.ok) return validationError(period.message, 'periodType');
+  const critical = validatePlanPolicyCriticalFields(modal);
+  if (!critical.ok) return validationError(critical.message, critical.field);
   const rawValue = normalizedTrim(modal.value);
   const numericValue = rawValue !== '' && /^-?\d+(\.\d+)?$/.test(rawValue) ? Number(rawValue) : null;
   const booleanValue = /^(true|false)$/i.test(rawValue) ? rawValue.toLowerCase() === 'true' : null;
@@ -4537,6 +4650,7 @@ async function submitPlanPolicyValueModal() {
     unlimited: Boolean(modal.unlimited),
     periodType: period.value,
     enabled: Boolean(modal.enabled),
+    ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_value'),
   };
   const path = modal.isCreate ? API_PATHS.planPolicyValues.create : API_PATHS.planPolicyValues.update(modal.id || `${body.policyKey}:${body.planKey}`);
   const action = modal.isCreate ? performPostAction : performPatchAction;
@@ -4597,6 +4711,8 @@ function openFeatureLimitModal(item) {
     enabled: item.enabled !== false,
     description: item.description || '',
     reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE FEATURE LIMIT',
   };
   render();
 }
@@ -4611,13 +4727,14 @@ async function submitFeatureLimitModal() {
   if (!description.ok) return validationError(description.message, 'description');
   const reason = requireAuditReason(modal.reason, 'this feature limit update');
   if (!reason.ok) return validationError(reason.message, 'reason');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
 
   await performPatchAction(API_PATHS.featureLimits.update(modal.id), 'Feature limit updated.', {
     limitCount: limit.value,
     periodType: period.value,
     enabled: Boolean(modal.enabled),
     description: description.value || null,
-    reason: reason.value,
+    ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_feature_limit'),
   });
 }
 
@@ -4667,6 +4784,8 @@ function openFeatureFlagModal(item) {
     minAppVersion: item.minAppVersion || item.min_app_version || '',
     description: item.description || '',
     reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE FEATURE FLAG',
   };
   render();
 }
@@ -4683,6 +4802,7 @@ async function submitFeatureFlagModal() {
   if (!description.ok) return validationError(description.message, 'description');
   const reason = requireAuditReason(modal.reason, 'this feature flag update');
   if (!reason.ok) return validationError(reason.message, 'reason');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
 
   await performPatchAction(API_PATHS.featureFlags.update(modal.id), 'Feature flag updated.', {
     enabled: Boolean(modal.enabled),
@@ -4690,7 +4810,7 @@ async function submitFeatureFlagModal() {
     targetPlan: targetPlan.value || null,
     minAppVersion: minVersion.value,
     description: description.value || null,
-    reason: reason.value,
+    ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_feature_flag'),
   });
 }
 
@@ -4753,6 +4873,8 @@ function openProductPolicyModal(item) {
     minAppVersion: item.minAppVersion || item.min_app_version || '',
     valueJson: compactJson(item.valueJson ?? item.value_json ?? item.value ?? {}),
     reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE PRODUCT POLICY',
   };
   render();
 }
@@ -4774,13 +4896,14 @@ async function submitProductPolicyModal() {
   if (!minVersion.ok) return validationError(minVersion.message, 'minAppVersion');
   const reason = requireAuditReason(modal.reason, 'this product policy update');
   if (!reason.ok) return validationError(reason.message, 'reason');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
 
   await performPatchAction(API_PATHS.productPolicies.update(modal.id), 'Product policy updated.', {
     enabled: Boolean(modal.enabled),
     platform: platform.value || null,
     minAppVersion: minVersion.value,
     value: valueJson,
-    reason: reason.value,
+    ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_product_policy'),
   });
 }
 
@@ -5107,6 +5230,8 @@ function openUsageAdjustModal(item) {
     periodKey: item.periodKey || item.period_key || '',
     newUsedCount: item.usedCount ?? item.used_count ?? 0,
     reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE FEATURE LIMIT',
   };
   render();
 }
@@ -5120,6 +5245,7 @@ async function submitUsageAdjustModal() {
   if (!normalizedTrim(modal.periodKey)) return validationError('Period key is required for a usage adjustment.', 'periodKey');
   const reason = requireAuditReason(modal.reason, 'this usage adjustment');
   if (!reason.ok) return validationError(reason.message, 'reason');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
 
   if (state.modal) {
     state.modal.loading = true;
@@ -5137,7 +5263,7 @@ async function submitUsageAdjustModal() {
       featureKey: normalizedTrim(modal.featureKey),
       periodKey: normalizedTrim(modal.periodKey),
       newUsedCount: newUsed.value,
-      reason: reason.value,
+      ...criticalActionFields(reason.value, modal.expectedPhrase, 'usage_adjustment'),
     } });
     setMessage('Usage counter adjusted.');
     state.modal = null;
@@ -6478,6 +6604,8 @@ function openRateLimitOverrideModal(item = null) {
     enabled: item ? item.enabled !== false : true,
     expiresAt: toDateTimeLocalValue(item?.expiresAt || item?.expires_at),
     reason: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE RATE LIMIT',
     submitLabel: item ? 'Save override' : 'Create override',
   };
   render();
@@ -6490,7 +6618,7 @@ function openRateLimitOverrideDeleteModal(item) {
     item,
     reason: '',
     confirmPhrase: '',
-    expectedPhrase: 'DELETE RATE LIMIT OVERRIDE',
+    expectedPhrase: 'UPDATE RATE LIMIT',
     submitLabel: 'Delete override',
     submitClass: 'btn danger',
     loadingLabel: 'Deleting...',
@@ -6512,7 +6640,7 @@ async function submitPolicyRollbackModal() {
     await reauthenticateAdminForCriticalAction(passwordCheck.value);
     await api(API_PATHS.policyVersions.rollback(getItemId(modal.item)), {
       method: 'POST',
-      body: { reason: reasonCheck.value, confirmPhrase: modal.expectedPhrase },
+      body: criticalActionFields(reasonCheck.value, modal.expectedPhrase, 'rollback_policy'),
     });
     setMessage('Policy version rolled back successfully.');
     state.modal = null;
@@ -6568,6 +6696,7 @@ async function submitRateLimitOverrideModal() {
   const modal = state.modal;
   const reasonCheck = requireAuditReason(modal.reason, modal.item ? 'rate limit override update' : 'rate limit override create');
   if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type ${modal.expectedPhrase} to confirm rate limit change.`, 'confirmPhrase');
   const routeGroupCheck = requireMaxLength(modal.routeGroup, 'Route group', ADMIN_LIMITS.routeGroupMax, { required: true });
   if (!routeGroupCheck.ok) return validationError(routeGroupCheck.message, 'routeGroup');
   const perMinuteCheck = parseWholeNumber(modal.perMinute, 'Per minute', { min: 1, max: 100000 });
@@ -6580,7 +6709,7 @@ async function submitRateLimitOverrideModal() {
     perMinute: perMinuteCheck.value,
     enabled: Boolean(modal.enabled),
     expiresAt: expiryCheck.value,
-    reason: reasonCheck.value,
+    ...criticalActionFields(reasonCheck.value, modal.expectedPhrase, 'update_rate_limit'),
   };
   if (modal.item) {
     await performPatchAction(API_PATHS.rateLimitOverrides.update(getItemId(modal.item)), 'Rate limit override updated.', body);
@@ -6604,7 +6733,7 @@ async function submitRateLimitOverrideDeleteModal() {
   try {
     await api(API_PATHS.rateLimitOverrides.delete(getItemId(modal.item)), {
       method: 'DELETE',
-      body: { reason: reasonCheck.value },
+      body: criticalActionFields(reasonCheck.value, modal.expectedPhrase, 'delete_rate_limit'),
     });
     setMessage('Rate limit override deleted.');
     state.modal = null;
@@ -6775,6 +6904,8 @@ function renderRateLimitOverrideModal() {
   const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' });
   reason.value = modal.reason || '';
   reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { type: 'text', placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
   return renderControlModal(modal.title, 'Rate Limit Override', [
     el('div', { class: 'form-grid two' }, [
       el('div', { class: modalFieldClass('routeGroup') }, [el('label', { text: 'Route group' }), routeGroup, renderFieldError('routeGroup')]),
@@ -6783,6 +6914,7 @@ function renderRateLimitOverrideModal() {
     ]),
     el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
   ], submitRateLimitOverrideModal, true);
 }
 
@@ -7815,6 +7947,8 @@ function renderFeatureLimitModal() {
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
   const description = el('textarea', { rows: '3', 'data-field-key': 'description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
   const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
   return renderControlModal('Edit feature limit', 'Feature Limit', [
     renderMetaGrid([['Feature', modal.item?.featureKey || modal.item?.feature_key], ['Plan', modal.item?.plan]]),
     el('div', { class: 'form-grid two' }, [
@@ -7824,6 +7958,7 @@ function renderFeatureLimitModal() {
     el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
     el('div', { class: modalFieldClass('description') }, [el('label', { text: 'Description' }), description, renderFieldError('description')]),
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
   ], submitFeatureLimitModal);
 }
 
@@ -7835,6 +7970,8 @@ function renderFeatureFlagModal() {
   const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '', 'data-field-key': 'minAppVersion' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
   const description = el('textarea', { rows: '3', 'data-field-key': 'description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
   const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
   return renderControlModal('Edit feature flag', 'Feature Flag', [
     renderMetaGrid([['Flag', modal.item?.flagKey || modal.item?.flag_key]]),
     el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
@@ -7845,6 +7982,7 @@ function renderFeatureFlagModal() {
     ]),
     el('div', { class: modalFieldClass('description') }, [el('label', { text: 'Description' }), description, renderFieldError('description')]),
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
   ], submitFeatureFlagModal);
 }
 
@@ -7855,6 +7993,8 @@ function renderProductPolicyModal() {
   const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '', 'data-field-key': 'minAppVersion' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
   const valueJson = el('textarea', { rows: '12', spellcheck: 'false', 'data-field-key': 'valueJson' }); valueJson.value = modal.valueJson || '{}'; valueJson.addEventListener('input', () => { modal.valueJson = valueJson.value; });
   const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason.', 'data-field-key': 'reason' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
   return renderControlModal('Edit product policy', 'Product Policy', [
     renderMetaGrid([['Policy', modal.item?.policyKey || modal.item?.policy_key]]),
     el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
@@ -7864,6 +8004,7 @@ function renderProductPolicyModal() {
     ]),
     el('div', { class: modalFieldClass('valueJson') }, [el('label', { text: 'Policy JSON' }), valueJson, renderFieldError('valueJson'), el('small', { class: 'field-help', text: 'Keep JSON compact and avoid sensitive user data.' })]),
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
   ], submitProductPolicyModal, true);
 }
 
@@ -7871,11 +8012,14 @@ function renderUsageAdjustModal() {
   const modal = state.modal;
   const newUsed = el('input', { type: 'number', min: '0', value: modal.newUsedCount, 'data-field-key': 'newUsedCount' }); newUsed.addEventListener('input', () => { modal.newUsedCount = newUsed.value; });
   const reason = el('textarea', { rows: '3', placeholder: 'Required reason, for example: Correct duplicate local sync after support verification.', 'data-field-key': 'reason' }); reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
   return renderControlModal('Adjust usage counter', 'Usage Support', [
     renderMetaGrid([['User', modal.userEmail || modal.userId], ['Feature', modal.featureKey], ['Period', modal.periodKey]]),
     el('div', { class: modalFieldClass('newUsedCount') }, [el('label', { text: 'New used count' }), newUsed, renderFieldError('newUsedCount')]),
     el('div', { class: 'compact-guidance warning' }, [el('strong', { text: 'Audit required' }), renderInfoHint('Usage adjustments affect quota and should only be used after support verification. They are not a normal product operation.', { compact: true, label: 'Usage adjustment details' })]),
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
   ], submitUsageAdjustModal);
 }
 
