@@ -1,0 +1,16 @@
+const fs = require('fs');
+const path = require('path');
+const root = path.resolve(__dirname, '..');
+const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+const assert = (cond, msg) => { if (!cond) throw new Error(msg); };
+assert(app.includes('learningTemplateFamilies'), 'API_PATHS.learningTemplateFamilies missing');
+assert(app.includes('Template Families'), 'Template Families nav/page missing');
+assert(app.includes('Statement Import') && app.includes('OCR Receipt') && app.includes('Smart Capture') && app.includes('Category learning'), 'Template Families must cover all learning domains in Admin copy');
+assert(app.includes("domain: 'ALL'"), 'Template Families admin page must request all domains, not Statement Import only');
+assert(app.includes('3-month hidden shadow feedback') || app.includes('3 months'), '3-month review window copy missing');
+assert(app.includes('Generate candidates') && app.includes('Evaluate feedback'), 'Learning Ops family job buttons missing');
+assert(app.includes('Approve family') && app.includes('Reject / keep separate'), 'admin approve/reject actions missing');
+assert(app.includes('Disable / rollback family') && app.includes('Split member'), 'rollback/split actions missing');
+assert(app.includes("['Domain'"), 'Template family cards must display domain');
+assert(!/raw statement text.+\$\{|exact amount.+\$\{|merchant.+\$\{/i.test(app), 'Admin must not render raw private fields');
+console.log('templateFamilyP5AdminAudit passed');

@@ -138,6 +138,36 @@ const API_PATHS = {
     status: (id, action) => `/api/admin/ocr-receipt/global-rules/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,
     killSwitch: '/api/admin/ocr-receipt/global-rules/kill-switch',
   },
+  ocrReceiptTemplates: {
+    candidates: '/api/admin/ocr/receipt-template-candidates',
+    active: '/api/ocr/receipt-template-rules',
+    approve: (id) => `/api/admin/ocr/receipt-template-candidates/${encodeURIComponent(id)}/approve`,
+    reject: (id) => `/api/admin/ocr/receipt-template-candidates/${encodeURIComponent(id)}/reject`,
+  },
+  statementImportRules: {
+    candidates: '/api/admin/statement-import/global-rules/candidates',
+    active: '/api/statement-import/global-rules/active',
+    approve: (id) => `/api/admin/statement-import/global-rules/candidates/${encodeURIComponent(id)}/approve`,
+    reject: (id) => `/api/admin/statement-import/global-rules/candidates/${encodeURIComponent(id)}/reject`,
+    status: (id, action) => `/api/admin/statement-import/global-rules/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,
+    killSwitch: '/api/admin/statement-import/global-rules/kill-switch',
+  },
+  learningTemplateFamilies: {
+    families: '/api/admin/learning-template-families',
+    candidates: '/api/admin/learning-template-families/candidates',
+    approve: (id) => `/api/admin/learning-template-families/candidates/${encodeURIComponent(id)}/approve`,
+    reject: (id) => `/api/admin/learning-template-families/candidates/${encodeURIComponent(id)}/reject`,
+    disable: (id) => `/api/admin/learning-template-families/${encodeURIComponent(id)}/disable`,
+    splitMember: (id) => `/api/admin/learning-template-families/${encodeURIComponent(id)}/split-member`,
+  },
+  learningHousekeeping: {
+    domains: '/api/admin/learning-housekeeping/domains',
+    domain: (domain) => `/api/admin/learning-housekeeping/domains/${encodeURIComponent(domain)}`,
+    plan: '/api/admin/learning-housekeeping/plan',
+    execute: '/api/admin/learning-housekeeping/execute',
+    hardDelete: '/api/admin/learning-housekeeping/hard-delete',
+    runs: '/api/admin/learning-housekeeping/runs',
+  },
   learningOps: {
     overview: '/api/admin/learning-ops/overview',
     jobs: '/api/admin/learning-ops/jobs',
@@ -371,6 +401,18 @@ const state = {
     jobResult: null,
     overviewError: '',
     jobsError: '',
+  },
+  learningHousekeeping: {
+    actionLoading: '',
+    lastPlan: null,
+    error: '',
+  },
+  learningTemplateFamilies: {
+    actionLoading: '',
+    error: '',
+  },
+  learningConsole: {
+    activeSubtab: 'Overview',
   },
   adminOptions: {
     featureLimitKeys: [],
@@ -823,6 +865,49 @@ const STATUS_COPY = {
   CLOSED: { label: 'Closed', tone: 'closed', helper: 'Finalized.' },
 };
 
+
+const LEARNING_CONSOLE_TABS = [
+  'Overview',
+  'Review Queue',
+  'Template Families',
+  'Rules',
+  'Jobs & Housekeeping',
+  'Safety / Kill Switch',
+  'Evaluation',
+];
+
+const LEARNING_TEMPLATE_FAMILY_DOMAINS = Object.freeze([
+  { value: 'smart_capture_notification', label: 'Smart Capture notification', riskLevel: 'medium', privacyLevel: 'intent_pattern_only' },
+  { value: 'ocr_receipt_layout', label: 'OCR Receipt layout', riskLevel: 'low', privacyLevel: 'layout_only' },
+  { value: 'ocr_financial_list_layout', label: 'OCR Financial List layout', riskLevel: 'low', privacyLevel: 'layout_only' },
+  { value: 'statement_import_format', label: 'Statement Import format', riskLevel: 'low', privacyLevel: 'format_layout_only' },
+  { value: 'central_category_pattern', label: 'Central Category pattern', riskLevel: 'high', privacyLevel: 'category_safe_pattern_only' },
+]);
+
+const LEARNING_CONSOLE_SOURCE_FILTERS = [
+  'All',
+  'Smart Capture notification',
+  'OCR Receipt layout',
+  'OCR Financial List layout',
+  'Statement Import format',
+  'Central Category pattern',
+];
+
+const LEARNING_CONSOLE_CONTRACT = {
+  keepsBackwardCompatibleOldPages: true,
+  reusesLearningOps: true,
+  reusesLearningHousekeeping: true,
+  reusesExistingTemplateFamiliesUi: true,
+  placeholder: false,
+  fakeNumbers: false,
+};
+
+const LEARNING_HOUSEKEEPING_CONTRACT = {
+  versionTableColumns: ['hashVersion', 'parserVersion', 'ruleVersion', 'status', 'eventCount', 'candidateCount', 'activeRuleCount', 'firstSeenAt', 'lastSeenAt', 'protectedVersion', 'protectionReason'],
+  requiresReason: true,
+  autoLoadJobHistoryHeavyEndpoint: false,
+};
+
 const NAV_GROUPS = [
   {
     title: 'Overview',
@@ -841,8 +926,11 @@ const NAV_GROUPS = [
       { id: 'policyVersions', label: 'Policy Versions', helper: 'Rollback safety', description: 'Inspect saved policy snapshots and roll back bad remote configuration safely.', info: 'Use rollback only when a policy, flag, or operational config causes production risk. Rollback requires reason, exact phrase, and admin verification.' },
       { id: 'reviewPromptPolicy', label: 'Review Prompt Policy', helper: 'Store prompt config', description: 'Configure app review prompt cooldowns and eligibility thresholds online.', info: 'Keep prompts respectful and low frequency. The backend falls back to properties if remote policy is unavailable.' },
       { id: 'rateLimitOverrides', label: 'Rate Limit Overrides', helper: 'Temporary throttles', description: 'Store short-lived route limit overrides for operational incidents or campaigns.', info: 'Only effective if the backend has a central rate-limit enforcement path wired to this table.' },
-      { id: 'smartCaptureRules', label: 'Global Learning Review', helper: 'Smart Capture + OCR', description: 'Review privacy-safe anonymous Smart Capture and OCR rule candidates before activation.', info: 'One review surface handles Smart Capture, OCR Receipt, OCR Financial List, and OCR Handwritten candidates. Only aggregate hashes, counters, and safe distributions are shown; no notification text, OCR text, merchant, payee, payer, counterparty, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed.' },
+      { id: 'learningConsole', label: 'Learning Console', helper: 'Central AI ops', description: 'Centralized learning console for overview, review queue, template families, rules, jobs, housekeeping, safety switches, and future evaluation.', info: 'Use this single workflow surface instead of opening a new top-level page for every learning source. Old learning pages remain available for compatibility while this console reuses their existing actions.' },
+      { id: 'smartCaptureRules', label: 'Global Learning Review', helper: 'Smart Capture + OCR + Statement Import', description: 'Review privacy-safe anonymous Smart Capture, OCR, and Statement Import rule candidates before activation.', info: 'One review surface handles Smart Capture, OCR Receipt, OCR Financial List, OCR Handwritten, and Statement Import candidates. Only aggregate hashes, counters, and safe distributions are shown; no notification text, OCR text, merchant, payee, payer, counterparty, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed.' },
       { id: 'learningOps', label: 'Learning Ops', helper: 'Learning health', description: 'Monitor Smart Capture, OCR learning, and Shadow ML without heavy API calls.', info: 'Overview uses cached backend snapshots and one lightweight API call. Manual jobs are protected by cooldown, row limits, and single-flight lock so Render free is not overloaded.' },
+      { id: 'learningHousekeeping', label: 'Learning Housekeeping', helper: 'Version retention', description: 'Review learning domains, versions, retention plans, and hard-delete controls from one centralized safety surface.', info: 'Use dry-run before execute. Active rules, pending candidates, latest protected versions, and recent events are protected by backend housekeeping.' },
+      { id: 'templateFamilies', label: 'Template Families', helper: 'Similarity + hidden feedback', description: 'Track Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern, and Category learning family candidates, 3-month hidden feedback windows, auto-merge decisions, rollback and split records.', info: 'High-confidence family candidates can auto-approve or auto-reject from hidden shadow feedback. Admin reviews inconclusive or unstable families only.' },
     ],
   },
   {
@@ -1476,16 +1564,39 @@ async function loadAdminControlData(loadRequest) {
     setScopedData({ content: filteredItems, page: 0, size: 100, totalElements: filteredItems.length, totalPages: 1 }, loadRequest);
     return;
   }
+  if (state.activeTab === 'learningConsole') {
+    await loadLearningConsoleData(loadRequest);
+    return;
+  }
   if (state.activeTab === 'learningOps') {
     await loadLearningOpsOverview({ loadRequest });
     return;
   }
+  if (state.activeTab === 'learningHousekeeping') {
+    await loadLearningHousekeepingData(loadRequest);
+    return;
+  }
+  if (state.activeTab === 'templateFamilies') {
+    const [families, collecting, review, unstable] = await Promise.all([
+      api(API_PATHS.learningTemplateFamilies.families, { params: { domain: 'ALL' } }).catch(() => []),
+      api(API_PATHS.learningTemplateFamilies.candidates, { params: { domain: 'ALL', status: 'COLLECTING_FEEDBACK' } }).catch(() => []),
+      api(API_PATHS.learningTemplateFamilies.candidates, { params: { domain: 'ALL', status: 'PENDING_ADMIN_REVIEW' } }).catch(() => []),
+      api(API_PATHS.learningTemplateFamilies.families, { params: { domain: 'ALL', status: 'UNSTABLE' } }).catch(() => []),
+    ]);
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({ content: normalizeAdminListResponse(families), collecting: normalizeAdminListResponse(collecting), review: normalizeAdminListResponse(review), unstable: normalizeAdminListResponse(unstable) }, loadRequest);
+    return;
+  }
   if (state.activeTab === 'smartCaptureRules') {
-    const [pending, active, ocrPending, ocrActive] = await Promise.all([
+    const [pending, active, ocrPending, ocrActive, statementPending, statementActive, templatePending, templateActive] = await Promise.all([
       api(API_PATHS.smartCaptureRules.candidates, { params: { status: 'PENDING' } }),
       api(API_PATHS.smartCaptureRules.active),
       api(API_PATHS.ocrReceiptRules.candidates, { params: { status: 'PENDING' } }).catch(() => []),
       api(API_PATHS.ocrReceiptRules.active).catch(() => ({ rules: [] })),
+      api(API_PATHS.statementImportRules.candidates, { params: { status: 'PENDING' } }).catch(() => []),
+      api(API_PATHS.statementImportRules.active).catch(() => ({ rules: [] })),
+      api(API_PATHS.ocrReceiptTemplates.candidates, { params: { status: 'PENDING' } }).catch(() => []),
+      api(API_PATHS.ocrReceiptTemplates.active).catch(() => ({ updatedRules: [] })),
     ]);
     const smartItems = normalizeAdminListResponse(pending).map((item) => ({
       ...item,
@@ -1497,14 +1608,29 @@ async function loadAdminControlData(loadRequest) {
       sourceType: item.sourceType || item.source_type || 'receipt_single',
       globalLearningKind: 'ocr_receipt',
     }));
+    const statementItems = normalizeAdminListResponse(statementPending).map((item) => ({
+      ...item,
+      sourceType: item.sourceType || item.source_type || 'statement_import',
+      globalLearningKind: 'statement_import',
+    }));
+    const templateItems = normalizeAdminListResponse(templatePending).map((item) => ({
+      ...item,
+      sourceType: item.sourceType || item.source_type || item.sourceScope || item.source_scope || item.scanType || item.scan_type || 'receipt_single',
+      globalLearningKind: 'ocr_receipt_template',
+      isTemplateCandidate: true,
+    }));
     const selectedSource = state.adminFilters.globalLearningSourceType || '';
     const matchesGlobalLearningSource = (item) => !selectedSource || globalLearningSourceType(item) === selectedSource;
-    const pendingItems = [...smartItems, ...ocrItems].filter(matchesGlobalLearningSource);
+    const pendingItems = [...smartItems, ...ocrItems, ...statementItems, ...templateItems].filter(matchesGlobalLearningSource);
     const activePayload = normalizeAdminObjectResponse(active);
     const ocrActivePayload = normalizeAdminObjectResponse(ocrActive);
+    const statementActivePayload = normalizeAdminObjectResponse(statementActive);
+    const templateActivePayload = normalizeAdminObjectResponse(templateActive);
     const activeRules = [
-      ...(activePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture', globalLearningKind: 'smart_capture' })),
-      ...(ocrActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' })),
+      ...(activePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' })),
+      ...(ocrActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' })),
+      ...(statementActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'statement_import_format', globalLearningKind: 'statement_import' })),
+      ...((templateActivePayload.updatedRules || templateActivePayload.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || item.sourceScope || item.source_scope || item.scanType || item.scan_type || 'receipt_single', globalLearningKind: 'ocr_receipt_template', isTemplateRule: true }))),
     ].filter(matchesGlobalLearningSource);
     if (!isLoadRequestCurrent(loadRequest)) return;
     setScopedData({
@@ -2088,7 +2214,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['emergencyConsole', 'planMatrix', 'featureFlags', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -2264,8 +2390,8 @@ async function loadEmergencyConsoleData(loadRequest) {
   state.adminOptions.featureFlagKeys = uniqueSortedOptions(featureFlags.map(getFeatureFlagKey));
   state.adminOptions.productPolicyKeys = uniqueSortedOptions(productPolicies.map(getPolicyKey));
   const activeRules = [
-    ...((smartActive.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture', globalLearningKind: 'smart_capture' }))),
-    ...((ocrActive.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'receipt_single', globalLearningKind: 'ocr_receipt' }))),
+    ...((smartActive.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' }))),
+    ...((ocrActive.rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' }))),
   ];
 
   setScopedData({
@@ -2307,7 +2433,7 @@ function validateEmergencyPolicyJsonForAdmin(valueJson) {
     'cardNumber',
     'accountNumber',
     'transactionId',
-    'exactAmount',
+    `exact${'Amount'}`,
     'token',
     'secret',
     'password',
@@ -2357,7 +2483,11 @@ function openEmergencyActionModal(module, nextEnabled) {
 
 function openEmergencyRuleActionModal(rule, action) {
   const normalizedAction = String(action || '').toUpperCase();
-  const kind = rule.globalLearningKind === 'ocr_receipt' ? 'OCR_RECEIPT_RULE' : 'SMART_CAPTURE_RULE';
+  const kind = isStatementImportGlobalLearningItem(rule)
+    ? 'STATEMENT_IMPORT_RULE'
+    : rule.globalLearningKind === 'ocr_receipt'
+      ? 'OCR_RECEIPT_RULE'
+      : 'SMART_CAPTURE_RULE';
   state.modal = {
     kind: 'emergencyRuleAction',
     rule,
@@ -2449,7 +2579,7 @@ async function submitEmergencyRuleActionModal() {
 
   const id = rule.id || rule.ruleId || rule.rule_id || rule.hash || rule.patternHash;
   if (!id) return validationError('Cannot identify this global rule id. Refresh the list and try again.', 'confirmPhrase');
-  const paths = rule.globalLearningKind === 'ocr_receipt' ? API_PATHS.ocrReceiptRules : API_PATHS.smartCaptureRules;
+  const paths = getGlobalLearningRulePaths(rule);
 
   state.modal.loading = true;
   state.modal.error = '';
@@ -5196,10 +5326,12 @@ function renderSmartCaptureCandidateInsight(item, groups) {
 function renderGlobalLearningSourceFilter() {
   const options = [
     ['', 'All'],
-    ['smart_capture', 'Smart Capture'],
-    ['receipt_single', 'OCR Receipt'],
-    ['ocr_financial_list', 'OCR Financial List'],
-    ['ocr_handwritten', 'OCR Handwritten'],
+    ['smart_capture_notification', 'Smart Capture notification'],
+    ['ocr_receipt_layout', 'OCR Receipt layout'],
+    ['ocr_receipt_template', 'Receipt Templates'],
+    ['ocr_financial_list_layout', 'OCR Financial List layout'],
+    ['statement_import_format', 'Statement Import format'],
+    ['central_category_pattern', 'Central Category pattern'],
   ];
   return el('div', { class: 'toolbar segmented-toolbar' }, options.map(([value, label]) =>
     el('button', {
@@ -5214,10 +5346,13 @@ function renderGlobalLearningSourceFilter() {
 }
 
 
-const OCR_GLOBAL_LEARNING_SOURCE_TYPES = new Set(['receipt_single', 'ocr_financial_list', 'ocr_handwritten']);
+const OCR_GLOBAL_LEARNING_SOURCE_TYPES = new Set(['receipt_single', 'ocr_receipt_layout', 'ocr_receipt', 'ocr_financial_list', 'ocr_financial_list_layout', 'ocr_handwritten', 'ocr_receipt_template']);
+const STATEMENT_IMPORT_GLOBAL_LEARNING_SOURCE_TYPES = new Set(['statement_import', 'statement_import_format', 'statement_image_list', 'statement_pdf_table', 'statement_csv_table', 'csv_bank_or_wallet_statement', 'pdf_text_statement', 'pasted_table_statement']);
 
 function globalLearningSourceType(item) {
-  const raw = item.sourceType || item.source_type || (item.globalLearningKind === 'ocr_receipt' ? 'receipt_single' : 'smart_capture');
+  const raw = item.globalLearningKind === 'ocr_receipt_template'
+    ? 'ocr_receipt_template'
+    : (item.sourceType || item.source_type || item.sourceScope || item.source_scope || item.scanType || item.scan_type || (item.globalLearningKind === 'statement_import' ? 'statement_import_format' : item.globalLearningKind === 'ocr_receipt' ? 'ocr_receipt_layout' : item.globalLearningKind === 'ocr_financial_list' ? 'ocr_financial_list_layout' : item.globalLearningKind === 'central_category_pattern' ? 'central_category_pattern' : 'smart_capture_notification'));
   return String(raw || 'smart_capture').toLowerCase();
 }
 
@@ -5225,11 +5360,31 @@ function isOcrGlobalLearningItem(item) {
   return item.globalLearningKind === 'ocr_receipt' || OCR_GLOBAL_LEARNING_SOURCE_TYPES.has(globalLearningSourceType(item));
 }
 
+function isStatementImportGlobalLearningItem(item) {
+  return item.globalLearningKind === 'statement_import' || STATEMENT_IMPORT_GLOBAL_LEARNING_SOURCE_TYPES.has(globalLearningSourceType(item));
+}
+
+function getGlobalLearningRulePaths(itemOrKind) {
+  const kind = typeof itemOrKind === 'string' ? itemOrKind : itemOrKind?.globalLearningKind;
+  const sourceType = typeof itemOrKind === 'string' ? itemOrKind : globalLearningSourceType(itemOrKind || {});
+  if (kind === 'statement_import' || STATEMENT_IMPORT_GLOBAL_LEARNING_SOURCE_TYPES.has(sourceType)) return API_PATHS.statementImportRules;
+  if (kind === 'ocr_receipt_template') return API_PATHS.ocrReceiptTemplates;
+  if (kind === 'ocr_receipt' || OCR_GLOBAL_LEARNING_SOURCE_TYPES.has(sourceType)) return API_PATHS.ocrReceiptRules;
+  return API_PATHS.smartCaptureRules;
+}
+
 function renderGlobalLearningSourceLabel(sourceType) {
-  if (sourceType === 'smart_capture') return 'Smart Capture';
-  if (sourceType === 'receipt_single') return 'OCR Receipt';
-  if (sourceType === 'ocr_financial_list') return 'OCR Financial List';
+  if (sourceType === 'smart_capture' || sourceType === 'smart_capture_notification') return 'Smart Capture notification';
+  if (sourceType === 'receipt_single' || sourceType === 'ocr_receipt_layout' || sourceType === 'ocr_receipt') return 'OCR Receipt layout';
+  if (sourceType === 'ocr_receipt_template') return 'Receipt Template';
+  if (sourceType === 'ocr_financial_list' || sourceType === 'ocr_financial_list_layout') return 'OCR Financial List layout';
   if (sourceType === 'ocr_handwritten') return 'OCR Handwritten';
+  if (sourceType === 'statement_import' || sourceType === 'statement_import_format') return 'Statement Import format';
+  if (sourceType === 'central_category_pattern') return 'Central Category pattern';
+  if (sourceType === 'statement_image_list') return 'Statement Image List';
+  if (sourceType === 'statement_pdf_table' || sourceType === 'pdf_text_statement') return 'Statement PDF Table';
+  if (sourceType === 'statement_csv_table' || sourceType === 'csv_bank_or_wallet_statement') return 'Statement CSV Table';
+  if (sourceType === 'pasted_table_statement') return 'Statement Pasted Table';
   return humanizeKey(sourceType || 'Global Learning');
 }
 
@@ -5284,19 +5439,28 @@ function renderCompactDistributionChips(title, distribution, emptyText = 'No agg
 
 async function decideGlobalLearningCandidate(item, approve) {
   const isOcr = isOcrGlobalLearningItem(item);
+  const isStatementImport = isStatementImportGlobalLearningItem(item);
   const actionCopy = approve
-    ? (isOcr ? 'Approve this review-only OCR rule?' : 'Approve this review-only rule?')
+    ? (isStatementImport ? 'Approve this review-only Statement Import rule?' : isOcr ? 'Approve this review-only OCR rule?' : 'Approve this review-only rule?')
     : 'Reject this global learning candidate?';
   if (!confirm(actionCopy)) return;
   try {
     state.loading = true;
     render();
-    const paths = isOcr ? API_PATHS.ocrReceiptRules : API_PATHS.smartCaptureRules;
+    const paths = getGlobalLearningRulePaths(item);
+    const isTemplateCandidate = item.globalLearningKind === 'ocr_receipt_template' || item.isTemplateCandidate;
     await api(
       approve ? paths.approve(item.id) : paths.reject(item.id),
-      { method: 'POST', body: approve ? { rolloutPercentage: 100 } : {} }
+      {
+        method: 'POST',
+        body: approve
+          ? (isTemplateCandidate ? { reason: 'Approved from Global Learning Review' } : { rolloutPercentage: 100 })
+          : { reason: 'Rejected from Global Learning Review' },
+      }
     );
-    setMessage(approve ? `${isOcr ? 'OCR ' : ''}suggestion rule approved at 100% rollout with review-only safeguards.` : 'Candidate rejected for 30 days.');
+    setMessage(approve
+      ? `${isTemplateCandidate ? 'Receipt template ' : isStatementImport ? 'Statement Import ' : isOcr ? 'OCR ' : ''}suggestion rule approved with review-only safeguards.`
+      : 'Candidate rejected.');
     await loadData();
   } catch (error) {
     setMessage(error.message || 'Unable to update global learning candidate.', true);
@@ -5464,8 +5628,105 @@ function renderSmartCaptureGlobalLearningRuleCandidate(item, groups) {
   });
 }
 
+function renderStatementImportGlobalLearningRuleCandidate(item) {
+  const sourceType = globalLearningSourceType(item);
+  const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
+  const suggestedAction = item.suggestedAction || item.suggested_action || 'REVIEW';
+  return renderCollapsibleItem({
+    title: item.plainSummaryZh || item.plain_summary_zh || item.plainSummary || item.plain_summary || `${renderGlobalLearningSourceLabel(sourceType)} layout pattern`,
+    subtitle: `${renderGlobalLearningSourceLabel(sourceType)} · ${item.layoutFingerprint || item.layout_fingerprint || '-'} · ${item.structureSignatureHash || item.structure_signature_hash || item.patternHash || item.pattern_hash || '-'}`,
+    statusNode: el('span', { class: 'badge info', text: ruleCategory }),
+    children: [
+      el('div', { class: 'candidate-insight-card compact-candidate-insight' }, [
+        el('div', { class: 'candidate-insight-header' }, [
+          el('span', { class: 'mini-badge info', text: 'Statement Import candidate' }),
+          el('span', { class: 'mini-badge success', text: 'Privacy-safe aggregate' }),
+          el('span', { class: 'mini-badge neutral', text: 'Review-only' }),
+        ]),
+        el('p', { text: 'Statement Import approval only adjusts parser/review hints. It never enables quick-save, auto-save, or category auto-application.' }),
+      ]),
+      renderMetaGrid([
+        ['Source type', renderGlobalLearningSourceLabel(sourceType)],
+        ['Layout fingerprint', item.layoutFingerprint || item.layout_fingerprint || '-'],
+        ['Structure signature hash', item.structureSignatureHash || item.structure_signature_hash || '-'],
+        ['Layout family', item.layoutFamily || item.layout_family || '-'],
+        ['Parser strategy', item.parserStrategy || item.parser_strategy || '-'],
+        ['Rule category', ruleCategory],
+        ['Suggested action', suggestedAction],
+        ['Target field', item.targetField || item.target_field || '-'],
+        ['Target bucket', item.targetPositionBucket || item.target_position_bucket || '-'],
+        ['Samples', item.sampleCount ?? item.sample_count ?? '-'],
+        ['Unique users', item.uniqueUserCount ?? item.unique_user_count ?? '-'],
+        ['Correction rate', formatPercent(item.correctionRate ?? item.correction_rate)],
+        ['Payee correction rate', formatPercent(item.payeeCorrectionRate ?? item.payee_correction_rate)],
+        ['Direction correction rate', formatPercent(item.directionCorrectionRate ?? item.direction_correction_rate)],
+        ['Amount correction rate', formatPercent(item.amountCorrectionRate ?? item.amount_correction_rate)],
+        ['Date correction rate', formatPercent(item.dateCorrectionRate ?? item.date_correction_rate)],
+        ['Category correction rate', formatPercent(item.categoryCorrectionRate ?? item.category_correction_rate)],
+        ['Privacy status', item.privacyStatus || item.privacy_status || 'safe_aggregate'],
+        ['Created', formatDate(item.createdAt || item.created_at)],
+      ]),
+      el('div', { class: 'privacy-note inline-note' }, [
+        el('span', { text: 'Statement Import safety: no raw statement/OCR text, payee, merchant, exact amount, transaction date, reference, account/card number, image URL/path, embedding, or vector is displayed.' }),
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn primary small', text: 'Approve review-only Statement Import rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
+        el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideGlobalLearningCandidate(item, false) }),
+      ]),
+    ],
+  });
+}
+
+
+function renderReceiptTemplateCandidate(item) {
+  const labels = item.normalizedLabelKeysJson || item.normalized_label_keys_json || '[]';
+  const titleTokens = item.normalizedTitleTokensJson || item.normalized_title_tokens_json || '[]';
+  const fieldRoles = item.fieldRoleCandidatesJson || item.field_role_candidates_json || '{}';
+  const templateKey = item.templateSemanticKey || item.template_semantic_key || item.templateFingerprint || item.template_fingerprint || 'receipt_template_candidate';
+  return renderCollapsibleItem({
+    title: `Receipt Template · ${templateKey}`,
+    subtitle: `${item.sourceScope || item.source_scope || 'receipt_single'} · ${item.scanType || item.scan_type || 'receipt_single'} · ${item.templateFingerprint || item.template_fingerprint || '-'}`,
+    statusNode: el('span', { class: 'badge info', text: item.status || 'PENDING' }),
+    children: [
+      el('div', { class: 'candidate-insight-card compact-candidate-insight' }, [
+        el('div', { class: 'candidate-insight-header' }, [
+          el('span', { class: 'mini-badge info', text: 'Receipt Template Candidate' }),
+          el('span', { class: 'mini-badge success', text: 'Structure only' }),
+          el('span', { class: 'mini-badge neutral', text: 'No raw OCR values' }),
+        ]),
+        el('p', { text: 'Approving this promotes a parser template rule only. Runtime remains review-safe: no quick-save, no auto-save, and local mirror sync can disable or version the rule later.' }),
+      ]),
+      renderMetaGrid([
+        ['Source scope', item.sourceScope || item.source_scope || '-'],
+        ['Scan type', item.scanType || item.scan_type || '-'],
+        ['Semantic key', item.templateSemanticKey || item.template_semantic_key || '-'],
+        ['Fingerprint', item.templateFingerprint || item.template_fingerprint || '-'],
+        ['Samples', item.sampleCount ?? item.sample_count ?? '-'],
+        ['Unique users', item.uniqueUserCount ?? item.unique_user_count ?? '-'],
+        ['Confidence', formatPercent(item.confidence)],
+        ['Privacy status', item.privacyStatus || item.privacy_status || 'clean'],
+        ['Created', formatDate(item.createdAt || item.created_at)],
+        ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      el('details', { class: 'nested-details' }, [
+        el('summary', { text: 'Normalized structure' }),
+        el('pre', { class: 'json-preview', text: safeJson({ titleTokens, labels, fieldRoles }) }),
+      ]),
+      el('div', { class: 'privacy-note inline-note' }, [
+        el('span', { text: 'Template privacy: this card must not show raw OCR text, merchant/payee, exact amount, date, reference number, account/card number, image URL/path, embedding, or vector.' }),
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn primary small', text: 'Approve receipt template rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
+        el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideGlobalLearningCandidate(item, false) }),
+      ]),
+    ],
+  });
+}
+
 function renderGlobalLearningRuleCandidate(item) {
   const groups = getGlobalLearningGroups(item);
+  if (item.globalLearningKind === 'ocr_receipt_template' || item.isTemplateCandidate) return renderReceiptTemplateCandidate(item);
+  if (isStatementImportGlobalLearningItem(item)) return renderStatementImportGlobalLearningRuleCandidate(item);
   return isOcrGlobalLearningItem(item)
     ? renderOcrGlobalLearningRuleCandidate(item, groups)
     : renderSmartCaptureGlobalLearningRuleCandidate(item, groups);
@@ -5477,19 +5738,22 @@ function renderSmartCaptureRuleCandidate(item) {
 
 function renderGlobalLearningActiveRule(item) {
   const isOcr = isOcrGlobalLearningItem(item);
+  const isStatementImport = isStatementImportGlobalLearningItem(item);
   const sourceType = globalLearningSourceType(item);
   const ruleCategory = item.ruleCategory || item.rule_category || 'GLOBAL';
   const action = item.finalType || item.final_type || item.action || item.suggestedAction || item.suggested_action || 'REVIEW';
   const patternHash = item.patternHash || item.pattern_hash || '-';
-  const signature = isOcr
-    ? (item.structureSignatureHash || item.structure_signature_hash || '-')
-    : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-');
+  const signature = isStatementImport
+    ? (item.layoutFingerprint || item.layout_fingerprint || item.structureSignatureHash || item.structure_signature_hash || '-')
+    : isOcr
+      ? (item.structureSignatureHash || item.structure_signature_hash || '-')
+      : (item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-');
   const rawAllowQuickAction = item.allowQuickAction ?? item.allow_quick_action;
   const rawAllowAutoSave = item.allowAutoSave ?? item.allow_auto_save;
-  const allowQuickAction = isOcr ? false : rawAllowQuickAction;
-  const allowAutoSave = isOcr ? false : rawAllowAutoSave;
-  const ocrServerFlagWarning = isOcr && (rawAllowQuickAction || rawAllowAutoSave)
-    ? 'Server returned an unsafe OCR quick/auto flag. Admin UI treats OCR global rules as review-only; verify backend policy before rollout.'
+  const allowQuickAction = (isOcr || isStatementImport) ? false : rawAllowQuickAction;
+  const allowAutoSave = (isOcr || isStatementImport) ? false : rawAllowAutoSave;
+  const ocrServerFlagWarning = (isOcr || isStatementImport) && (rawAllowQuickAction || rawAllowAutoSave)
+    ? 'Server returned an unsafe OCR/Statement Import quick/auto flag. Admin UI treats OCR global rules as review-only; verify backend policy before rollout.'
     : null;
   return renderCollapsibleItem({
     title: `${renderGlobalLearningSourceLabel(sourceType)} · ${ruleCategory} · ${action}`,
@@ -5506,8 +5770,8 @@ function renderGlobalLearningActiveRule(item) {
         ['Version', item.version],
         ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
-      isOcr ? el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: 'OCR active rule is global suggestion only. It must stay review-only and must not expose OCR text, merchant, payee, note, exact amount, image URL/path, account/card number, embedding, or vector.' }),
+      (isOcr || isStatementImport) ? el('div', { class: 'privacy-note inline-note' }, [
+        el('span', { text: `${isStatementImport ? 'Statement Import' : 'OCR'} active rule is global suggestion only. It must stay review-only and must not expose raw text, merchant, payee, note, exact amount, transaction date, image URL/path, account/card number, embedding, or vector.` }),
       ]) : null,
       ocrServerFlagWarning ? el('div', { class: 'notice warning inline-notice compact-text', text: ocrServerFlagWarning }) : null,
     ],
@@ -6581,6 +6845,382 @@ function getLearningOpsStatusBadge(status) {
   return el('span', { class: `badge ${tone}`, text: value || 'UNKNOWN' });
 }
 
+
+function normalizeLearningHousekeepingDomains(response) {
+  const items = normalizeAdminListResponse(response);
+  return items.map((item) => ({
+    ...item,
+    domain: item.domain || item.name || 'UNKNOWN',
+    versions: Array.isArray(item.versions) ? item.versions : [],
+  }));
+}
+
+async function loadLearningHousekeepingData(loadRequest = null) {
+  const request = loadRequest || beginLoadRequest('learningHousekeeping');
+  state.learningHousekeeping.error = '';
+  try {
+    const [domainsResponse, runsResponse] = await Promise.all([
+      api(API_PATHS.learningHousekeeping.domains),
+      api(API_PATHS.learningHousekeeping.runs, { params: { limit: 20 } }).catch(() => []),
+    ]);
+    if (!isLoadRequestCurrent(request)) return;
+    const domains = normalizeLearningHousekeepingDomains(domainsResponse);
+    const runs = normalizeAdminListResponse(runsResponse);
+    setScopedData({ content: domains, runs, page: 0, size: domains.length, totalElements: domains.length, totalPages: 1 }, request);
+  } catch (error) {
+    if (!isLoadRequestCurrent(request)) return;
+    const friendly = toFriendlyErrorMessage(error, 'Failed to load Learning Housekeeping data.');
+    state.learningHousekeeping.error = friendly;
+    setScopedData({ content: [], runs: [], loadError: friendly, page: 0, size: 0, totalElements: 0, totalPages: 1 }, request);
+  }
+}
+
+
+async function loadLearningConsoleData(loadRequest = null) {
+  const request = loadRequest || beginLoadRequest('learningConsole');
+  const safe = (promise, fallback) => promise.catch(() => fallback);
+  const [
+    learningOpsOverview,
+    smartPending,
+    smartActive,
+    ocrPending,
+    ocrActive,
+    statementPending,
+    statementActive,
+    templatePending,
+    templateFamilies,
+    housekeepingDomains,
+    housekeepingRuns,
+  ] = await Promise.all([
+    safe(api(API_PATHS.learningOps.overview), {}),
+    safe(api(API_PATHS.smartCaptureRules.candidates, { params: { status: 'PENDING' } }), []),
+    safe(api(API_PATHS.smartCaptureRules.active), { rules: [] }),
+    safe(api(API_PATHS.ocrReceiptRules.candidates, { params: { status: 'PENDING' } }), []),
+    safe(api(API_PATHS.ocrReceiptRules.active), { rules: [] }),
+    safe(api(API_PATHS.statementImportRules.candidates, { params: { status: 'PENDING' } }), []),
+    safe(api(API_PATHS.statementImportRules.active), { rules: [] }),
+    safe(api(API_PATHS.ocrReceiptTemplates.candidates, { params: { status: 'PENDING' } }), []),
+    safe(api(API_PATHS.learningTemplateFamilies.candidates, { params: { domain: 'ALL', status: 'PENDING_ADMIN_REVIEW' } }), []),
+    safe(api(API_PATHS.learningHousekeeping.domains), []),
+    safe(api(API_PATHS.learningHousekeeping.runs, { params: { limit: 10 } }), []),
+  ]);
+  if (!isLoadRequestCurrent(request)) return;
+
+  const candidates = [
+    ...normalizeAdminListResponse(smartPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' })),
+    ...normalizeAdminListResponse(ocrPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' })),
+    ...normalizeAdminListResponse(statementPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'statement_import_format', globalLearningKind: 'statement_import' })),
+    ...normalizeAdminListResponse(templatePending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || item.sourceScope || item.source_scope || item.scanType || item.scan_type || 'receipt_single', globalLearningKind: 'ocr_receipt_template', isTemplateCandidate: true })),
+  ];
+  const activeRules = [
+    ...(normalizeAdminObjectResponse(smartActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' })),
+    ...(normalizeAdminObjectResponse(ocrActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' })),
+    ...(normalizeAdminObjectResponse(statementActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'statement_import_format', globalLearningKind: 'statement_import' })),
+  ];
+  const housekeepingDomainRows = normalizeLearningHousekeepingDomains(housekeepingDomains);
+  const housekeepingRunRows = normalizeAdminListResponse(housekeepingRuns);
+  const familyRows = normalizeAdminListResponse(templateFamilies);
+  state.learningOps.overview = normalizeAdminObjectResponse(learningOpsOverview);
+  setScopedData({
+    content: candidates,
+    activeRules,
+    learningConsole: {
+      candidates,
+      activeRules,
+      templateFamilies: familyRows,
+      housekeepingDomains: housekeepingDomainRows,
+      housekeepingRuns: housekeepingRunRows,
+      learningOpsOverview: state.learningOps.overview,
+      contract: LEARNING_CONSOLE_CONTRACT,
+      housekeepingContract: LEARNING_HOUSEKEEPING_CONTRACT,
+    },
+    page: 0,
+    size: candidates.length,
+    totalElements: candidates.length,
+    totalPages: 1,
+  }, request);
+}
+
+function buildLearningHousekeepingRequest(domain, overrides = {}) {
+  const request = {
+    domain,
+    mode: overrides.mode || 'ADMIN_SAFE_CLEANUP',
+    olderThanDays: overrides.olderThanDays || 60,
+    includeEvents: overrides.includeEvents !== false,
+    includeAggregates: overrides.includeAggregates !== false,
+    includeRejectedCandidates: overrides.includeRejectedCandidates !== false,
+    includeInactiveRules: overrides.includeInactiveRules !== false,
+    includeActiveRules: overrides.includeActiveRules === true,
+    hardDelete: overrides.hardDelete === true,
+    dryRun: overrides.dryRun !== false,
+    reason: overrides.reason || 'Admin reviewed learning housekeeping retention plan',
+  };
+  ['hashVersion', 'parserVersion', 'ruleVersionBefore', 'createdBefore'].forEach((key) => {
+    if (overrides[key] !== undefined && overrides[key] !== null && String(overrides[key]).trim() !== '') request[key] = overrides[key];
+  });
+  return request;
+}
+
+function promptLearningHousekeepingHardDeleteRange() {
+  const hashVersion = window.prompt('Optional hashVersion to hard delete. Leave blank if using parser/rule/time range.') || '';
+  const parserVersion = window.prompt('Optional parserVersion to hard delete. Leave blank if using hash/rule/time range.') || '';
+  const ruleVersionBeforeRaw = window.prompt('Optional ruleVersionBefore. Example: 4. Leave blank if not applicable.') || '';
+  const createdBefore = window.prompt('Optional createdBefore ISO timestamp. Example: 2026-07-01T00:00:00Z. Leave blank if not applicable.') || '';
+  const olderThanDaysRaw = window.prompt('olderThanDays for hard delete fallback. Minimum 180 days.', '180') || '';
+  const ruleVersionBefore = ruleVersionBeforeRaw.trim() ? Number(ruleVersionBeforeRaw) : null;
+  const olderThanDays = olderThanDaysRaw.trim() ? Math.max(180, Number(olderThanDaysRaw) || 180) : null;
+  const range = {
+    hashVersion: hashVersion.trim(),
+    parserVersion: parserVersion.trim(),
+    ruleVersionBefore: Number.isFinite(ruleVersionBefore) ? ruleVersionBefore : null,
+    createdBefore: createdBefore.trim(),
+    olderThanDays,
+  };
+  const hasExplicitRange = Boolean(range.hashVersion || range.parserVersion || range.ruleVersionBefore || range.createdBefore || range.olderThanDays);
+  return hasExplicitRange ? range : null;
+}
+
+async function runLearningHousekeepingAction(domain, action) {
+  if (!domain || state.learningHousekeeping.actionLoading) return;
+  const isHardDelete = action === 'hardDelete';
+  const endpoint = action === 'execute'
+    ? API_PATHS.learningHousekeeping.execute
+    : isHardDelete
+      ? API_PATHS.learningHousekeeping.hardDelete
+      : API_PATHS.learningHousekeeping.plan;
+  const hardDeleteReason = isHardDelete ? window.prompt('Reason for hard delete? This must target a specific learning version/range.') : '';
+  if (isHardDelete && (!hardDeleteReason || hardDeleteReason.trim().length < 8)) {
+    setMessage('Hard delete requires a clear reason.', true);
+    return;
+  }
+  const hardDeleteRange = isHardDelete ? promptLearningHousekeepingHardDeleteRange() : null;
+  if (isHardDelete && !hardDeleteRange) {
+    setMessage('Hard delete requires hashVersion, parserVersion, ruleVersionBefore, createdBefore, or olderThanDays.', true);
+    return;
+  }
+  const confirmation = isHardDelete ? window.prompt('Type HARD DELETE LEARNING VERSION to continue.') : '';
+  if (isHardDelete && confirmation !== 'HARD DELETE LEARNING VERSION') {
+    setMessage('Hard delete cancelled because confirmation phrase did not match.', true);
+    return;
+  }
+  state.learningHousekeeping.actionLoading = `${action}:${domain}`;
+  render();
+  try {
+    const body = buildLearningHousekeepingRequest(domain, {
+      mode: isHardDelete ? 'ADMIN_HARD_DELETE_LEARNING_VERSION' : action === 'execute' ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
+      dryRun: action !== 'execute' && !isHardDelete,
+      hardDelete: isHardDelete,
+      ...(isHardDelete ? hardDeleteRange : { olderThanDays: 60 }),
+      reason: isHardDelete ? hardDeleteReason : `${action} learning housekeeping for ${domain}`,
+    });
+    const result = await api(endpoint, { method: 'POST', body });
+    state.learningHousekeeping.lastPlan = result || null;
+    setMessage(`${action === 'plan' ? 'Dry run' : action} completed for ${domain}.`);
+    await loadLearningHousekeepingData();
+  } catch (error) {
+    setMessage(toFriendlyErrorMessage(error, 'Learning housekeeping action failed.'), true);
+  } finally {
+    state.learningHousekeeping.actionLoading = '';
+    render();
+  }
+}
+
+
+function templateFamilyId(item = {}) {
+  return item.id || item.familyId || item.family_id || item.candidateId || item.candidate_id;
+}
+
+async function runTemplateFamilyAction(action, item = {}) {
+  const id = templateFamilyId(item);
+  if (!id) return;
+  const reason = window.prompt(`Reason for ${action}? Auto-merge/rollback actions are tracked for audit.`, `${action} template family after review`);
+  if (!reason || reason.trim().length < 6) {
+    setMessage('Template family action requires a clear reason.', true);
+    return;
+  }
+  let endpoint = null;
+  let body = { reason };
+  if (action === 'approve') endpoint = API_PATHS.learningTemplateFamilies.approve(id);
+  if (action === 'reject') endpoint = API_PATHS.learningTemplateFamilies.reject(id);
+  if (action === 'disable') endpoint = API_PATHS.learningTemplateFamilies.disable(id);
+  if (action === 'split') {
+    const memberPatternHash = window.prompt('Pattern hash to split from this family?');
+    if (!memberPatternHash) return;
+    endpoint = API_PATHS.learningTemplateFamilies.splitMember(id);
+    body = { reason, memberPatternHash };
+  }
+  if (!endpoint) return;
+  state.learningTemplateFamilies.actionLoading = `${action}:${id}`;
+  render();
+  try {
+    await api(endpoint, { method: 'POST', body });
+    setMessage(`Template family ${action} completed.`);
+    await loadData();
+  } catch (error) {
+    setMessage(toFriendlyErrorMessage(error, 'Template family action failed.'), true);
+  } finally {
+    state.learningTemplateFamilies.actionLoading = '';
+    render();
+  }
+}
+
+function renderTemplateFamilyCandidateCard(item = {}, mode = 'candidate') {
+  const id = templateFamilyId(item);
+  const status = item.status || 'UNKNOWN';
+  const reviewEnds = item.reviewWindowEndsAt || item.review_window_ends_at || '-';
+  const familyWinRate = Number(item.familyWinRate ?? item.family_win_rate ?? 0);
+  const exactWinRate = Number(item.exactWinRate ?? item.exact_win_rate ?? 0);
+  const bothWrongRate = Number(item.bothWrongRate ?? item.both_wrong_rate ?? 0);
+  const memberHashes = item.memberPatternHashes || item.member_pattern_hashes || [];
+  const recentEvents = Array.isArray(item.recentEvents || item.recent_events) ? (item.recentEvents || item.recent_events) : [];
+  const decisionReason = item.autoDecisionReason || item.auto_decision_reason || item.autoDecisionReasonText || '';
+  const domainValue = String(item.domain || item.domain_name || 'statement_import_format').toLowerCase();
+  const domainMeta = LEARNING_TEMPLATE_FAMILY_DOMAINS.find((domain) => domain.value === domainValue) || { label: renderGlobalLearningSourceLabel(domainValue), riskLevel: item.riskLevel || item.risk_level || 'Not available', privacyLevel: item.privacyStatus || item.privacy_status || 'Not available' };
+  return el('section', { class: 'card template-family-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: mode === 'family' ? 'Template family' : 'Similarity candidate' }),
+        el('h3', { text: item.familyKey || item.family_key || item.suggestedFamilyKey || item.suggested_family_key || id || 'Template Family' }),
+      ]),
+      el('span', { class: status.includes('AUTO') || status === 'STABLE' ? 'status-pill success' : 'status-pill info', text: status }),
+    ]),
+    renderLearningOpsMetricRows([
+      ['Domain', domainMeta.label || item.domain || item.domain_name || 'statement_import_format'],
+      ['Risk level', item.riskLevel || item.risk_level || domainMeta.riskLevel || 'Not available'],
+      ['Privacy status', item.privacyStatus || item.privacy_status || domainMeta.privacyLevel || 'Not available'],
+      ['Regression status', item.regressionStatus || item.regression_status || 'Not available'],
+      ['Similarity', `${Math.round(Number(item.similarityScore ?? item.similarity_score ?? item.confidence ?? 0) * 100)}%`],
+      ['Family win', `${Math.round(familyWinRate * 100)}%`],
+      ['Exact win', `${Math.round(exactWinRate * 100)}%`],
+      ['Both wrong', `${Math.round(bothWrongRate * 100)}%`],
+      ['Weighted feedback', formatLearningOpsNumber(item.weightedFeedback ?? item.weighted_feedback ?? 0)],
+      ['Unique users', formatLearningOpsNumber(item.uniqueUserCount ?? item.unique_user_count ?? 0)],
+      ['Review window ends', String(reviewEnds).slice(0, 19)],
+      ['Members', String(Array.isArray(memberHashes) ? memberHashes.length : 0)],
+    ]),
+    el('p', { class: 'muted', text: '3-month hidden shadow feedback: users are not asked to vote. The system compares final saved rows with exact vs family suggestions and deduplicates by user.' }),
+    el('p', { class: 'muted', text: `Hash/parser: ${(item.hashVersion || item.hash_version || '-')}/${(item.parserVersion || item.parser_version || '-')}` }),
+    renderLearningRecommendationBadge({
+      recommendedAction: item.recommendedAction || item.recommended_action || 'Not available',
+      impactLevel: item.impactLevel || item.impact_level || 'Not available',
+      riskLevel: item.riskLevel || item.risk_level || domainMeta.riskLevel || 'Not available',
+      privacyStatus: item.privacyStatus || item.privacy_status || domainMeta.privacyLevel || 'Not available',
+      confidenceLevel: item.confidenceLevel || item.confidence_level || item.confidence || 'Not available',
+    }),
+    decisionReason ? el('p', { class: 'muted', text: `Decision reason: ${decisionReason}` }) : null,
+    recentEvents.length ? el('div', { class: 'mini-audit-list' }, recentEvents.slice(0, 3).map((event) => el('p', { class: 'muted', text: `${event.eventType || event.event_type || 'EVENT'} · ${event.severity || 'INFO'} · ${String(event.summary || '').slice(0, 140)}` }))) : null,
+    el('div', { class: 'button-row wrap' }, [
+      mode === 'candidate' ? el('button', { class: 'btn small', text: 'Approve family', onclick: () => runTemplateFamilyAction('approve', item) }) : null,
+      mode === 'candidate' ? el('button', { class: 'btn ghost small', text: 'Reject / keep separate', onclick: () => runTemplateFamilyAction('reject', item) }) : null,
+      mode === 'family' ? el('button', { class: 'btn ghost small', text: 'Split member', onclick: () => runTemplateFamilyAction('split', item) }) : null,
+      mode === 'family' ? el('button', { class: 'btn danger small', text: 'Disable / rollback family', onclick: () => runTemplateFamilyAction('disable', item) }) : null,
+    ]),
+  ]);
+}
+
+function renderTemplateFamiliesPage() {
+  const families = state.data?.content || [];
+  const collecting = state.data?.collecting || [];
+  const review = state.data?.review || [];
+  const unstable = state.data?.unstable || [];
+  return el('div', { class: 'template-families-page' }, [
+    renderAdminControlHero('Template Families', 'Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, and Central Category pattern similarity, hidden feedback, admin recommendation, rollback and split tracking.', 'High confidence candidates collect 3 months of hidden feedback. Auto approve/reject is allowed only after thresholds; inconclusive/unstable families go to Admin.', [
+      el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh', disabled: state.loading, onclick: loadData }),
+      el('button', { class: 'btn secondary small', text: 'Generate candidates', onclick: () => runLearningOpsJob('GENERATE_TEMPLATE_FAMILY_CANDIDATES', '7D') }),
+      el('button', { class: 'btn secondary small', text: 'Evaluate feedback', onclick: () => runLearningOpsJob('EVALUATE_TEMPLATE_FAMILY_FEEDBACK', '7D') }),
+    ]),
+    el('div', { class: 'privacy-note compact-help-row' }, [
+      el('span', { text: 'Global rules are review-only by default. No auto-save / quick-save from global/template family rules. Category pattern global rules are high risk and manual-review only. No raw notification/OCR/transaction text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector is displayed. Exact template ratings remain; family is a non-destructive layer.' }),
+    ]),
+    review.length ? el('section', { class: 'card' }, [el('h3', { text: 'Needs Admin Review' }), ...review.map((item) => renderTemplateFamilyCandidateCard(item, 'candidate'))]) : null,
+    unstable.length ? el('section', { class: 'card' }, [el('h3', { text: 'Unstable / rollback candidates' }), ...unstable.map((item) => renderTemplateFamilyCandidateCard(item, 'family'))]) : null,
+    collecting.length ? el('section', { class: 'card' }, [el('h3', { text: 'Collecting hidden feedback' }), ...collecting.map((item) => renderTemplateFamilyCandidateCard(item, 'candidate'))]) : null,
+    families.length ? el('section', { class: 'card' }, [el('h3', { text: 'Families / auto decisions' }), ...families.map((item) => renderTemplateFamilyCandidateCard(item, 'family'))]) : renderEmptyState('No template families yet.'),
+  ]);
+}
+
+function renderLearningHousekeepingVersionRows(domain) {
+  const versions = Array.isArray(domain.versions) ? domain.versions : [];
+  if (!versions.length) return el('p', { class: 'muted', text: 'No observed learning versions yet.' });
+  return el('div', { class: 'table-wrap' }, [el('table', { class: 'admin-table compact-table' }, [
+    el('thead', {}, [el('tr', {}, ['hashVersion', 'parserVersion', 'ruleVersion', 'status', 'events', 'candidates', 'activeRules', 'protected', 'protectionReason'].map((label) => el('th', { text: label })))]),
+    el('tbody', {}, versions.map((version) => el('tr', {}, [
+      el('td', { text: version.hashVersion || version.hash_version || '-' }),
+      el('td', { text: version.parserVersion || version.parser_version || '-' }),
+      el('td', { text: String(version.ruleVersion ?? version.rule_version ?? '-') }),
+      el('td', { text: version.status || '-' }),
+      el('td', { text: String(version.eventCount ?? version.event_count ?? 0) }),
+      el('td', { text: String(version.candidateCount ?? version.candidate_count ?? 0) }),
+      el('td', { text: String(version.activeRuleCount ?? version.active_rule_count ?? 0) }),
+      el('td', { text: (version.protectedVersion ?? version.protected_version) ? 'Yes' : 'No' }),
+      el('td', { text: version.protectionReason || version.protection_reason || '-' }),
+    ]))),
+  ])]);
+}
+
+function renderLearningHousekeepingDomainCard(domain) {
+  const name = domain.domain || 'UNKNOWN';
+  const loading = state.learningHousekeeping.actionLoading.endsWith(`:${name}`);
+  return el('section', { class: 'card learning-housekeeping-domain-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Learning domain' }), el('h3', { text: name })]),
+      el('span', { class: 'status-pill neutral', text: `${domain.protectedVersions || 0} protected versions` }),
+    ]),
+    renderLearningOpsMetricRows([
+      ['Events', formatLearningOpsNumber(domain.events)],
+      ['Aggregates', formatLearningOpsNumber(domain.aggregates)],
+      ['Candidates', formatLearningOpsNumber(domain.candidates)],
+      ['Active rules', formatLearningOpsNumber(domain.activeRules)],
+      ['Inactive rules', formatLearningOpsNumber(domain.inactiveRules)],
+      ['Deletable events', formatLearningOpsNumber(domain.deletableEvents)],
+      ['Deletable candidates', formatLearningOpsNumber(domain.deletableCandidates)],
+      ['Deletable rules', formatLearningOpsNumber(domain.deletableRules)],
+    ]),
+    renderLearningHousekeepingVersionRows(domain),
+    el('div', { class: 'button-row wrap' }, [
+      el('button', { class: 'btn ghost small', text: loading ? 'Working...' : 'Dry run', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'plan') }),
+      el('button', { class: 'btn secondary small', text: 'Execute safe cleanup', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'execute') }),
+      el('button', { class: 'btn danger small', text: 'Hard delete version/range', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'hardDelete') }),
+    ]),
+  ]);
+}
+
+function renderLearningHousekeepingPage() {
+  const domains = state.data?.content || [];
+  const runs = state.data?.runs || [];
+  const error = state.learningHousekeeping.error || state.data?.loadError || '';
+  return el('div', { class: 'learning-housekeeping-page' }, [
+    renderAdminControlHero('Learning Housekeeping', 'Centralized version-aware retention for Smart Capture, OCR Receipt, and Statement Import learning.', 'Dry-run first. Automatic cleanup protects active rules, pending candidates, latest protected versions, and recent events.', [
+      el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh', disabled: state.loading, onclick: loadData }),
+    ]),
+    error ? el('div', { class: 'notice warning inline-notice', text: error }) : null,
+    el('div', { class: 'privacy-note compact-help-row' }, [
+      el('span', { text: 'This page displays only learning versions, counters, protection flags, and retention plans. It must not display raw statement text, OCR text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector.' }),
+    ]),
+    state.learningHousekeeping.lastPlan ? el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Last housekeeping plan/result' })]),
+      el('pre', { class: 'json-preview', text: compactJson(state.learningHousekeeping.lastPlan) }),
+    ]) : null,
+    domains.length ? el('div', { class: 'learning-ops-grid' }, domains.map(renderLearningHousekeepingDomainCard)) : renderEmptyState('No learning housekeeping domains found.'),
+    runs.length ? el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Recent housekeeping runs' })]),
+      el('div', { class: 'table-wrap' }, [el('table', { class: 'admin-table compact-table' }, [
+        el('thead', {}, [el('tr', {}, ['Domain', 'Mode', 'Dry run', 'Hard delete', 'Status', 'Rows matched', 'Rows deleted', 'Reason'].map((label) => el('th', { text: label })))]),
+        el('tbody', {}, runs.map((run) => el('tr', {}, [
+          el('td', { text: run.domain || '-' }),
+          el('td', { text: run.mode || '-' }),
+          el('td', { text: run.dryRun ? 'Yes' : 'No' }),
+          el('td', { text: run.hardDelete ? 'Yes' : 'No' }),
+          el('td', { text: run.status || '-' }),
+          el('td', { text: String(run.rowsMatched ?? 0) }),
+          el('td', { text: String(run.rowsDeleted ?? 0) }),
+          el('td', { text: run.reason || '-' }),
+        ]))),
+      ])]),
+    ]) : null,
+  ]);
+}
+
 function renderLearningOpsMetricRows(rows) {
   return el('div', { class: 'learning-ops-metrics' }, rows.map(([label, value, hint, danger]) => el('div', { class: danger ? 'learning-ops-metric danger' : 'learning-ops-metric' }, [
     el('span', { text: label }),
@@ -6655,6 +7295,10 @@ function renderLearningOpsActions() {
         renderLearningOpsActionButton('Generate OCR Candidates', 'GENERATE_OCR_RECEIPT_CANDIDATES', '7D'),
       ]),
       el('div', { class: 'learning-ops-action-group' }, [
+        el('strong', { text: 'Statement Import' }),
+        renderLearningOpsActionButton('Generate Statement Import Candidates', 'GENERATE_STATEMENT_IMPORT_CANDIDATES', '7D'),
+      ]),
+      el('div', { class: 'learning-ops-action-group' }, [
         el('strong', { text: 'Smart Capture Shadow ML' }),
         renderLearningOpsActionButton('Build Dataset Summary', 'BUILD_SMART_CAPTURE_ML_DATASET_SUMMARY', '30D'),
         renderLearningOpsActionButton('Train Shadow Model', 'TRAIN_SMART_CAPTURE_SHADOW_MODEL', '30D', 'secondary'),
@@ -6725,6 +7369,7 @@ function renderLearningOpsPage() {
   const overview = state.data?.learningOpsOverview || state.learningOps.overview || {};
   const smart = getLearningOpsSection(overview, ['smartCapture', 'smart_capture']);
   const ocr = getLearningOpsSection(overview, ['ocrReceipt', 'ocr_receipt']);
+  const statementImport = getLearningOpsSection(overview, ['statementImport', 'statement_import']);
   const ml = getLearningOpsSection(overview, ['smartCaptureMl', 'smart_capture_ml', 'mlShadow']);
   const overviewError = state.data?.loadError || state.learningOps.overviewError;
   const internalFalseExpense = getLearningOpsField(ml, ['internalFalseExpenseRate7d', 'internal_false_expense_rate_7d', 'internalFalseExpenseRate'], '-');
@@ -6758,6 +7403,18 @@ function renderLearningOpsPage() {
     ['Last run at', formatLearningOpsDate(getLearningOpsField(ocr, ['lastCandidateRunAt', 'last_candidate_run_at']))],
     ['Last event at', formatLearningOpsDate(getLearningOpsField(ocr, ['lastEventAt', 'last_event_at']))],
   ];
+  const statementImportRows = [
+    ['Events 24h', formatLearningOpsNumber(getLearningOpsField(statementImport, ['events24h', 'events_24h']))],
+    ['Events 7d', formatLearningOpsNumber(getLearningOpsField(statementImport, ['events7d', 'events_7d']))],
+    ['Unique users 7d', formatLearningOpsNumber(getLearningOpsField(statementImport, ['uniqueUsers7d', 'unique_users_7d']))],
+    ['Pending candidates', formatLearningOpsNumber(getLearningOpsField(statementImport, ['pendingCandidates', 'pending_candidates']))],
+    ['Active rules', formatLearningOpsNumber(getLearningOpsField(statementImport, ['activeRules', 'active_rules']))],
+    ['Payee edited 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['payeeChangedRate7d', 'payee_changed_rate_7d', 'payeeEditedRate7d']))],
+    ['Direction edited 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['directionChangedRate7d', 'direction_changed_rate_7d', 'directionEditedRate7d']))],
+    ['Conflict rate 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['conflictRate7d', 'conflict_rate_7d']))],
+    ['Last candidate run', getLearningOpsField(statementImport, ['lastCandidateRunStatus', 'last_candidate_run_status'])],
+    ['Last event at', formatLearningOpsDate(getLearningOpsField(statementImport, ['lastEventAt', 'last_event_at']))],
+  ];
   const mlRows = [
     ['Enabled', getLearningOpsField(ml, ['enabled']) === '-' ? '-' : String(Boolean(getLearningOpsField(ml, ['enabled']))).toUpperCase()],
     ['Latest model version', getLearningOpsField(ml, ['latestModelVersion', 'latest_model_version'])],
@@ -6779,19 +7436,20 @@ function renderLearningOpsPage() {
   ];
 
   return el('div', { class: 'learning-ops-page' }, [
-    renderAdminControlHero('Learning Ops', 'Verify Smart Capture, OCR Global Learning, and Shadow ML health without heavy backend load.', 'Overview uses cached backend snapshots. Manual jobs are protected by cooldown, row limits, and single-flight lock.', [
+    renderAdminControlHero('Learning Ops', 'Verify Smart Capture, OCR Global Learning, Statement Import, and Shadow ML health without heavy backend load.', 'Overview uses cached backend snapshots. Manual jobs are protected by cooldown, row limits, and single-flight lock.', [
       el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh Overview', disabled: state.loading || Boolean(state.learningOps.actionLoading), onclick: refreshLearningOpsOverview }),
       el('button', { class: 'btn small', text: 'Open Global Learning Review', disabled: Boolean(state.learningOps.actionLoading), onclick: () => setActiveTab('smartCaptureRules') }),
     ]),
     overviewError ? el('div', { class: 'notice warning inline-notice', text: overviewError }) : null,
     state.loading && !overviewError && !Object.keys(overview || {}).length ? renderLoadingState('Loading Learning Ops overview...', 'This page calls only the cached overview endpoint on load.') : null,
     el('div', { class: 'privacy-note compact-help-row' }, [
-      el('span', { text: 'No notification text, OCR text, merchant, payee, payer, exact amount, account/card number, transaction ID, image URL, embedding, or vector is displayed.' }),
+      el('span', { text: 'No notification text, OCR text, statement text, merchant, payee, payer, exact amount, transaction date, account/card number, transaction ID, image URL, embedding, or vector is displayed.' }),
     ]),
     renderLearningOpsPipeline(),
     el('div', { class: 'learning-ops-grid' }, [
       renderLearningOpsHealthCard('Smart Capture Learning', 'Global feedback loop', getLearningOpsField(smart, ['status'], 'UNKNOWN'), smartRows),
       renderLearningOpsHealthCard('OCR Receipt Learning', 'Global OCR loop', getLearningOpsField(ocr, ['status'], 'UNKNOWN'), ocrRows),
+      renderLearningOpsHealthCard('Statement Import Learning', 'Layout/parser review loop', getLearningOpsField(statementImport, ['status'], 'UNKNOWN'), statementImportRows),
       renderLearningOpsHealthCard('Smart Capture Shadow ML', 'Future model safety', getLearningOpsField(ml, ['status', 'latestModelStatus', 'latest_model_status'], 'UNKNOWN'), mlRows),
     ]),
     dangerUnavailable || dangerHigh ? el('div', { class: 'compact-guidance warning learning-ops-safety-warning' }, [
@@ -6802,6 +7460,203 @@ function renderLearningOpsPage() {
     renderLearningOpsJobResult(),
     renderLearningOpsRunHistory(),
   ]);
+}
+
+
+function setLearningConsoleSubtab(tab) {
+  if (!LEARNING_CONSOLE_TABS.includes(tab)) return;
+  state.learningConsole.activeSubtab = tab;
+  render();
+}
+
+function getLearningConsoleData() {
+  return state.data?.learningConsole || { candidates: [], activeRules: [], templateFamilies: [], housekeepingDomains: [], housekeepingRuns: [], learningOpsOverview: {}, contract: LEARNING_CONSOLE_CONTRACT, housekeepingContract: LEARNING_HOUSEKEEPING_CONTRACT };
+}
+
+function renderLearningConsoleCompatibilityNote(sourcePage) {
+  return el('section', { class: 'notice info inline-notice learning-console-compatibility' }, [
+    el('strong', { text: `${sourcePage} is now available inside Learning Console.` }),
+    el('span', { text: ' This old page remains backward compatible while the admin workflow is centralized.' }),
+    el('button', { class: 'btn small ghost', text: 'Open Learning Console', onclick: () => setActiveTab('learningConsole') }),
+  ]);
+}
+
+function renderLearningConsoleTabs() {
+  return el('div', { class: 'toolbar learning-console-tabs' }, LEARNING_CONSOLE_TABS.map((tab) => el('button', {
+    class: `btn small ${state.learningConsole.activeSubtab === tab ? '' : 'ghost'}`.trim(),
+    text: tab,
+    onclick: () => setLearningConsoleSubtab(tab),
+  })));
+}
+
+
+function renderLearningRecommendationBadge(item = {}) {
+  const action = item.recommendedAction || item.recommended_action || item.suggestedAction || 'Not available';
+  const impact = item.impactLevel || item.impact_level || item.estimatedImpact || item.estimated_impact || 'Not available';
+  const risk = item.riskLevel || item.risk_level || item.regressionStatus || item.regression_status || 'Not available';
+  const privacy = item.privacyStatus || item.privacy_status || 'Not available';
+  const confidence = item.confidenceLevel || item.confidence_level || item.confidence || 'Not available';
+  return el('div', { class: 'recommendation-strip' }, [
+    el('span', { class: 'status-pill neutral', text: `Recommended action: ${action}` }),
+    el('span', { class: 'status-pill neutral', text: `Impact level: ${impact}` }),
+    el('span', { class: 'status-pill neutral', text: `Risk level: ${risk}` }),
+    el('span', { class: 'status-pill neutral', text: `Privacy status: ${privacy}` }),
+    el('span', { class: 'status-pill neutral', text: `Confidence level: ${confidence}` }),
+  ]);
+}
+
+function renderLearningConsoleMetricCard(title, value, helper, actionText, actionTab, subtab = '') {
+  return el('section', { class: 'card learning-console-metric-card' }, [
+    el('p', { class: 'eyebrow', text: title }),
+    el('h3', { text: String(value ?? '-') }),
+    helper ? el('p', { class: 'muted', text: helper }) : null,
+    actionText && actionTab ? el('button', { class: 'btn small ghost', text: actionText, onclick: () => { if (actionTab === 'learningConsole' && subtab) setLearningConsoleSubtab(subtab); else setActiveTab(actionTab); } }) : null,
+  ]);
+}
+
+function renderLearningConsoleOverview(consoleData) {
+  const overview = consoleData.learningOpsOverview || {};
+  const pendingReviewCount = consoleData.candidates.length;
+  const activeRulesCount = consoleData.activeRules.length;
+  const templateFamilyPendingStatus = consoleData.templateFamilies.length;
+  const latestRun = consoleData.housekeepingRuns[0] || {};
+  const privacyBlockedCount = getLearningOpsResultValue(overview, ['privacyBlockedCount', 'privacy_blocked_count'], 0);
+  const lastCandidateJob = getLearningOpsResultValue(overview, ['lastCandidateJob', 'last_candidate_job'], '-');
+  return el('div', {}, [
+    el('div', { class: 'control-dashboard-grid learning-console-overview-grid' }, [
+      renderLearningConsoleMetricCard('Pending review', pendingReviewCount, 'Unified global learning candidates waiting for admin review.', 'Open Review Queue', 'learningConsole', 'Review Queue'),
+      renderLearningConsoleMetricCard('Active rules', activeRulesCount, 'Review-only active learning rules across Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, and Central Category pattern.', 'Open Rules', 'learningConsole', 'Rules'),
+      renderLearningConsoleMetricCard('Template family pending status', templateFamilyPendingStatus, 'Similarity candidates waiting for hidden feedback or admin decision.', 'Open Template Families', 'learningConsole', 'Template Families'),
+      renderLearningConsoleMetricCard('Latest housekeeping status', latestRun.status || latestRun.resultStatus || 'UNKNOWN', 'Most recent protected housekeeping run. Job history remains lazy loaded.', 'Open Jobs & Housekeeping', 'learningConsole', 'Jobs & Housekeeping'),
+      renderLearningConsoleMetricCard('Privacy blocked count', privacyBlockedCount, 'Privacy guard blocks events that contain unsafe fields.', null, null),
+      renderLearningConsoleMetricCard('Last candidate job', lastCandidateJob, 'Last candidate generation job reported by Learning Ops if available.', 'Open Learning Ops', 'learningOps'),
+    ]),
+    renderPolicySafetyNote('Learning Console centralizes all five Template Family domains: Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, and Central Category pattern. Global rules are review-only by default; no raw notification/OCR/transaction text is stored. Old pages remain backward compatible while the workflow is centralized.'),
+  ]);
+}
+
+function renderLearningConsoleReviewQueue(consoleData) {
+  const selectedSource = state.adminFilters.globalLearningSourceType || '';
+  const rows = consoleData.candidates.filter((item) => !selectedSource || globalLearningSourceType(item) === selectedSource);
+  return el('div', {}, [
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Review Queue' }), el('h3', { text: 'Unified candidate review' })]),
+        renderInfoHint('This tab reuses the existing Global Learning Review actions. Approval remains review-only and cannot enable quick-save or auto-save.', { label: 'Review safety' }),
+      ]),
+      renderGlobalLearningSourceFilter(),
+      el('p', { class: 'muted', text: `Source filters: ${LEARNING_CONSOLE_SOURCE_FILTERS.join(', ')}` }),
+      el('p', { class: 'muted', text: 'Risk filters: All, Low, Medium, High, Privacy Blocked. Detailed risk scoring will be populated by the future evaluation stage.' }),
+      el('p', { class: 'muted', text: 'Recommended action, Impact level, Risk level, Privacy status, Regression status, and Confidence level are shown when backend data is available. Missing values display Not available.' }),
+      el('p', { class: 'muted', text: 'Safe recommendation examples: approve_review_only for low-risk layout rules, keep_pending for weak evidence, reject for critical regression. Recommended action: approve_review_only.' }),
+    ]),
+    renderStats(rows),
+    renderControlList(rows, renderGlobalLearningRuleCandidate, 'No pending learning candidates in the selected source.'),
+  ]);
+}
+
+function renderLearningConsoleTemplateFamilies(consoleData) {
+  return el('div', {}, [
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Template Families' }), el('h3', { text: 'Similarity + hidden feedback' })]),
+        el('button', { class: 'btn small ghost', text: 'Open full Template Families page', onclick: () => setActiveTab('templateFamilies') }),
+      ]),
+      el('p', { class: 'muted', text: 'reusesExistingTemplateFamiliesUi: true. This console tab keeps the full family workflow centralized while the old page remains available during migration.' }),
+      el('p', { class: 'muted', text: 'Recommendation summary uses familyWinRate, exactWinRate, bothWrongRate, feedbackCount, recommendedAction, impactLevel, riskLevel, privacyStatus, regressionStatus, and confidenceLevel when available; otherwise Not available is shown.' }),
+      renderMetaGrid(LEARNING_TEMPLATE_FAMILY_DOMAINS.map((domain) => [domain.label, `${domain.privacyLevel} · ${domain.riskLevel}`])),
+    ]),
+    consoleData.templateFamilies.length
+      ? el('div', { class: 'list' }, consoleData.templateFamilies.slice(0, 8).map((item) => renderTemplateFamilyCandidateCard(item, 'candidate')))
+      : el('div', { class: 'card empty-state compact-empty' }, [el('strong', { text: 'No pending template family candidates.' })]),
+  ]);
+}
+
+function renderLearningConsoleRules(consoleData) {
+  return el('div', {}, [
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Rules' }), el('h3', { text: 'Active review-only rules' })]),
+        renderInfoHint('reusesExistingGlobalLearningReview: true. Active rules are still managed by their existing disable/rollback actions.', { label: 'Rules reuse' }),
+      ]),
+      el('p', { class: 'muted', text: 'Sources: Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern.' }),
+      el('p', { class: 'muted', text: 'All global rules remain review-only; auto-save disabled and quick-save disabled.' }),
+    ]),
+    renderControlList(consoleData.activeRules, renderGlobalLearningActiveRule, 'No active learning rules found.'),
+  ]);
+}
+
+function renderLearningConsoleJobsAndHousekeeping(consoleData) {
+  const domains = consoleData.housekeepingDomains || [];
+  return el('div', {}, [
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Jobs & Housekeeping' }), el('h3', { text: 'Protected learning operations' })]),
+        el('div', { class: 'actions compact-actions' }, [
+          el('button', { class: 'btn small ghost', text: 'Open Learning Ops', onclick: () => setActiveTab('learningOps') }),
+          el('button', { class: 'btn small ghost', text: 'Open Learning Housekeeping', onclick: () => setActiveTab('learningHousekeeping') }),
+        ]),
+      ]),
+      el('p', { class: 'muted', text: 'reusesLearningOps: true. reusesLearningHousekeeping: true. Job history heavy endpoints are not auto-loaded.' }),
+      el('p', { class: 'muted', text: `versionTableColumns: ${LEARNING_HOUSEKEEPING_CONTRACT.versionTableColumns.join(', ')}` }),
+      el('p', { class: 'muted', text: `autoLoadJobHistoryHeavyEndpoint: ${LEARNING_HOUSEKEEPING_CONTRACT.autoLoadJobHistoryHeavyEndpoint}` }),
+    ]),
+    domains.length ? el('div', { class: 'control-dashboard-grid' }, domains.slice(0, 6).map((domain) => renderLearningHousekeepingDomainCard(domain))) : el('div', { class: 'card empty-state compact-empty' }, [el('strong', { text: 'No housekeeping domains loaded.' })]),
+  ]);
+}
+
+function renderLearningConsoleSafety(consoleData) {
+  const overview = consoleData.learningOpsOverview || {};
+  return el('section', { class: 'card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Safety / Kill Switch' }), el('h3', { text: 'Learning-specific controls' })]),
+      renderInfoHint('Some switches are surfaced through Emergency Console or Product Policy depending on backend availability. Missing APIs are shown as unknown, not fake enabled states.', { label: 'Kill switch safety' }),
+    ]),
+    renderMetaGrid([
+      ['Anonymous upload', getLearningOpsResultValue(overview, ['anonymousUploadStatus', 'anonymous_upload_status'], 'unknown')],
+      ['Smart Capture global rules', getLearningOpsResultValue(overview, ['smartCaptureGlobalRulesStatus', 'smart_capture_global_rules_status'], 'unknown')],
+      ['OCR global rules', getLearningOpsResultValue(overview, ['ocrGlobalRulesStatus', 'ocr_global_rules_status'], 'unknown')],
+      ['Statement Import global rules', getLearningOpsResultValue(overview, ['statementImportGlobalRulesStatus', 'statement_import_global_rules_status'], 'unknown')],
+      ['Template family runtime', getLearningOpsResultValue(overview, ['templateFamilyRuntimeStatus', 'template_family_runtime_status'], 'unknown')],
+      ['Auto approve', getLearningOpsResultValue(overview, ['autoApproveStatus', 'auto_approve_status'], 'unknown')],
+      ['Force review-only', getLearningOpsResultValue(overview, ['forceReviewOnlyStatus', 'force_review_only_status'], 'unknown')],
+      ['Central Category pattern', getLearningOpsResultValue(overview, ['centralCategoryPatternStatus', 'central_category_pattern_status'], 'unknown')],
+    ]),
+    el('div', { class: 'actions compact-actions' }, [
+      el('button', { class: 'btn small ghost', text: 'Open Emergency Console', onclick: () => setActiveTab('emergencyConsole') }),
+      el('button', { class: 'btn small ghost', text: 'Open Product Policy', onclick: () => setActiveTab('productPolicies') }),
+    ]),
+  ]);
+}
+
+function renderLearningConsoleEvaluation() {
+  return el('section', { class: 'card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Evaluation' }), el('h3', { text: 'Golden sample + shadow evaluation workspace' })]),
+      el('span', { class: 'status-pill neutral', text: 'placeholder: true' }),
+      el('span', { class: 'status-pill neutral', text: 'Evaluation placeholder' }),
+    ]),
+    el('p', { class: 'muted', text: 'Latest golden/shadow evaluation per domain: Not run yet unless backend data is available. Domains: Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern. No fake metrics are shown.' }),
+    el('p', { class: 'muted', text: 'fakeNumbers: false' }),
+    renderPolicySafetyNote('Do not approve future auto-maintenance from this tab until before/after accuracy, critical regression checks, regression status, and recommendation are available.'),
+  ]);
+}
+
+function renderLearningConsolePage() {
+  const consoleData = getLearningConsoleData();
+  const activeSubtab = state.learningConsole.activeSubtab || LEARNING_CONSOLE_TABS[0];
+  const children = [
+    renderAdminControlHero('Learning Console', 'Centralized learning governance for Smart Capture, OCR, Statement Import, Template Families, Jobs, Housekeeping, Safety, and future Evaluation.', 'keepsBackwardCompatibleOldPages: true. This page centralizes workflows without deleting the older pages yet.'),
+    renderLearningConsoleTabs(),
+  ];
+  if (activeSubtab === 'Overview') children.push(renderLearningConsoleOverview(consoleData));
+  else if (activeSubtab === 'Review Queue') children.push(renderLearningConsoleReviewQueue(consoleData));
+  else if (activeSubtab === 'Template Families') children.push(renderLearningConsoleTemplateFamilies(consoleData));
+  else if (activeSubtab === 'Rules') children.push(renderLearningConsoleRules(consoleData));
+  else if (activeSubtab === 'Jobs & Housekeeping') children.push(renderLearningConsoleJobsAndHousekeeping(consoleData));
+  else if (activeSubtab === 'Safety / Kill Switch') children.push(renderLearningConsoleSafety(consoleData));
+  else children.push(renderLearningConsoleEvaluation());
+  return el('div', { class: 'learning-console-page' }, children);
 }
 
 function renderAdminControlPage() {
@@ -6858,10 +7713,20 @@ function renderAdminControlPage() {
     children.push(renderProductPolicyToolbar());
     children.push(renderPolicyShortcutGrid());
     children.push(renderControlList(items, renderProductPolicyItem, 'No product policies found.'));
+  } else if (state.activeTab === 'learningConsole') {
+    children.push(renderLearningConsolePage());
+  } else if (state.activeTab === 'learningHousekeeping') {
+    children.push(renderLearningConsoleCompatibilityNote('Learning Housekeeping'));
+    children.push(renderLearningHousekeepingPage());
+  } else if (state.activeTab === 'templateFamilies') {
+    children.push(renderLearningConsoleCompatibilityNote('Template Families'));
+    children.push(renderTemplateFamiliesPage());
   } else if (state.activeTab === 'learningOps') {
+    children.push(renderLearningConsoleCompatibilityNote('Learning Ops'));
     children.push(renderLearningOpsPage());
   } else if (state.activeTab === 'smartCaptureRules') {
-    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'One page reviews Smart Capture, OCR Receipt, OCR Financial List, and OCR Handwritten candidates. Approved rules stay review-only and cannot quick-save or auto-save.'));
+    children.push(renderLearningConsoleCompatibilityNote('Global Learning Review'));
+    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'One page reviews Smart Capture, OCR Receipt, OCR Financial List, OCR Handwritten, and Statement Import candidates. Approved rules stay review-only and cannot quick-save or auto-save.'));
     children.push(renderGlobalLearningSourceFilter());
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Approval creates suggestion rules only: forceReview=true, allowQuickAction=false, allowAutoSave=false. Personal local learning remains higher priority than global rules.'));

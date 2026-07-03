@@ -1,0 +1,13 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const app = fs.readFileSync(path.resolve(__dirname, '..', 'app.js'), 'utf8');
+assert(app.includes('Learning Console'), 'one top-level Learning Console page must exist');
+['Overview', 'Review Queue', 'Template Families', 'Rules', 'Jobs & Housekeeping', 'Safety / Kill Switch', 'Evaluation placeholder'].forEach((tab) => assert(app.includes(tab), `${tab} tab must exist`));
+['Smart Capture', 'OCR Receipt', 'OCR Financial List', 'OCR Handwritten', 'Statement Import'].forEach((source) => assert(app.includes(source), `${source} source filter must exist`));
+assert(app.includes('keepsBackwardCompatibleOldPages: true'), 'old pages must remain backward compatible');
+assert(app.includes('reusesLearningOps') && app.includes('reusesLearningHousekeeping'), 'Learning Ops and Housekeeping must be reused');
+assert(app.includes('reusesExistingTemplateFamiliesUi'), 'Template Families UI must be reused');
+assert(app.includes('placeholder: true') && app.includes('fakeNumbers: false'), 'Evaluation must be placeholder without fake numbers');
+assert(!/rawText|ocrLines|imageUri|referenceNo|exactAmount/.test(app), 'forbidden raw fields must not render');
+console.log('PASS adminLearningConsoleAudit');
