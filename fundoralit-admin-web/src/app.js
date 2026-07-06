@@ -31,6 +31,7 @@ const API_PATHS = {
     serviceCredits: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/service-credits`,
     close: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/close`,
     reopen: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/reopen`,
+    screenshot: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/screenshot`,
   },
   rewardSurvey: {
     list: '/api/subscription/feedback-trial/admin/surveys',
@@ -380,6 +381,7 @@ const state = {
   size: 30,
   feedbackFilters: { status: '', module: '', type: '' },
   feedbackOptions: null,
+  feedbackScreenshotPreviews: {},
   data: null,
   error: '',
   message: '',
@@ -1265,6 +1267,7 @@ async function signOutAdmin() {
   state.loading = false;
   state.analyticsLoading = false;
   state.feedbackOptions = null;
+  clearFeedbackScreenshotPreviews();
   state.message = '';
   state.error = '';
   render();
@@ -1423,6 +1426,127 @@ async function api(path, options = {}) {
 
   if (json && Object.prototype.hasOwnProperty.call(json, 'data')) return json.data;
   return json;
+}
+
+async function apiRaw(path, options = {}) {
+  const service = options.service || 'core';
+  const baseUrl = service === 'collaboration' ? collaborationApiBaseUrl : coreApiBaseUrl;
+  if (!baseUrl) {
+    throw new Error(service === 'collaboration'
+      ? 'Collaboration API base URL is not configured in config.js.'
+      : 'Core API base URL is not configured in config.js.');
+  }
+  const token = await getToken(options.forceTokenRefresh === true);
+  const url = new URL(`${baseUrl}${path}`);
+  Object.entries(options.params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    url.searchParams.set(key, String(value));
+  });
+
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: options.accept || '*/*',
+    ...(options.headers || {}),
+  };
+
+  let response = await fetch(url.toString(), {
+    method: options.method || 'GET',
+    headers,
+  });
+
+  if (response.status === 401 && options.forceTokenRefresh !== true) {
+    headers.Authorization = `Bearer ${await getToken(true)}`;
+    response = await fetch(url.toString(), {
+      method: options.method || 'GET',
+      headers,
+    });
+  }
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
+    const message = json?.message || json?.error || json?.data?.message || json?.code || `Request failed (${response.status})`;
+    const error = new Error(message);
+    error.status = response.status;
+    error.payload = json;
+    error.service = service;
+    error.url = url.toString();
+    throw error;
+  }
+
+  return response;
+}
+
+function clearFeedbackScreenshotPreviews() {
+  Object.values(state.feedbackScreenshotPreviews || {}).forEach((preview) => {
+    if (preview?.objectUrl) URL.revokeObjectURL(preview.objectUrl);
+  });
+  state.feedbackScreenshotPreviews = {};
+}
+
+function setFeedbackScreenshotPreview(id, next) {
+  if (!id) return;
+  const previous = state.feedbackScreenshotPreviews?.[id];
+  if (previous?.objectUrl && previous.objectUrl !== next?.objectUrl) {
+    URL.revokeObjectURL(previous.objectUrl);
+  }
+  state.feedbackScreenshotPreviews = {
+    ...(state.feedbackScreenshotPreviews || {}),
+    [id]: next,
+  };
+}
+
+async function loadFeedbackScreenshotPreview(item) {
+  const id = item?.id;
+  if (!id) return;
+  const current = state.feedbackScreenshotPreviews?.[id];
+  if (current?.loading) return;
+  setFeedbackScreenshotPreview(id, { loading: true, error: '', objectUrl: current?.objectUrl || '' });
+  render();
+  try {
+    const response = await apiRaw(API_PATHS.feedback.screenshot(id), { accept: 'image/*' });
+    const blob = await response.blob();
+    if (!blob || blob.size <= 0) throw new Error('Screenshot is empty.');
+    const objectUrl = URL.createObjectURL(blob);
+    setFeedbackScreenshotPreview(id, { loading: false, error: '', objectUrl, contentType: blob.type || response.headers.get('Content-Type') || '' });
+  } catch (error) {
+    setFeedbackScreenshotPreview(id, { loading: false, error: toFriendlyErrorMessage(error, 'Screenshot could not be loaded.'), objectUrl: '' });
+  } finally {
+    render();
+  }
+}
+
+function renderFeedbackScreenshot(item) {
+  const hasScreenshot = Boolean(item?.screenshotStoragePath || item?.screenshotUrl);
+  if (!hasScreenshot) return el('p', { class: 'muted', text: 'No screenshot attached.' });
+
+  const preview = state.feedbackScreenshotPreviews?.[item.id] || {};
+  const controls = [
+    el('button', {
+      class: 'btn ghost small',
+      text: preview.objectUrl ? 'Refresh screenshot' : 'Load screenshot safely',
+      disabled: Boolean(preview.loading),
+      onclick: () => loadFeedbackScreenshotPreview(item),
+    }),
+  ];
+
+  if (preview.objectUrl) {
+    controls.unshift(el('a', { class: 'btn secondary small', href: preview.objectUrl, target: '_blank', rel: 'noopener noreferrer', text: 'Open screenshot' }));
+  }
+
+  return el('div', { class: 'screenshot-preview-card' }, [
+    el('div', { class: 'screenshot-preview-head' }, [
+      el('span', { class: 'muted', text: 'Screenshot is loaded through the backend admin proxy, not directly from Supabase storage.' }),
+      el('div', { class: 'actions compact-actions' }, controls),
+    ]),
+    preview.loading ? el('p', { class: 'muted', text: 'Loading screenshot...' }) : null,
+    preview.error ? el('div', { class: 'notice warning inline-notice', text: preview.error }) : null,
+    preview.objectUrl ? el('a', { href: preview.objectUrl, target: '_blank', rel: 'noopener noreferrer' }, [
+      el('img', { class: 'img-preview', src: preview.objectUrl, alt: 'Feedback screenshot' }),
+    ]) : null,
+    !preview.objectUrl && !preview.loading ? el('small', { class: 'field-help', text: 'Direct public storage URLs are intentionally not used here, so private buckets and browser CORS settings cannot block admin actions.' }) : null,
+  ]);
 }
 
 function setMessage(message, isError = false) {
@@ -3571,9 +3695,7 @@ function renderFeedbackItem(item) {
         ['Review Reason', item.reviewReason], ['Review Evidence', item.reviewEvidence], ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
         ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
       ]),
-      item.screenshotUrl ? el('a', { href: item.screenshotUrl, target: '_blank', rel: 'noopener noreferrer' }, [
-        el('img', { class: 'img-preview', src: item.screenshotUrl, alt: 'Feedback screenshot' }),
-      ]) : el('p', { class: 'muted', text: 'No screenshot attached.' }),
+      renderFeedbackScreenshot(item),
       el('details', { class: 'nested-details' }, [el('summary', { text: 'Debug JSON' }), el('pre', { text: debugText })]),
       el('div', { class: 'actions feedback-actions' }, [
         isClosed
