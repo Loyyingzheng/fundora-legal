@@ -7429,29 +7429,32 @@ function buildLearningHousekeepingRequest(domain, overrides = {}) {
     dryRun: overrides.dryRun !== false,
     reason: overrides.reason || 'Admin reviewed learning housekeeping retention plan',
   };
-  ['hashVersion', 'parserVersion', 'ruleVersionBefore', 'createdBefore'].forEach((key) => {
+  ['hashVersion', 'parserVersion', 'ruleVersionBefore', 'createdBefore', 'mergeIntoHashVersion', 'mergeIntoParserVersion', 'mergeIntoRuleVersion'].forEach((key) => {
     if (overrides[key] !== undefined && overrides[key] !== null && String(overrides[key]).trim() !== '') request[key] = overrides[key];
   });
   return request;
 }
 
-function promptLearningHousekeepingHardDeleteRange() {
-  const hashVersion = window.prompt('Optional hashVersion to hard delete. Leave blank if using parser/rule/time range.') || '';
-  const parserVersion = window.prompt('Optional parserVersion to hard delete. Leave blank if using hash/rule/time range.') || '';
-  const ruleVersionBeforeRaw = window.prompt('Optional ruleVersionBefore. Example: 4. Leave blank if not applicable.') || '';
-  const createdBefore = window.prompt('Optional createdBefore ISO timestamp. Example: 2026-07-01T00:00:00Z. Leave blank if not applicable.') || '';
-  const olderThanDaysRaw = window.prompt('olderThanDays for hard delete fallback. Minimum 180 days.', '180') || '';
-  const ruleVersionBefore = ruleVersionBeforeRaw.trim() ? Number(ruleVersionBeforeRaw) : null;
-  const olderThanDays = olderThanDaysRaw.trim() ? Math.max(180, Number(olderThanDaysRaw) || 180) : null;
+function promptLearningHousekeepingMergeRetireRange() {
+  const sourceHashVersion = window.prompt('Source hashVersion to retire after merge. Required.') || '';
+  const sourceParserVersion = window.prompt('Source parserVersion to retire after merge. Required.') || '';
+  const sourceRuleVersionRaw = window.prompt('Source ruleVersion. Use 0 if this domain does not use ruleVersion.', '0') || '0';
+  const targetHashVersion = window.prompt('Merge target hashVersion. Must already exist and be protected/latest or active. Required.') || '';
+  const targetParserVersion = window.prompt('Merge target parserVersion. Must already exist and be protected/latest or active. Required.') || '';
+  const targetRuleVersionRaw = window.prompt('Merge target ruleVersion. Use 0 if this domain does not use ruleVersion.', sourceRuleVersionRaw || '0') || '0';
+  const sourceRuleVersion = Number(sourceRuleVersionRaw.trim() || '0');
+  const targetRuleVersion = Number(targetRuleVersionRaw.trim() || '0');
   const range = {
-    hashVersion: hashVersion.trim(),
-    parserVersion: parserVersion.trim(),
-    ruleVersionBefore: Number.isFinite(ruleVersionBefore) ? ruleVersionBefore : null,
-    createdBefore: createdBefore.trim(),
-    olderThanDays,
+    hashVersion: sourceHashVersion.trim(),
+    parserVersion: sourceParserVersion.trim(),
+    ruleVersionBefore: Number.isFinite(sourceRuleVersion) ? sourceRuleVersion : 0,
+    mergeIntoHashVersion: targetHashVersion.trim(),
+    mergeIntoParserVersion: targetParserVersion.trim(),
+    mergeIntoRuleVersion: Number.isFinite(targetRuleVersion) ? targetRuleVersion : 0,
   };
-  const hasExplicitRange = Boolean(range.hashVersion || range.parserVersion || range.ruleVersionBefore || range.createdBefore || range.olderThanDays);
-  return hasExplicitRange ? range : null;
+  const hasExactSource = Boolean(range.hashVersion && range.parserVersion);
+  const hasExactTarget = Boolean(range.mergeIntoHashVersion && range.mergeIntoParserVersion);
+  return hasExactSource && hasExactTarget ? range : null;
 }
 
 async function runLearningHousekeepingAction(domain, action) {
@@ -7463,19 +7466,19 @@ async function runLearningHousekeepingAction(domain, action) {
     : isHardDelete
       ? API_PATHS.learningHousekeeping.hardDelete
       : API_PATHS.learningHousekeeping.plan;
-  const hardDeleteReason = isHardDelete ? window.prompt('Reason for hard delete? This must target a specific learning version/range.') : '';
+  const hardDeleteReason = isHardDelete ? window.prompt('Reason for merge-retiring a deprecated learning version? This does not delete raw rows and must target exact source/target versions.') : '';
   if (isHardDelete && (!hardDeleteReason || hardDeleteReason.trim().length < 10)) {
-    setMessage('Hard delete requires a clear 10+ character reason.', true);
+    setMessage('Merge-retire requires a clear 10+ character reason.', true);
     return;
   }
-  const hardDeleteRange = isHardDelete ? promptLearningHousekeepingHardDeleteRange() : null;
+  const hardDeleteRange = isHardDelete ? promptLearningHousekeepingMergeRetireRange() : null;
   if (isHardDelete && !hardDeleteRange) {
-    setMessage('Hard delete requires hashVersion, parserVersion, ruleVersionBefore, createdBefore, or olderThanDays.', true);
+    setMessage('Merge-retire requires exact source hash/parser and exact target hash/parser versions.', true);
     return;
   }
   let critical = null;
   if (isExecute || isHardDelete) {
-    const expectedPhrase = isHardDelete ? 'HARD DELETE LEARNING DATA' : 'EXECUTE HOUSEKEEPING';
+    const expectedPhrase = isHardDelete ? 'MERGE RETIRE LEARNING VERSION' : 'EXECUTE HOUSEKEEPING';
     const reason = isHardDelete ? hardDeleteReason : (window.prompt(`Reason for executing learning housekeeping on ${domain}?`, `Execute safe learning housekeeping for ${domain}`) || '');
     if (reason.trim().length < 10) {
       setMessage('Learning housekeeping execute requires a 10+ character reason.', true);
@@ -7492,7 +7495,7 @@ async function runLearningHousekeepingAction(domain, action) {
   render();
   try {
     const body = buildLearningHousekeepingRequest(domain, {
-      mode: isHardDelete ? 'ADMIN_HARD_DELETE_LEARNING_VERSION' : isExecute ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
+      mode: isHardDelete ? 'ADMIN_MERGE_RETIRE_LEARNING_VERSION' : isExecute ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
       dryRun: !isExecute && !isHardDelete,
       hardDelete: isHardDelete,
       ...(isHardDelete ? hardDeleteRange : { olderThanDays: 60 }),
@@ -7501,7 +7504,7 @@ async function runLearningHousekeepingAction(domain, action) {
     if (critical) Object.assign(body, critical);
     const result = await api(endpoint, { method: 'POST', body, forceTokenRefresh: Boolean(critical) });
     state.learningHousekeeping.lastPlan = result || null;
-    setMessage(`${action === 'plan' ? 'Dry run' : action} completed for ${domain}.`);
+    setMessage(`${action === 'plan' ? 'Dry run' : isHardDelete ? 'Merge-retire' : action} completed for ${domain}.`);
     await loadLearningHousekeepingData();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'Learning housekeeping action failed.'), true);
@@ -7680,7 +7683,7 @@ function renderLearningHousekeepingDomainCard(domain) {
     el('div', { class: 'button-row wrap' }, [
       el('button', { class: 'btn ghost small', text: loading ? 'Working...' : 'Dry run', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'plan') }),
       el('button', { class: 'btn secondary small', text: 'Execute safe cleanup', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'execute') }),
-      el('button', { class: 'btn danger small', text: 'Hard delete version/range', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'hardDelete') }),
+      el('button', { class: 'btn secondary small', text: 'Merge retire deprecated version', disabled: loading || Number(domain.protectedVersions || 0) < 1 || (Array.isArray(domain.versions) && domain.versions.length < 2), onclick: () => runLearningHousekeepingAction(name, 'hardDelete') }),
     ]),
   ]);
 }
@@ -7697,7 +7700,7 @@ function renderLearningHousekeepingPage() {
     error ? el('div', { class: 'notice warning inline-notice', text: error }) : null,
     renderSystemHousekeepingOverview(),
     el('div', { class: 'privacy-note compact-help-row' }, [
-      el('span', { text: 'Learning cleanup displays only versions, counters, protection flags, and retention plans. It must not display raw statement text, OCR text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector.' }),
+      el('span', { text: 'Learning cleanup displays only versions, counters, protection flags, and retention plans. Safe cleanup never deletes active/latest/final versions. Deprecated iterations must be merge-retired into an existing protected/current version before any old rows can age out through normal retention. It must not display raw statement text, OCR text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector.' }),
     ]),
     state.learningHousekeeping.lastPlan ? el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [el('h3', { text: 'Last learning housekeeping plan/result' })]),

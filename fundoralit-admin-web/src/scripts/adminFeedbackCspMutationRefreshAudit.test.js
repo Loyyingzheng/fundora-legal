@@ -12,8 +12,8 @@ function assert(condition, message) {
 assert(indexHtml.includes("style-src 'self' 'unsafe-inline'"), 'CSP must allow the current JS-rendered inline positioning/progress styles or admin UI will spam style-src violations.');
 assert(indexHtml.includes("img-src 'self' data: blob:"), 'CSP must allow safe screenshot previews.');
 assert(!/frame-ancestors[^;]*;/.test(indexHtml), 'Do not ship frame-ancestors in meta CSP; browsers ignore it and print a confusing warning. Use an HTTP response header when hosting supports it.');
-assert(indexHtml.includes('app.js?v=20260706-system-housekeeping-v1'), 'app.js must be cache-busted after feedback runtime fixes.');
-assert(indexHtml.includes('styles.css?v=20260706-system-housekeeping-v1'), 'styles.css must be cache-busted after CSP/style fixes.');
+assert(indexHtml.includes('app.js?v=20260706-learning-merge-retire-v1'), 'app.js must be cache-busted after feedback runtime fixes.');
+assert(indexHtml.includes('styles.css?v=20260706-learning-merge-retire-v1'), 'styles.css must be cache-busted after CSP/style fixes.');
 assert(appJs.includes('async function refreshAfterAdminMutation'), 'Admin mutations must use a shared post-success refresh helper.');
 assert(appJs.includes('await refreshAfterAdminMutation(successMessage ||'), 'PATCH/POST mutation success paths must refresh the current page.');
 assert(appJs.includes('const LIMITS = ADMIN_LIMITS;'), 'Keep the LIMITS alias so legacy modal helpers cannot crash actions before API calls.');

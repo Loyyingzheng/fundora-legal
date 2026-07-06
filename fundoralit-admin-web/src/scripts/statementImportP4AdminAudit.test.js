@@ -8,7 +8,8 @@ assert(app.includes('System Housekeeping') && app.includes('Learning version cle
 assert(app.includes('Statement Import') || app.includes('STATEMENT_IMPORT_GLOBAL'), 'Statement Import housekeeping must be visible');
 assert(app.includes('runLearningHousekeepingAction'), 'admin can trigger housekeeping actions');
 assert(app.includes('Dry run'), 'admin can dry-run cleanup');
-assert(app.includes('HARD DELETE LEARNING DATA'), 'hard delete phrase required');
+assert(app.includes('MERGE RETIRE LEARNING VERSION'), 'merge-retire phrase required');
+assert(app.includes('Merge retire deprecated version'), 'unsafe hard delete must be replaced with merge-retire control');
 assert(app.includes('hashVersion') && app.includes('parserVersion') && app.includes('ruleVersion'), 'admin can view statement import learning versions');
 assert(app.includes('raw statement text') && app.includes('payee') && app.includes('exact amount'), 'admin UI must explicitly avoid raw private fields');
 console.log('PASS statementImportP4AdminAudit');
