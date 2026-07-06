@@ -2139,6 +2139,16 @@ async function patchAction(path, successMessage, body) {
   await performPatchAction(path, successMessage, body);
 }
 
+async function refreshAfterAdminMutation(successMessage) {
+  setMessage(successMessage || 'Updated successfully.');
+  state.modal = null;
+  state.actionLoadingKey = '';
+  state.actionLoadingMessage = '';
+  state.loading = true;
+  render();
+  await loadData();
+}
+
 async function performPatchAction(path, successMessage, body) {
   const modalRequest = Boolean(state.modal);
   if (modalRequest) {
@@ -2154,11 +2164,7 @@ async function performPatchAction(path, successMessage, body) {
   render();
   try {
     await api(path, { method: 'PATCH', ...(body !== undefined ? { body } : {}) });
-    setMessage(successMessage || 'Updated successfully.');
-    state.modal = null;
-    state.actionLoadingKey = '';
-    state.actionLoadingMessage = '';
-    await loadData();
+    await refreshAfterAdminMutation(successMessage || 'Updated successfully.');
   } catch (error) {
     if (modalRequest && state.modal) {
       state.modal.loading = false;
@@ -2188,11 +2194,7 @@ async function performPostAction(path, successMessage, body) {
   render();
   try {
     await api(path, { method: 'POST', ...(body !== undefined ? { body } : {}) });
-    setMessage(successMessage || 'Saved successfully.');
-    state.modal = null;
-    state.actionLoadingKey = '';
-    state.actionLoadingMessage = '';
-    await loadData();
+    await refreshAfterAdminMutation(successMessage || 'Saved successfully.');
   } catch (error) {
     if (modalRequest && state.modal) {
       state.modal.loading = false;
@@ -3758,9 +3760,7 @@ async function submitFeedbackCreditModal() {
   render();
   try {
     await api(API_PATHS.feedback.serviceCredit(state.modal.id), { method: 'POST', body });
-    setMessage('Service credit request submitted. Check provider status after refresh.');
-    state.modal = null;
-    await loadData();
+    await refreshAfterAdminMutation('Service credit request submitted. Check provider status after refresh.');
   } catch (error) {
     if (state.modal) {
       state.modal.loading = false;
