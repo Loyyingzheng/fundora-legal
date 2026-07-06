@@ -14,8 +14,8 @@ assert(app.includes("label: 'System Housekeeping'"), 'Learning-only housekeeping
 assert(app.includes("overview: '/api/admin/housekeeping/overview'"), 'System Housekeeping must load backend retention overview.');
 assert(app.includes("run: '/api/admin/housekeeping/run'"), 'System Housekeeping must expose safe manual run endpoint.');
 assert(app.includes('function renderSystemHousekeepingOverview()'), 'System Housekeeping page must render all retention settings and cleanup jobs.');
-assert(app.includes('feedback status, user notifications'), 'System Housekeeping copy must make feedback/user notification retention visible.');
+assert(app.includes('feedback status/notifications') || app.includes('feedback status, user notifications'), 'System Housekeeping copy must make feedback/user notification retention visible.');
 assert(app.includes('RUN SYSTEM HOUSEKEEPING'), 'Manual housekeeping controls must require an explicit confirmation phrase.');
 assert(app.includes('criticalActionFields(reason.trim(), confirmPhrase'), 'Manual housekeeping controls must send critical action fields.');
-assert(indexHtml.includes('app.js?v=20260706-learning-merge-retire-v1'), 'Admin app runtime must be cache busted after System Housekeeping fix.');
+assert(indexHtml.includes('app.js?v=20260706-housekeeping-schedule-v1'), 'Admin app runtime must be cache busted after System Housekeeping schedule fix.');
 console.log('PASS admin system housekeeping audit');

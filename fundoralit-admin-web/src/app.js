@@ -178,6 +178,7 @@ const API_PATHS = {
   housekeeping: {
     overview: '/api/admin/housekeeping/overview',
     run: '/api/admin/housekeeping/run',
+    schedule: '/api/admin/housekeeping/schedule',
   },
   learningOps: {
     overview: '/api/admin/learning-ops/overview',
@@ -7429,32 +7430,29 @@ function buildLearningHousekeepingRequest(domain, overrides = {}) {
     dryRun: overrides.dryRun !== false,
     reason: overrides.reason || 'Admin reviewed learning housekeeping retention plan',
   };
-  ['hashVersion', 'parserVersion', 'ruleVersionBefore', 'createdBefore', 'mergeIntoHashVersion', 'mergeIntoParserVersion', 'mergeIntoRuleVersion'].forEach((key) => {
+  ['hashVersion', 'parserVersion', 'ruleVersionBefore', 'createdBefore'].forEach((key) => {
     if (overrides[key] !== undefined && overrides[key] !== null && String(overrides[key]).trim() !== '') request[key] = overrides[key];
   });
   return request;
 }
 
-function promptLearningHousekeepingMergeRetireRange() {
-  const sourceHashVersion = window.prompt('Source hashVersion to retire after merge. Required.') || '';
-  const sourceParserVersion = window.prompt('Source parserVersion to retire after merge. Required.') || '';
-  const sourceRuleVersionRaw = window.prompt('Source ruleVersion. Use 0 if this domain does not use ruleVersion.', '0') || '0';
-  const targetHashVersion = window.prompt('Merge target hashVersion. Must already exist and be protected/latest or active. Required.') || '';
-  const targetParserVersion = window.prompt('Merge target parserVersion. Must already exist and be protected/latest or active. Required.') || '';
-  const targetRuleVersionRaw = window.prompt('Merge target ruleVersion. Use 0 if this domain does not use ruleVersion.', sourceRuleVersionRaw || '0') || '0';
-  const sourceRuleVersion = Number(sourceRuleVersionRaw.trim() || '0');
-  const targetRuleVersion = Number(targetRuleVersionRaw.trim() || '0');
+function promptLearningHousekeepingHardDeleteRange() {
+  const hashVersion = window.prompt('Optional hashVersion to hard delete. Leave blank if using parser/rule/time range.') || '';
+  const parserVersion = window.prompt('Optional parserVersion to hard delete. Leave blank if using hash/rule/time range.') || '';
+  const ruleVersionBeforeRaw = window.prompt('Optional ruleVersionBefore. Example: 4. Leave blank if not applicable.') || '';
+  const createdBefore = window.prompt('Optional createdBefore ISO timestamp. Example: 2026-07-01T00:00:00Z. Leave blank if not applicable.') || '';
+  const olderThanDaysRaw = window.prompt('olderThanDays for hard delete fallback. Minimum 180 days.', '180') || '';
+  const ruleVersionBefore = ruleVersionBeforeRaw.trim() ? Number(ruleVersionBeforeRaw) : null;
+  const olderThanDays = olderThanDaysRaw.trim() ? Math.max(180, Number(olderThanDaysRaw) || 180) : null;
   const range = {
-    hashVersion: sourceHashVersion.trim(),
-    parserVersion: sourceParserVersion.trim(),
-    ruleVersionBefore: Number.isFinite(sourceRuleVersion) ? sourceRuleVersion : 0,
-    mergeIntoHashVersion: targetHashVersion.trim(),
-    mergeIntoParserVersion: targetParserVersion.trim(),
-    mergeIntoRuleVersion: Number.isFinite(targetRuleVersion) ? targetRuleVersion : 0,
+    hashVersion: hashVersion.trim(),
+    parserVersion: parserVersion.trim(),
+    ruleVersionBefore: Number.isFinite(ruleVersionBefore) ? ruleVersionBefore : null,
+    createdBefore: createdBefore.trim(),
+    olderThanDays,
   };
-  const hasExactSource = Boolean(range.hashVersion && range.parserVersion);
-  const hasExactTarget = Boolean(range.mergeIntoHashVersion && range.mergeIntoParserVersion);
-  return hasExactSource && hasExactTarget ? range : null;
+  const hasExplicitRange = Boolean(range.hashVersion || range.parserVersion || range.ruleVersionBefore || range.createdBefore || range.olderThanDays);
+  return hasExplicitRange ? range : null;
 }
 
 async function runLearningHousekeepingAction(domain, action) {
@@ -7466,19 +7464,19 @@ async function runLearningHousekeepingAction(domain, action) {
     : isHardDelete
       ? API_PATHS.learningHousekeeping.hardDelete
       : API_PATHS.learningHousekeeping.plan;
-  const hardDeleteReason = isHardDelete ? window.prompt('Reason for merge-retiring a deprecated learning version? This does not delete raw rows and must target exact source/target versions.') : '';
+  const hardDeleteReason = isHardDelete ? window.prompt('Reason for hard delete? This must target a specific learning version/range.') : '';
   if (isHardDelete && (!hardDeleteReason || hardDeleteReason.trim().length < 10)) {
-    setMessage('Merge-retire requires a clear 10+ character reason.', true);
+    setMessage('Hard delete requires a clear 10+ character reason.', true);
     return;
   }
-  const hardDeleteRange = isHardDelete ? promptLearningHousekeepingMergeRetireRange() : null;
+  const hardDeleteRange = isHardDelete ? promptLearningHousekeepingHardDeleteRange() : null;
   if (isHardDelete && !hardDeleteRange) {
-    setMessage('Merge-retire requires exact source hash/parser and exact target hash/parser versions.', true);
+    setMessage('Hard delete requires hashVersion, parserVersion, ruleVersionBefore, createdBefore, or olderThanDays.', true);
     return;
   }
   let critical = null;
   if (isExecute || isHardDelete) {
-    const expectedPhrase = isHardDelete ? 'MERGE RETIRE LEARNING VERSION' : 'EXECUTE HOUSEKEEPING';
+    const expectedPhrase = isHardDelete ? 'HARD DELETE LEARNING DATA' : 'EXECUTE HOUSEKEEPING';
     const reason = isHardDelete ? hardDeleteReason : (window.prompt(`Reason for executing learning housekeeping on ${domain}?`, `Execute safe learning housekeeping for ${domain}`) || '');
     if (reason.trim().length < 10) {
       setMessage('Learning housekeeping execute requires a 10+ character reason.', true);
@@ -7495,7 +7493,7 @@ async function runLearningHousekeepingAction(domain, action) {
   render();
   try {
     const body = buildLearningHousekeepingRequest(domain, {
-      mode: isHardDelete ? 'ADMIN_MERGE_RETIRE_LEARNING_VERSION' : isExecute ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
+      mode: isHardDelete ? 'ADMIN_HARD_DELETE_LEARNING_VERSION' : isExecute ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
       dryRun: !isExecute && !isHardDelete,
       hardDelete: isHardDelete,
       ...(isHardDelete ? hardDeleteRange : { olderThanDays: 60 }),
@@ -7504,7 +7502,7 @@ async function runLearningHousekeepingAction(domain, action) {
     if (critical) Object.assign(body, critical);
     const result = await api(endpoint, { method: 'POST', body, forceTokenRefresh: Boolean(critical) });
     state.learningHousekeeping.lastPlan = result || null;
-    setMessage(`${action === 'plan' ? 'Dry run' : isHardDelete ? 'Merge-retire' : action} completed for ${domain}.`);
+    setMessage(`${action === 'plan' ? 'Dry run' : action} completed for ${domain}.`);
     await loadLearningHousekeepingData();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'Learning housekeeping action failed.'), true);
@@ -7547,10 +7545,12 @@ function renderSystemHousekeepingSettingCard(setting) {
 function renderSystemHousekeepingJobCard(job) {
   const target = job.target || job.key || 'UNKNOWN';
   const loading = state.systemHousekeeping.actionLoading === target;
+  const scheduleEditable = Boolean(job.scheduleEditable && state.adminSession?.superAdmin);
+  const scheduleText = job.schedule || job.scheduleSummary || 'Manual control';
   return el('article', { class: 'card housekeeping-job-card' }, [
     el('div', { class: 'section-title-row' }, [
       el('div', {}, [
-        el('p', { class: 'eyebrow', text: job.schedule || 'Manual control' }),
+        el('p', { class: 'eyebrow', text: scheduleText }),
         el('h3', { text: job.label || target }),
       ]),
       el('span', { class: job.enabled === false ? 'status-pill neutral' : 'status-pill success', text: job.enabled === false ? 'Skipped' : 'Active' }),
@@ -7558,11 +7558,14 @@ function renderSystemHousekeepingJobCard(job) {
     el('p', { class: 'muted section-helper', text: job.description || 'Safe housekeeping job.' }),
     renderLearningOpsMetricRows([
       ['Target', target],
-      ['Cron', job.cron || '-'],
+      ['Schedule', scheduleText, job.scheduleSource || 'Backend schedule config'],
+      ['Next run', job.nextRunAt || '-'],
       ['Retention source', job.retentionSource || '-'],
     ]),
-    job.manualRunSupported === false ? null : el('div', { class: 'button-row wrap' }, [
-      el('button', { class: 'btn secondary small', text: loading ? 'Running...' : 'Run now', disabled: loading, onclick: () => runSystemHousekeepingAction(target) }),
+    el('p', { class: 'muted tiny-text', text: target === 'AUDIT_LOGS' ? 'Run now only deletes rows older than their retention cutoff. Recent audit rows are intentionally kept, so the Audit Logs page can still show data after cleanup.' : '' }),
+    job.manualRunSupported === false && !scheduleEditable ? null : el('div', { class: 'button-row wrap' }, [
+      job.manualRunSupported === false ? null : el('button', { class: 'btn secondary small', text: loading ? 'Running...' : 'Run now', disabled: loading, onclick: () => runSystemHousekeepingAction(target) }),
+      scheduleEditable ? el('button', { class: 'btn ghost small', text: 'Edit time', disabled: loading, onclick: () => updateSystemHousekeepingSchedule(job) }) : null,
     ]),
   ]);
 }
@@ -7581,6 +7584,68 @@ function promptSystemHousekeepingCritical(target) {
   return criticalActionFields(reason.trim(), confirmPhrase, `system_housekeeping_${String(target || 'all').toLowerCase()}`);
 }
 
+function promptSystemHousekeepingScheduleCritical(target) {
+  const reason = window.prompt(`Reason for changing ${target} housekeeping time?`, `Adjust ${target} housekeeping time from System Housekeeping`) || '';
+  if (reason.trim().length < 10) {
+    setMessage('Schedule update requires a 10+ character reason.', true);
+    return null;
+  }
+  const confirmPhrase = window.prompt('Type UPDATE SYSTEM HOUSEKEEPING SCHEDULE to continue.') || '';
+  if (confirmPhrase !== 'UPDATE SYSTEM HOUSEKEEPING SCHEDULE') {
+    setMessage('Schedule update cancelled because confirmation phrase did not match.', true);
+    return null;
+  }
+  return criticalActionFields(reason.trim(), confirmPhrase, `system_housekeeping_schedule_${String(target || 'job').toLowerCase()}`);
+}
+
+function parseHousekeepingTimeInput(raw) {
+  const match = String(raw || '').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
+
+async function updateSystemHousekeepingSchedule(job) {
+  const target = String(job?.target || '').trim().toUpperCase();
+  if (!target || !state.adminSession?.superAdmin) {
+    setMessage('Only Super Admin can edit housekeeping schedule time.', true);
+    return;
+  }
+  const current = Number.isInteger(job.hour) && Number.isInteger(job.minute)
+    ? `${String(job.hour).padStart(2, '0')}:${String(job.minute).padStart(2, '0')}`
+    : '03:00';
+  const rawTime = window.prompt(`Set ${target} housekeeping time in MYT (24-hour HH:mm).`, current);
+  if (rawTime === null) return;
+  const parsed = parseHousekeepingTimeInput(rawTime);
+  if (!parsed) {
+    setMessage('Housekeeping time must use 24-hour HH:mm format, for example 03:30.', true);
+    return;
+  }
+  const enabledRaw = window.prompt('Keep this housekeeping job active? Type YES or NO.', job.enabled === false ? 'NO' : 'YES');
+  if (enabledRaw === null) return;
+  const enabled = String(enabledRaw || '').trim().toUpperCase() !== 'NO';
+  const critical = promptSystemHousekeepingScheduleCritical(target);
+  if (!critical) return;
+  state.systemHousekeeping.actionLoading = target;
+  render();
+  try {
+    const result = await api(API_PATHS.housekeeping.schedule, {
+      method: 'PATCH',
+      body: { target, enabled, hour: parsed.hour, minute: parsed.minute, ...critical },
+      forceTokenRefresh: true,
+    });
+    setMessage(`${target} housekeeping schedule updated to ${result?.scheduleSummary || rawTime}.`);
+    await loadLearningHousekeepingData();
+  } catch (error) {
+    setMessage(toFriendlyErrorMessage(error, 'System housekeeping schedule update failed.'), true);
+  } finally {
+    state.systemHousekeeping.actionLoading = '';
+    render();
+  }
+}
+
 async function runSystemHousekeepingAction(target) {
   const cleanTarget = String(target || '').trim().toUpperCase();
   if (!cleanTarget || state.systemHousekeeping.actionLoading) return;
@@ -7595,7 +7660,7 @@ async function runSystemHousekeepingAction(target) {
       forceTokenRefresh: true,
     });
     state.systemHousekeeping.lastRun = result || null;
-    setMessage(`${cleanTarget} housekeeping completed. Page reloaded with latest settings.`);
+    setMessage(result?.resultSummary || `${cleanTarget} housekeeping completed. Page reloaded with latest settings.`);
     await loadLearningHousekeepingData();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'System housekeeping action failed.'), true);
@@ -7603,6 +7668,19 @@ async function runSystemHousekeepingAction(target) {
     state.systemHousekeeping.actionLoading = '';
     render();
   }
+}
+
+function renderSystemHousekeepingLastRun(run) {
+  const counts = run?.deletedCounts && typeof run.deletedCounts === 'object' ? run.deletedCounts : {};
+  const rows = Object.entries(counts);
+  return el('section', { class: 'card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: run?.target || 'Housekeeping' }), el('h3', { text: 'Last run result' })]),
+      el('span', { class: Number(run?.totalDeleted || 0) > 0 ? 'status-pill success' : 'status-pill neutral', text: `${Number(run?.totalDeleted || 0)} deleted` }),
+    ]),
+    el('p', { class: 'muted section-helper', text: run?.resultSummary || run?.message || 'No run details returned.' }),
+    rows.length ? renderLearningOpsMetricRows(rows.slice(0, 12).map(([key, value]) => [key, String(value)])) : null,
+  ]);
 }
 
 function renderSystemHousekeepingOverview() {
@@ -7615,17 +7693,14 @@ function renderSystemHousekeepingOverview() {
         el('div', {}, [el('p', { class: 'eyebrow', text: 'System housekeeping contract' }), el('h3', { text: 'Single retention control surface' })]),
         el('span', { class: overview.globalEnabled === false ? 'status-pill danger' : 'status-pill success', text: overview.globalEnabled === false ? 'Global disabled' : 'Global enabled' }),
       ]),
-      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Runtime values are read from backend retention config/env so the admin UI and scheduled jobs use the same source.' }),
+      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values still come from backend config/env. Schedule time can be overridden by Super Admin from this page and is used by the dynamic backend scheduler.' }),
       renderLearningOpsMetricRows([
         ['Timezone', overview.timezone || 'Asia/Kuala_Lumpur'],
-        ['Data retention cron', overview.dataRetentionCron || '0 30 3 * * *'],
+        ['Data retention schedule', (jobs.find((job) => job.target === 'DATA_RETENTION') || {}).schedule || 'Daily at 03:30 MYT'],
         ['Learning housekeeping', overview.learningHousekeepingEnabled === false ? 'Disabled' : 'Enabled'],
       ]),
     ]),
-    state.systemHousekeeping.lastRun ? el('section', { class: 'card' }, [
-      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Last system housekeeping run' })]),
-      el('pre', { class: 'json-preview', text: compactJson(state.systemHousekeeping.lastRun) }),
-    ]) : null,
+    state.systemHousekeeping.lastRun ? renderSystemHousekeepingLastRun(state.systemHousekeeping.lastRun) : null,
     el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Retention settings' }), el('h3', { text: 'Current backend values' })]),
@@ -7683,7 +7758,7 @@ function renderLearningHousekeepingDomainCard(domain) {
     el('div', { class: 'button-row wrap' }, [
       el('button', { class: 'btn ghost small', text: loading ? 'Working...' : 'Dry run', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'plan') }),
       el('button', { class: 'btn secondary small', text: 'Execute safe cleanup', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'execute') }),
-      el('button', { class: 'btn secondary small', text: 'Merge retire deprecated version', disabled: loading || Number(domain.protectedVersions || 0) < 1 || (Array.isArray(domain.versions) && domain.versions.length < 2), onclick: () => runLearningHousekeepingAction(name, 'hardDelete') }),
+      el('button', { class: 'btn danger small', text: 'Hard delete version/range', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'hardDelete') }),
     ]),
   ]);
 }
@@ -7700,7 +7775,7 @@ function renderLearningHousekeepingPage() {
     error ? el('div', { class: 'notice warning inline-notice', text: error }) : null,
     renderSystemHousekeepingOverview(),
     el('div', { class: 'privacy-note compact-help-row' }, [
-      el('span', { text: 'Learning cleanup displays only versions, counters, protection flags, and retention plans. Safe cleanup never deletes active/latest/final versions. Deprecated iterations must be merge-retired into an existing protected/current version before any old rows can age out through normal retention. It must not display raw statement text, OCR text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector.' }),
+      el('span', { text: 'Learning cleanup displays only versions, counters, protection flags, and retention plans. It must not display raw statement text, OCR text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector.' }),
     ]),
     state.learningHousekeeping.lastPlan ? el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [el('h3', { text: 'Last learning housekeeping plan/result' })]),
