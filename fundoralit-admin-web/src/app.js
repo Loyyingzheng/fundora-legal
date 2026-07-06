@@ -1288,6 +1288,10 @@ function isIntegrityGuardedAdminRequest(path, method = 'GET') {
   const normalizedPath = String(path || '');
   return mutating && (
     normalizedPath.startsWith('/api/admin/') ||
+    normalizedPath.startsWith('/api/feedback/admin') ||
+    normalizedPath.startsWith('/api/subscription/feedback-trial/admin') ||
+    normalizedPath.startsWith('/api/review-prompts/admin') ||
+    normalizedPath.startsWith('/api/analytics/admin') ||
     normalizedPath === '/api/usage/reservations' ||
     normalizedPath === '/api/usage/increment'
   );
