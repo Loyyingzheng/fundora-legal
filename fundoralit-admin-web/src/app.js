@@ -382,6 +382,11 @@ const state = {
   feedbackFilters: { status: '', module: '', type: '' },
   feedbackOptions: null,
   feedbackScreenshotPreviews: {},
+  feedbackScreenshotAutoLoadScheduled: false,
+  feedbackScreenshotAutoLoading: false,
+  expandedItemIds: {},
+  actionLoadingKey: '',
+  actionLoadingMessage: '',
   data: null,
   error: '',
   message: '',
@@ -1036,7 +1041,11 @@ function equalsFilter(value, filter) {
 
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
-  Object.entries(attrs || {}).forEach(([key, value]) => {
+  const normalizedAttrs = attrs || {};
+  if (tag === 'button' && normalizedAttrs.type === undefined) {
+    node.setAttribute('type', 'button');
+  }
+  Object.entries(normalizedAttrs).forEach(([key, value]) => {
     if (value === undefined || value === null || value === false) return;
     if (key === 'class') node.className = value;
     else if (key === 'text') node.textContent = String(value);
@@ -1268,6 +1277,11 @@ async function signOutAdmin() {
   state.analyticsLoading = false;
   state.feedbackOptions = null;
   clearFeedbackScreenshotPreviews();
+  state.feedbackScreenshotAutoLoadScheduled = false;
+  state.feedbackScreenshotAutoLoading = false;
+  state.expandedItemIds = {};
+  state.actionLoadingKey = '';
+  state.actionLoadingMessage = '';
   state.message = '';
   state.error = '';
   render();
@@ -1483,6 +1497,12 @@ function clearFeedbackScreenshotPreviews() {
     if (preview?.objectUrl) URL.revokeObjectURL(preview.objectUrl);
   });
   state.feedbackScreenshotPreviews = {};
+  state.feedbackScreenshotAutoLoadScheduled = false;
+  state.feedbackScreenshotAutoLoading = false;
+}
+
+function feedbackItemHasScreenshot(item) {
+  return Boolean(item?.screenshotStoragePath || item?.screenshotUrl);
 }
 
 function setFeedbackScreenshotPreview(id, next) {
@@ -1497,13 +1517,18 @@ function setFeedbackScreenshotPreview(id, next) {
   };
 }
 
-async function loadFeedbackScreenshotPreview(item) {
+function shouldLoadFeedbackScreenshotPreview(item) {
+  if (!feedbackItemHasScreenshot(item)) return false;
+  const preview = state.feedbackScreenshotPreviews?.[item.id];
+  return !preview?.objectUrl && !preview?.loading && !preview?.error;
+}
+
+async function fetchFeedbackScreenshotPreview(item) {
   const id = item?.id;
   if (!id) return;
   const current = state.feedbackScreenshotPreviews?.[id];
   if (current?.loading) return;
   setFeedbackScreenshotPreview(id, { loading: true, error: '', objectUrl: current?.objectUrl || '' });
-  render();
   try {
     const response = await apiRaw(API_PATHS.feedback.screenshot(id), { accept: 'image/*' });
     const blob = await response.blob();
@@ -1512,22 +1537,54 @@ async function loadFeedbackScreenshotPreview(item) {
     setFeedbackScreenshotPreview(id, { loading: false, error: '', objectUrl, contentType: blob.type || response.headers.get('Content-Type') || '' });
   } catch (error) {
     setFeedbackScreenshotPreview(id, { loading: false, error: toFriendlyErrorMessage(error, 'Screenshot could not be loaded.'), objectUrl: '' });
+  }
+}
+
+async function loadFeedbackScreenshotPreview(item) {
+  await fetchFeedbackScreenshotPreview(item);
+  render();
+}
+
+function scheduleFeedbackScreenshotAutoLoad() {
+  if (state.activeTab !== 'feedback' || !state.user) return;
+  if (state.feedbackScreenshotAutoLoadScheduled || state.feedbackScreenshotAutoLoading) return;
+  state.feedbackScreenshotAutoLoadScheduled = true;
+  window.setTimeout(() => autoLoadFeedbackScreenshotsForCurrentPage(), 0);
+}
+
+async function autoLoadFeedbackScreenshotsForCurrentPage() {
+  state.feedbackScreenshotAutoLoadScheduled = false;
+  if (state.activeTab !== 'feedback' || !state.user) return;
+  const queue = (getScopedData()?.content || []).filter(shouldLoadFeedbackScreenshotPreview).slice(0, 12);
+  if (!queue.length) return;
+  state.feedbackScreenshotAutoLoading = true;
+  render();
+  const workerCount = Math.min(3, queue.length);
+  async function worker() {
+    while (queue.length && state.activeTab === 'feedback' && state.user) {
+      const item = queue.shift();
+      await fetchFeedbackScreenshotPreview(item);
+      render();
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
   } finally {
+    state.feedbackScreenshotAutoLoading = false;
     render();
   }
 }
 
 function renderFeedbackScreenshot(item) {
-  const hasScreenshot = Boolean(item?.screenshotStoragePath || item?.screenshotUrl);
-  if (!hasScreenshot) return el('p', { class: 'muted', text: 'No screenshot attached.' });
+  if (!feedbackItemHasScreenshot(item)) return el('p', { class: 'muted', text: 'No screenshot attached.' });
 
   const preview = state.feedbackScreenshotPreviews?.[item.id] || {};
   const controls = [
     el('button', {
       class: 'btn ghost small',
-      text: preview.objectUrl ? 'Refresh screenshot' : 'Load screenshot safely',
+      text: preview.objectUrl ? 'Refresh screenshot' : (preview.loading ? 'Loading safely...' : 'Reload screenshot'),
       disabled: Boolean(preview.loading),
-      onclick: () => loadFeedbackScreenshotPreview(item),
+      onclick: (event) => runFeedbackAction(event, () => loadFeedbackScreenshotPreview(item)),
     }),
   ];
 
@@ -1537,15 +1594,15 @@ function renderFeedbackScreenshot(item) {
 
   return el('div', { class: 'screenshot-preview-card' }, [
     el('div', { class: 'screenshot-preview-head' }, [
-      el('span', { class: 'muted', text: 'Screenshot is loaded through the backend admin proxy, not directly from Supabase storage.' }),
+      el('span', { class: 'muted', text: 'Screenshot auto-loads through the backend admin proxy. Supabase public storage URLs are not used by the browser.' }),
       el('div', { class: 'actions compact-actions' }, controls),
     ]),
-    preview.loading ? el('p', { class: 'muted', text: 'Loading screenshot...' }) : null,
+    preview.loading ? el('p', { class: 'muted', text: 'Loading screenshot safely...' }) : null,
     preview.error ? el('div', { class: 'notice warning inline-notice', text: preview.error }) : null,
     preview.objectUrl ? el('a', { href: preview.objectUrl, target: '_blank', rel: 'noopener noreferrer' }, [
       el('img', { class: 'img-preview', src: preview.objectUrl, alt: 'Feedback screenshot' }),
     ]) : null,
-    !preview.objectUrl && !preview.loading ? el('small', { class: 'field-help', text: 'Direct public storage URLs are intentionally not used here, so private buckets and browser CORS settings cannot block admin actions.' }) : null,
+    !preview.objectUrl && !preview.loading && !preview.error ? el('small', { class: 'field-help', text: 'The screenshot will load automatically after the list is displayed. Use Reload only if the preview failed or was refreshed on the server.' }) : null,
   ]);
 }
 
@@ -1575,6 +1632,7 @@ async function loadAdminSession({ renderAfter = false } = {}) {
 async function loadData() {
   if (!state.user) return;
   const loadRequest = beginLoadRequest(state.activeTab);
+  let shouldAutoLoadFeedbackScreenshots = false;
   if (state.activeTab === 'feedback') {
     loadFeedbackOptions(loadRequest).catch(() => {});
   }
@@ -1610,13 +1668,17 @@ async function loadData() {
         params: { page: state.page, size: 50, sort: 'updatedAt,desc' },
       });
     }
-    setScopedData(unwrapPage(response), loadRequest);
+    const pageData = unwrapPage(response);
+    if (setScopedData(pageData, loadRequest) && state.activeTab === 'feedback') {
+      shouldAutoLoadFeedbackScreenshots = pageData.content.some(feedbackItemHasScreenshot);
+    }
   } catch (error) {
     if (!isLoadRequestCurrent(loadRequest)) return;
     clearScopedData(loadRequest.tab);
     setMessage(error.message || 'Failed to load admin data.', true);
   } finally {
-    finishLoadRequest(loadRequest);
+    const finished = finishLoadRequest(loadRequest);
+    if (finished && shouldAutoLoadFeedbackScreenshots) scheduleFeedbackScreenshotAutoLoad();
   }
 }
 
@@ -2067,7 +2129,8 @@ async function performPatchAction(path, successMessage, body) {
     state.modal.message = '';
     state.modal.fieldErrors = {};
   } else {
-    state.loading = true;
+    state.actionLoadingKey = path;
+    state.actionLoadingMessage = successMessage || 'Updating...';
     state.error = '';
   }
   render();
@@ -2075,14 +2138,17 @@ async function performPatchAction(path, successMessage, body) {
     await api(path, { method: 'PATCH', ...(body !== undefined ? { body } : {}) });
     setMessage(successMessage || 'Updated successfully.');
     state.modal = null;
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
     await loadData();
   } catch (error) {
     if (modalRequest && state.modal) {
       state.modal.loading = false;
       setModalError(error, '');
     } else {
+      state.actionLoadingKey = '';
+      state.actionLoadingMessage = '';
       setMessage(error, true);
-      state.loading = false;
       render();
     }
   }
@@ -2097,7 +2163,8 @@ async function performPostAction(path, successMessage, body) {
     state.modal.message = '';
     state.modal.fieldErrors = {};
   } else {
-    state.loading = true;
+    state.actionLoadingKey = path;
+    state.actionLoadingMessage = successMessage || 'Saving...';
     state.error = '';
   }
   render();
@@ -2105,14 +2172,17 @@ async function performPostAction(path, successMessage, body) {
     await api(path, { method: 'POST', ...(body !== undefined ? { body } : {}) });
     setMessage(successMessage || 'Saved successfully.');
     state.modal = null;
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
     await loadData();
   } catch (error) {
     if (modalRequest && state.modal) {
       state.modal.loading = false;
       setModalError(error, '');
     } else {
+      state.actionLoadingKey = '';
+      state.actionLoadingMessage = '';
       setMessage(error, true);
-      state.loading = false;
       render();
     }
   }
@@ -3354,6 +3424,39 @@ function select(options, selected, onChange) {
   return node;
 }
 
+function scopedItemKey(scope, itemId) {
+  if (!scope || !itemId) return '';
+  return `${scope}:${itemId}`;
+}
+
+function isItemExpanded(scope, itemId) {
+  const key = scopedItemKey(scope, itemId);
+  return Boolean(key && state.expandedItemIds?.[key]);
+}
+
+function setItemExpanded(scope, itemId, expanded) {
+  const key = scopedItemKey(scope, itemId);
+  if (!key) return;
+  state.expandedItemIds = { ...(state.expandedItemIds || {}) };
+  if (expanded) state.expandedItemIds[key] = true;
+  else delete state.expandedItemIds[key];
+}
+
+function stopActionEvent(event) {
+  if (!event) return;
+  event.preventDefault?.();
+  event.stopPropagation?.();
+}
+
+function runFeedbackAction(event, handler) {
+  stopActionEvent(event);
+  return handler();
+}
+
+function isActionBusy(key) {
+  return Boolean(key && state.actionLoadingKey === key);
+}
+
 function renderItemSummary({ title, subtitle, statusNode }) {
   return el('summary', { class: 'item-summary' }, [
     el('div', { class: 'item-head' }, [
@@ -3369,13 +3472,14 @@ function renderItemSummary({ title, subtitle, statusNode }) {
   ]);
 }
 
-function renderCollapsibleItem({ title, subtitle, statusNode, children }) {
-  return el('article', { class: 'item collapsible-item' }, [
-    el('details', { class: 'item-dropdown' }, [
-      renderItemSummary({ title, subtitle, statusNode }),
-      el('div', { class: 'item-body' }, children),
-    ]),
+function renderCollapsibleItem({ title, subtitle, statusNode, children, scope = '', itemId = '' }) {
+  const details = el('details', { class: 'item-dropdown' }, [
+    renderItemSummary({ title, subtitle, statusNode }),
+    el('div', { class: 'item-body' }, children),
   ]);
+  if (isItemExpanded(scope, itemId)) details.open = true;
+  details.addEventListener('toggle', () => setItemExpanded(scope, itemId, details.open));
+  return el('article', { class: 'item collapsible-item' }, [details]);
 }
 
 
@@ -3672,6 +3776,8 @@ function renderFeedbackItem(item) {
   ].filter(Boolean);
 
   return renderCollapsibleItem({
+    scope: 'feedback',
+    itemId: item.id,
     title: `${item.type || '-'} \u00B7 ${item.module || '-'}`,
     subtitle: item.issue || item.userEmail || extractEmailFromDebugJson(item.debugJson) || 'Feedback report',
     statusNode: el('span', { class: getStatusClass(status), text: getStatusLabel(status) }),
@@ -3697,15 +3803,16 @@ function renderFeedbackItem(item) {
       ]),
       renderFeedbackScreenshot(item),
       el('details', { class: 'nested-details' }, [el('summary', { text: 'Debug JSON' }), el('pre', { text: debugText })]),
+      state.actionLoadingKey ? el('div', { class: 'notice inline-notice', text: `Admin action running: ${state.actionLoadingMessage || 'Please wait...'}` }) : null,
       el('div', { class: 'actions feedback-actions' }, [
         isClosed
-          ? el('button', { class: 'btn success small', text: 'Reopen', onclick: () => patchAction(API_PATHS.feedback.reopen(item.id), 'Feedback reopened.') })
-          : el('button', { class: 'btn small', text: status === 'OPEN' ? 'Start review' : 'Review decision', onclick: () => openFeedbackReviewModal(item, status === 'OPEN' ? 'REVIEWING' : status) }),
-        !isClosed ? el('button', { class: 'btn success small', text: 'Verify issue', onclick: () => openFeedbackReviewModal(item, 'VERIFIED') }) : null,
-        !isClosed ? el('button', { class: 'btn ghost small', text: 'Need info', onclick: () => openFeedbackReviewModal(item, 'NEED_MORE_INFO') }) : null,
-        !isClosed ? el('button', { class: 'btn ghost small', text: 'Reject / Duplicate', onclick: () => openFeedbackReviewModal(item, 'REJECTED_NOT_REPRODUCIBLE') }) : null,
-        canGrantCredit ? el('button', { class: 'btn secondary small', text: 'Grant credit', onclick: () => openFeedbackCreditModal(item) }) : null,
-        !isClosed ? el('button', { class: 'btn danger small', text: hasUnresolvedCreditAction ? 'Close locked' : 'Close final', disabled: hasUnresolvedCreditAction, title: hasUnresolvedCreditAction ? 'Resolve service credit before closing this feedback.' : '', onclick: () => openCloseModal('feedback', item) }) : null,
+          ? el('button', { class: 'btn success small', text: isActionBusy(API_PATHS.feedback.reopen(item.id)) ? 'Reopening...' : 'Reopen', disabled: isActionBusy(API_PATHS.feedback.reopen(item.id)), onclick: (event) => runFeedbackAction(event, () => patchAction(API_PATHS.feedback.reopen(item.id), 'Feedback reopened.')) })
+          : el('button', { class: 'btn small', text: status === 'OPEN' ? 'Start review' : 'Review decision', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, status === 'OPEN' ? 'REVIEWING' : status)) }),
+        !isClosed ? el('button', { class: 'btn success small', text: 'Verify issue', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, 'VERIFIED')) }) : null,
+        !isClosed ? el('button', { class: 'btn ghost small', text: 'Need info', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, 'NEED_MORE_INFO')) }) : null,
+        !isClosed ? el('button', { class: 'btn ghost small', text: 'Reject / Duplicate', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, 'REJECTED_NOT_REPRODUCIBLE')) }) : null,
+        canGrantCredit ? el('button', { class: 'btn secondary small', text: 'Grant credit', onclick: (event) => runFeedbackAction(event, () => openFeedbackCreditModal(item)) }) : null,
+        !isClosed ? el('button', { class: 'btn danger small', text: hasUnresolvedCreditAction ? 'Close locked' : 'Close final', disabled: hasUnresolvedCreditAction, title: hasUnresolvedCreditAction ? 'Resolve service credit before closing this feedback.' : '', onclick: (event) => runFeedbackAction(event, () => openCloseModal('feedback', item)) }) : null,
       ]),
     ],
   });
@@ -3715,6 +3822,8 @@ function renderPremiumItem(item) {
   const status = String(item.status || 'OPEN').toUpperCase();
   const isClosed = status === 'CLOSED';
   return renderCollapsibleItem({
+    scope: 'premium',
+    itemId: item.id,
     title: item.futureUsageIntent || 'Reward review survey',
     subtitle: item.userEmail || item.userId || item.improvementText || '-',
     statusNode: el('span', { class: getStatusClass(status), text: status }),
