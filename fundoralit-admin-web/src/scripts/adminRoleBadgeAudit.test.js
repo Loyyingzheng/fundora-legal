@@ -1,0 +1,14 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const root = path.resolve(__dirname, '..');
+const app = fs.readFileSync(path.join(root, 'app.js'), 'utf8');
+const css = fs.readFileSync(path.join(root, 'styles.css'), 'utf8');
+assert(app.includes("session: '/api/admin/me'"), 'Admin web must call /api/admin/me.');
+assert(app.includes('state.adminSession'), 'Admin web must store backend admin session metadata.');
+assert(app.includes('loadAdminSession'), 'Admin web must load backend admin session metadata after login.');
+assert(app.includes('adminRoleLabel(state.adminSession.role)'), 'Admin web must render backend-verified role label.');
+assert(app.includes('Role verified by backend admin_accounts'), 'Role label must identify backend verification source.');
+assert(app.includes('adminRoleLabel(state.adminSession.role)} \\u25CF verified by backend'), 'Admin header must render compact role-first verified status.');
+assert(css.includes('.admin-role-badge.super'), 'Admin web must style SUPER_ADMIN role badge.');
+console.log('PASS admin role badge audit');

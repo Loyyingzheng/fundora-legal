@@ -20,6 +20,9 @@ let lastAdminActivityAt = Date.now();
 // Centralized admin API path presets.
 // Keep all backend route links here so future backend changes only need one small update.
 const API_PATHS = {
+  admin: {
+    session: '/api/admin/me',
+  },
   feedback: {
     list: '/api/feedback/admin',
     options: '/api/feedback/admin/options',
@@ -370,6 +373,7 @@ function isPlanMatrixProductPolicyRelated(item) {
 const state = {
   auth: null,
   user: null,
+  adminSession: null,
   loading: false,
   activeTab: 'feedback',
   page: 0,
@@ -1120,6 +1124,33 @@ function getStoredAuthSession() {
   return null;
 }
 
+
+function normalizeAdminRole(role) {
+  return String(role || '').trim().toUpperCase();
+}
+
+function adminRoleLabel(role) {
+  const normalized = normalizeAdminRole(role);
+  const labels = {
+    SUPER_ADMIN: 'Super Admin',
+    ADMIN_CRITICAL: 'Critical Admin',
+    ADMIN_WRITE: 'Admin Write',
+    ADMIN_READ: 'Admin Read',
+    SUPPORT_ADMIN: 'Support Admin',
+    SUBSCRIPTION_APPROVER: 'Subscription Approver',
+  };
+  return labels[normalized] || (normalized ? normalized.replace(/_/g, ' ') : 'Admin');
+}
+
+function adminRoleClass(role) {
+  const normalized = normalizeAdminRole(role);
+  if (normalized === 'SUPER_ADMIN') return 'admin-role-badge super';
+  if (normalized === 'ADMIN_CRITICAL') return 'admin-role-badge critical';
+  if (normalized === 'ADMIN_WRITE') return 'admin-role-badge write';
+  if (normalized === 'ADMIN_READ') return 'admin-role-badge read';
+  return 'admin-role-badge scoped';
+}
+
 function saveAuthSession(session) {
   memoryAuthSession = {
     ...(session || {}),
@@ -1154,6 +1185,7 @@ function applyAuthSession(session) {
   if (!session?.idToken || !session?.refreshToken || !session?.email) {
     clearAuthSession();
     state.user = null;
+    state.adminSession = null;
     return null;
   }
   saveAuthSession(session);
@@ -1210,6 +1242,7 @@ async function refreshFirebaseAuthSession(existing = memoryAuthSession) {
 async function restoreAuthSession() {
   clearAuthSession();
   state.user = null;
+  state.adminSession = null;
   return null;
 }
 
@@ -1227,6 +1260,7 @@ async function signOutAdmin() {
   invalidateLoadRequests();
   clearAuthSession();
   state.user = null;
+  state.adminSession = null;
   clearScopedData(state.activeTab);
   state.loading = false;
   state.analyticsLoading = false;
@@ -1394,6 +1428,24 @@ async function api(path, options = {}) {
 function setMessage(message, isError = false) {
   state.message = isError ? '' : message;
   state.error = isError ? toFriendlyErrorMessage(message) : '';
+}
+
+
+async function loadAdminSession({ renderAfter = false } = {}) {
+  if (!state.user) {
+    state.adminSession = null;
+    return null;
+  }
+  try {
+    const session = await api(API_PATHS.admin.session);
+    state.adminSession = session || null;
+    if (renderAfter) render();
+    return state.adminSession;
+  } catch (error) {
+    state.adminSession = null;
+    if (renderAfter) render();
+    throw error;
+  }
 }
 
 async function loadData() {
@@ -2082,6 +2134,7 @@ function createAdminLoginForm({ className = 'login-grid', compact = false } = {}
       clearScopedData(state.activeTab);
       state.message = '';
       state.error = '';
+      await loadAdminSession();
       render();
       loadData();
     } catch (error) {
@@ -2107,7 +2160,11 @@ function renderAuth() {
   authBox.appendChild(el('div', { class: 'header-auth-inline' }, [
     el('div', { class: 'header-user-copy' }, [
       el('strong', { text: state.user.email || 'Signed in' }),
-      el('span', { text: 'Admin verified by backend' }),
+      state.adminSession ? el('span', {
+        class: `${adminRoleClass(state.adminSession.role)} compact-status`,
+        title: 'Role verified by backend admin_accounts',
+        text: `${adminRoleLabel(state.adminSession.role)} \u25CF verified by backend`,
+      }) : el('span', { class: 'admin-role-status-checking', text: 'Checking admin role...' }),
     ]),
     el('button', {
       class: 'header-logout-button',
@@ -8163,6 +8220,7 @@ async function boot() {
   } catch (error) {
     clearAuthSession();
     state.user = null;
+    state.adminSession = null;
     state.error = error.message || 'Failed to initialize Firebase authentication.';
     render();
   }

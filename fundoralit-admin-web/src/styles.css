@@ -4697,3 +4697,52 @@ body {
     display: none;
   }
 }
+
+.admin-role-badge {
+  justify-self: end;
+  display: block;
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  letter-spacing: .01em;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-role-badge.compact-status {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.admin-role-badge.compact-status::before {
+  content: none;
+}
+
+.admin-role-badge.super {
+  color: #c2410c;
+}
+
+.admin-role-badge.critical {
+  color: #991b1b;
+}
+
+.admin-role-badge.write {
+  color: #166534;
+}
+
+.admin-role-badge.read {
+  color: #1d4ed8;
+}
+
+.admin-role-badge.scoped {
+  color: #5b21b6;
+}
+
+.admin-role-status-checking {
+  color: var(--muted);
+}
