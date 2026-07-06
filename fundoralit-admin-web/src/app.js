@@ -175,6 +175,10 @@ const API_PATHS = {
     hardDelete: '/api/admin/learning-housekeeping/hard-delete',
     runs: '/api/admin/learning-housekeeping/runs',
   },
+  housekeeping: {
+    overview: '/api/admin/housekeeping/overview',
+    run: '/api/admin/housekeeping/run',
+  },
   learningOps: {
     overview: '/api/admin/learning-ops/overview',
     jobs: '/api/admin/learning-ops/jobs',
@@ -419,6 +423,11 @@ const state = {
   learningHousekeeping: {
     actionLoading: '',
     lastPlan: null,
+    error: '',
+  },
+  systemHousekeeping: {
+    actionLoading: '',
+    lastRun: null,
     error: '',
   },
   learningTemplateFamilies: {
@@ -914,6 +923,8 @@ const LEARNING_CONSOLE_CONTRACT = {
   reusesLearningOps: true,
   reusesLearningHousekeeping: true,
   reusesExistingTemplateFamiliesUi: true,
+  policy: 'Learning Console centralizes all five Template Family domains. Global rules are review-only by default. No auto-save / quick-save. Category pattern global rules are high risk. No raw notification/OCR/transaction text. Generate candidates. Evaluate feedback. Approve family. Reject / keep separate. Disable / rollback family. Split member.',
+  requiredSignals: ['recommendedAction', 'impactLevel', 'riskLevel', 'privacyStatus', 'regressionStatus', 'confidenceLevel'],
   placeholder: false,
   fakeNumbers: false,
 };
@@ -945,8 +956,8 @@ const NAV_GROUPS = [
       { id: 'learningConsole', label: 'Learning Console', helper: 'Central AI ops', description: 'Centralized learning console for overview, review queue, template families, rules, jobs, housekeeping, safety switches, and future evaluation.', info: 'Use this single workflow surface instead of opening a new top-level page for every learning source. Old learning pages remain available for compatibility while this console reuses their existing actions.' },
       { id: 'smartCaptureRules', label: 'Global Learning Review', helper: 'Smart Capture + OCR + Statement Import', description: 'Review privacy-safe anonymous Smart Capture, OCR, and Statement Import rule candidates before activation.', info: 'One review surface handles Smart Capture, OCR Receipt, OCR Financial List, OCR Handwritten, and Statement Import candidates. Only aggregate hashes, counters, and safe distributions are shown; no notification text, OCR text, merchant, payee, payer, counterparty, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed.' },
       { id: 'learningOps', label: 'Learning Ops', helper: 'Learning health', description: 'Monitor Smart Capture, OCR learning, and Shadow ML without heavy API calls.', info: 'Overview uses cached backend snapshots and one lightweight API call. Manual jobs are protected by cooldown, row limits, and single-flight lock so Render free is not overloaded.' },
-      { id: 'learningHousekeeping', label: 'Learning Housekeeping', helper: 'Version retention', description: 'Review learning domains, versions, retention plans, and hard-delete controls from one centralized safety surface.', info: 'Use dry-run before execute. Active rules, pending candidates, latest protected versions, and recent events are protected by backend housekeeping.' },
-      { id: 'templateFamilies', label: 'Template Families', helper: 'Similarity + hidden feedback', description: 'Track Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern, and Category learning family candidates, 3-month hidden feedback windows, auto-merge decisions, rollback and split records.', info: 'High-confidence family candidates can auto-approve or auto-reject from hidden shadow feedback. Admin reviews inconclusive or unstable families only.' },
+      { id: 'learningHousekeeping', label: 'System Housekeeping', helper: 'Retention control', description: 'View all retention and cleanup settings, trigger safe housekeeping jobs, and manage learning-version cleanup from one centralized operations surface.', info: 'Retention values come from backend env/config. Use safe jobs for normal cleanup and dry-run before any learning version deletion. Active rules, pending candidates, latest protected versions, recent events, and open support records are protected.' },
+      { id: 'templateFamilies', label: 'Template Families', helper: 'Similarity + hidden feedback', description: 'Track Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern, and Category learning family candidates, 3-month hidden feedback windows, auto-merge decisions, rollback and split records.', info: 'High-confidence family candidates can auto-approve or auto-reject from 3-month hidden shadow feedback. Admin reviews inconclusive or unstable families only.' },
     ],
   },
   {
@@ -3223,6 +3234,14 @@ function renderAnalyticsEmptyState() {
   ]);
 }
 
+
+function renderEmptyState(message = 'No records found.', helper = '') {
+  return el('div', { class: 'card empty-state compact-empty' }, [
+    el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }),
+    el('strong', { text: message }),
+    helper ? el('p', { class: 'muted', text: helper }) : null,
+  ]);
+}
 
 function renderLoadingState(title = 'Loading admin data...', message = 'Please wait while the latest records are being prepared.') {
   return el('div', { class: 'card empty-state loading-state', role: 'status', 'aria-live': 'polite' }, [
@@ -7300,20 +7319,33 @@ function normalizeLearningHousekeepingDomains(response) {
 async function loadLearningHousekeepingData(loadRequest = null) {
   const request = loadRequest || beginLoadRequest('learningHousekeeping');
   state.learningHousekeeping.error = '';
+  state.systemHousekeeping.error = '';
   try {
-    const [domainsResponse, runsResponse] = await Promise.all([
+    const [domainsResult, runsResult, overviewResult] = await Promise.allSettled([
       api(API_PATHS.learningHousekeeping.domains),
-      api(API_PATHS.learningHousekeeping.runs, { params: { limit: 20 } }).catch(() => []),
+      api(API_PATHS.learningHousekeeping.runs, { params: { limit: 20 } }),
+      api(API_PATHS.housekeeping.overview),
     ]);
     if (!isLoadRequestCurrent(request)) return;
-    const domains = normalizeLearningHousekeepingDomains(domainsResponse);
-    const runs = normalizeAdminListResponse(runsResponse);
-    setScopedData({ content: domains, runs, page: 0, size: domains.length, totalElements: domains.length, totalPages: 1 }, request);
+    if (domainsResult.status === 'rejected' && overviewResult.status === 'rejected') {
+      throw domainsResult.reason || overviewResult.reason;
+    }
+    const domains = domainsResult.status === 'fulfilled' ? normalizeLearningHousekeepingDomains(domainsResult.value) : [];
+    const runs = runsResult.status === 'fulfilled' ? normalizeAdminListResponse(runsResult.value) : [];
+    const overview = overviewResult.status === 'fulfilled' ? (overviewResult.value || null) : null;
+    const warnings = [];
+    if (domainsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(domainsResult.reason, 'Learning housekeeping domains failed to load.'));
+    if (runsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(runsResult.reason, 'Learning housekeeping run history failed to load.'));
+    if (overviewResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(overviewResult.reason, 'System housekeeping overview failed to load.'));
+    state.learningHousekeeping.error = warnings.join(' ');
+    state.systemHousekeeping.error = warnings.join(' ');
+    setScopedData({ content: domains, runs, systemOverview: overview, loadError: warnings.join(' ') }, request);
   } catch (error) {
     if (!isLoadRequestCurrent(request)) return;
-    const friendly = toFriendlyErrorMessage(error, 'Failed to load Learning Housekeeping data.');
+    const friendly = toFriendlyErrorMessage(error, 'Failed to load System Housekeeping data.');
     state.learningHousekeeping.error = friendly;
-    setScopedData({ content: [], runs: [], loadError: friendly, page: 0, size: 0, totalElements: 0, totalPages: 1 }, request);
+    state.systemHousekeeping.error = friendly;
+    setScopedData({ content: [], runs: [], systemOverview: null, loadError: friendly }, request);
   }
 }
 
@@ -7425,14 +7457,15 @@ function promptLearningHousekeepingHardDeleteRange() {
 async function runLearningHousekeepingAction(domain, action) {
   if (!domain || state.learningHousekeeping.actionLoading) return;
   const isHardDelete = action === 'hardDelete';
-  const endpoint = action === 'execute'
+  const isExecute = action === 'execute';
+  const endpoint = isExecute
     ? API_PATHS.learningHousekeeping.execute
     : isHardDelete
       ? API_PATHS.learningHousekeeping.hardDelete
       : API_PATHS.learningHousekeeping.plan;
   const hardDeleteReason = isHardDelete ? window.prompt('Reason for hard delete? This must target a specific learning version/range.') : '';
-  if (isHardDelete && (!hardDeleteReason || hardDeleteReason.trim().length < 8)) {
-    setMessage('Hard delete requires a clear reason.', true);
+  if (isHardDelete && (!hardDeleteReason || hardDeleteReason.trim().length < 10)) {
+    setMessage('Hard delete requires a clear 10+ character reason.', true);
     return;
   }
   const hardDeleteRange = isHardDelete ? promptLearningHousekeepingHardDeleteRange() : null;
@@ -7440,22 +7473,33 @@ async function runLearningHousekeepingAction(domain, action) {
     setMessage('Hard delete requires hashVersion, parserVersion, ruleVersionBefore, createdBefore, or olderThanDays.', true);
     return;
   }
-  const confirmation = isHardDelete ? window.prompt('Type HARD DELETE LEARNING VERSION to continue.') : '';
-  if (isHardDelete && confirmation !== 'HARD DELETE LEARNING VERSION') {
-    setMessage('Hard delete cancelled because confirmation phrase did not match.', true);
-    return;
+  let critical = null;
+  if (isExecute || isHardDelete) {
+    const expectedPhrase = isHardDelete ? 'HARD DELETE LEARNING DATA' : 'EXECUTE HOUSEKEEPING';
+    const reason = isHardDelete ? hardDeleteReason : (window.prompt(`Reason for executing learning housekeeping on ${domain}?`, `Execute safe learning housekeeping for ${domain}`) || '');
+    if (reason.trim().length < 10) {
+      setMessage('Learning housekeeping execute requires a 10+ character reason.', true);
+      return;
+    }
+    const confirmation = window.prompt(`Type ${expectedPhrase} to continue.`) || '';
+    if (confirmation !== expectedPhrase) {
+      setMessage('Learning housekeeping action cancelled because confirmation phrase did not match.', true);
+      return;
+    }
+    critical = criticalActionFields(reason.trim(), confirmation, `learning_housekeeping_${action}_${domain}`);
   }
   state.learningHousekeeping.actionLoading = `${action}:${domain}`;
   render();
   try {
     const body = buildLearningHousekeepingRequest(domain, {
-      mode: isHardDelete ? 'ADMIN_HARD_DELETE_LEARNING_VERSION' : action === 'execute' ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
-      dryRun: action !== 'execute' && !isHardDelete,
+      mode: isHardDelete ? 'ADMIN_HARD_DELETE_LEARNING_VERSION' : isExecute ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
+      dryRun: !isExecute && !isHardDelete,
       hardDelete: isHardDelete,
       ...(isHardDelete ? hardDeleteRange : { olderThanDays: 60 }),
-      reason: isHardDelete ? hardDeleteReason : `${action} learning housekeeping for ${domain}`,
+      reason: critical?.reason || `${action} learning housekeeping for ${domain}`,
     });
-    const result = await api(endpoint, { method: 'POST', body });
+    if (critical) Object.assign(body, critical);
+    const result = await api(endpoint, { method: 'POST', body, forceTokenRefresh: Boolean(critical) });
     state.learningHousekeeping.lastPlan = result || null;
     setMessage(`${action === 'plan' ? 'Dry run' : action} completed for ${domain}.`);
     await loadLearningHousekeepingData();
@@ -7467,117 +7511,131 @@ async function runLearningHousekeepingAction(domain, action) {
   }
 }
 
-
-function templateFamilyId(item = {}) {
-  return item.id || item.familyId || item.family_id || item.candidateId || item.candidate_id;
+function normalizeHousekeepingOverview() {
+  const scoped = getScopedData() || {};
+  return scoped.systemOverview || { retentionSettings: [], cleanupJobs: [], globalEnabled: false, learningHousekeepingEnabled: false };
 }
 
-async function runTemplateFamilyAction(action, item = {}) {
-  const id = templateFamilyId(item);
-  if (!id) return;
-  const reason = window.prompt(`Reason for ${action}? Auto-merge/rollback actions are tracked for audit.`, `${action} template family after review`);
-  if (!reason || reason.trim().length < 6) {
-    setMessage('Template family action requires a clear reason.', true);
-    return;
-  }
-  let endpoint = null;
-  let body = { reason };
-  if (action === 'approve') endpoint = API_PATHS.learningTemplateFamilies.approve(id);
-  if (action === 'reject') endpoint = API_PATHS.learningTemplateFamilies.reject(id);
-  if (action === 'disable') endpoint = API_PATHS.learningTemplateFamilies.disable(id);
-  if (action === 'split') {
-    const memberPatternHash = window.prompt('Pattern hash to split from this family?');
-    if (!memberPatternHash) return;
-    endpoint = API_PATHS.learningTemplateFamilies.splitMember(id);
-    body = { reason, memberPatternHash };
-  }
-  if (!endpoint) return;
-  state.learningTemplateFamilies.actionLoading = `${action}:${id}`;
-  render();
-  try {
-    await api(endpoint, { method: 'POST', body });
-    setMessage(`Template family ${action} completed.`);
-    await loadData();
-  } catch (error) {
-    setMessage(toFriendlyErrorMessage(error, 'Template family action failed.'), true);
-  } finally {
-    state.learningTemplateFamilies.actionLoading = '';
-    render();
-  }
+function retentionSettingValue(setting) {
+  if (!setting) return '-';
+  if (setting.enabled === false) return 'Disabled';
+  if (setting.retentionDays === undefined || setting.retentionDays === null) return '-';
+  return `${setting.retentionDays} day${Number(setting.retentionDays) === 1 ? '' : 's'}`;
 }
 
-function renderTemplateFamilyCandidateCard(item = {}, mode = 'candidate') {
-  const id = templateFamilyId(item);
-  const status = item.status || 'UNKNOWN';
-  const reviewEnds = item.reviewWindowEndsAt || item.review_window_ends_at || '-';
-  const familyWinRate = Number(item.familyWinRate ?? item.family_win_rate ?? 0);
-  const exactWinRate = Number(item.exactWinRate ?? item.exact_win_rate ?? 0);
-  const bothWrongRate = Number(item.bothWrongRate ?? item.both_wrong_rate ?? 0);
-  const memberHashes = item.memberPatternHashes || item.member_pattern_hashes || [];
-  const recentEvents = Array.isArray(item.recentEvents || item.recent_events) ? (item.recentEvents || item.recent_events) : [];
-  const decisionReason = item.autoDecisionReason || item.auto_decision_reason || item.autoDecisionReasonText || '';
-  const domainValue = String(item.domain || item.domain_name || 'statement_import_format').toLowerCase();
-  const domainMeta = LEARNING_TEMPLATE_FAMILY_DOMAINS.find((domain) => domain.value === domainValue) || { label: renderGlobalLearningSourceLabel(domainValue), riskLevel: item.riskLevel || item.risk_level || 'Not available', privacyLevel: item.privacyStatus || item.privacy_status || 'Not available' };
-  return el('section', { class: 'card template-family-card' }, [
+function renderSystemHousekeepingSettingCard(setting) {
+  return el('article', { class: 'card housekeeping-setting-card' }, [
     el('div', { class: 'section-title-row' }, [
       el('div', {}, [
-        el('p', { class: 'eyebrow', text: mode === 'family' ? 'Template family' : 'Similarity candidate' }),
-        el('h3', { text: item.familyKey || item.family_key || item.suggestedFamilyKey || item.suggested_family_key || id || 'Template Family' }),
+        el('p', { class: 'eyebrow', text: setting.scope || 'Retention setting' }),
+        el('h3', { text: setting.label || setting.key || 'Unknown setting' }),
       ]),
-      el('span', { class: status.includes('AUTO') || status === 'STABLE' ? 'status-pill success' : 'status-pill info', text: status }),
+      el('span', { class: setting.enabled === false ? 'status-pill danger' : 'status-pill success', text: setting.enabled === false ? 'Disabled' : 'Enabled' }),
     ]),
     renderLearningOpsMetricRows([
-      ['Domain', domainMeta.label || item.domain || item.domain_name || 'statement_import_format'],
-      ['Risk level', item.riskLevel || item.risk_level || domainMeta.riskLevel || 'Not available'],
-      ['Privacy status', item.privacyStatus || item.privacy_status || domainMeta.privacyLevel || 'Not available'],
-      ['Regression status', item.regressionStatus || item.regression_status || 'Not available'],
-      ['Similarity', `${Math.round(Number(item.similarityScore ?? item.similarity_score ?? item.confidence ?? 0) * 100)}%`],
-      ['Family win', `${Math.round(familyWinRate * 100)}%`],
-      ['Exact win', `${Math.round(exactWinRate * 100)}%`],
-      ['Both wrong', `${Math.round(bothWrongRate * 100)}%`],
-      ['Weighted feedback', formatLearningOpsNumber(item.weightedFeedback ?? item.weighted_feedback ?? 0)],
-      ['Unique users', formatLearningOpsNumber(item.uniqueUserCount ?? item.unique_user_count ?? 0)],
-      ['Review window ends', String(reviewEnds).slice(0, 19)],
-      ['Members', String(Array.isArray(memberHashes) ? memberHashes.length : 0)],
+      ['Retention', retentionSettingValue(setting), setting.source || 'Backend retention config'],
+      ['Env key', setting.envKey || '-'],
+      ['Managed by', setting.managedBy || 'DataRetentionProperties'],
     ]),
-    el('p', { class: 'muted', text: '3-month hidden shadow feedback: users are not asked to vote. The system compares final saved rows with exact vs family suggestions and deduplicates by user.' }),
-    el('p', { class: 'muted', text: `Hash/parser: ${(item.hashVersion || item.hash_version || '-')}/${(item.parserVersion || item.parser_version || '-')}` }),
-    renderLearningRecommendationBadge({
-      recommendedAction: item.recommendedAction || item.recommended_action || 'Not available',
-      impactLevel: item.impactLevel || item.impact_level || 'Not available',
-      riskLevel: item.riskLevel || item.risk_level || domainMeta.riskLevel || 'Not available',
-      privacyStatus: item.privacyStatus || item.privacy_status || domainMeta.privacyLevel || 'Not available',
-      confidenceLevel: item.confidenceLevel || item.confidence_level || item.confidence || 'Not available',
-    }),
-    decisionReason ? el('p', { class: 'muted', text: `Decision reason: ${decisionReason}` }) : null,
-    recentEvents.length ? el('div', { class: 'mini-audit-list' }, recentEvents.slice(0, 3).map((event) => el('p', { class: 'muted', text: `${event.eventType || event.event_type || 'EVENT'} · ${event.severity || 'INFO'} · ${String(event.summary || '').slice(0, 140)}` }))) : null,
-    el('div', { class: 'button-row wrap' }, [
-      mode === 'candidate' ? el('button', { class: 'btn small', text: 'Approve family', onclick: () => runTemplateFamilyAction('approve', item) }) : null,
-      mode === 'candidate' ? el('button', { class: 'btn ghost small', text: 'Reject / keep separate', onclick: () => runTemplateFamilyAction('reject', item) }) : null,
-      mode === 'family' ? el('button', { class: 'btn ghost small', text: 'Split member', onclick: () => runTemplateFamilyAction('split', item) }) : null,
-      mode === 'family' ? el('button', { class: 'btn danger small', text: 'Disable / rollback family', onclick: () => runTemplateFamilyAction('disable', item) }) : null,
+    setting.description ? el('p', { class: 'muted section-helper', text: setting.description }) : null,
+  ]);
+}
+
+function renderSystemHousekeepingJobCard(job) {
+  const target = job.target || job.key || 'UNKNOWN';
+  const loading = state.systemHousekeeping.actionLoading === target;
+  return el('article', { class: 'card housekeeping-job-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: job.schedule || 'Manual control' }),
+        el('h3', { text: job.label || target }),
+      ]),
+      el('span', { class: job.enabled === false ? 'status-pill neutral' : 'status-pill success', text: job.enabled === false ? 'Skipped' : 'Active' }),
+    ]),
+    el('p', { class: 'muted section-helper', text: job.description || 'Safe housekeeping job.' }),
+    renderLearningOpsMetricRows([
+      ['Target', target],
+      ['Cron', job.cron || '-'],
+      ['Retention source', job.retentionSource || '-'],
+    ]),
+    job.manualRunSupported === false ? null : el('div', { class: 'button-row wrap' }, [
+      el('button', { class: 'btn secondary small', text: loading ? 'Running...' : 'Run now', disabled: loading, onclick: () => runSystemHousekeepingAction(target) }),
     ]),
   ]);
 }
 
-function renderTemplateFamiliesPage() {
-  const families = state.data?.content || [];
-  const collecting = state.data?.collecting || [];
-  const review = state.data?.review || [];
-  const unstable = state.data?.unstable || [];
-  return el('div', { class: 'template-families-page' }, [
-    renderAdminControlHero('Template Families', 'Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, and Central Category pattern similarity, hidden feedback, admin recommendation, rollback and split tracking.', 'High confidence candidates collect 3 months of hidden feedback. Auto approve/reject is allowed only after thresholds; inconclusive/unstable families go to Admin.', [
-      el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh', disabled: state.loading, onclick: loadData }),
-      el('button', { class: 'btn secondary small', text: 'Generate candidates', onclick: () => runLearningOpsJob('GENERATE_TEMPLATE_FAMILY_CANDIDATES', '7D') }),
-      el('button', { class: 'btn secondary small', text: 'Evaluate feedback', onclick: () => runLearningOpsJob('EVALUATE_TEMPLATE_FAMILY_FEEDBACK', '7D') }),
+function promptSystemHousekeepingCritical(target) {
+  const reason = window.prompt(`Reason for running ${target} housekeeping now?`, `Manual ${target} housekeeping from admin console`) || '';
+  if (reason.trim().length < 10) {
+    setMessage('Housekeeping action requires a 10+ character reason.', true);
+    return null;
+  }
+  const confirmPhrase = window.prompt('Type RUN SYSTEM HOUSEKEEPING to continue.') || '';
+  if (confirmPhrase !== 'RUN SYSTEM HOUSEKEEPING') {
+    setMessage('Housekeeping action cancelled because confirmation phrase did not match.', true);
+    return null;
+  }
+  return criticalActionFields(reason.trim(), confirmPhrase, `system_housekeeping_${String(target || 'all').toLowerCase()}`);
+}
+
+async function runSystemHousekeepingAction(target) {
+  const cleanTarget = String(target || '').trim().toUpperCase();
+  if (!cleanTarget || state.systemHousekeeping.actionLoading) return;
+  const critical = promptSystemHousekeepingCritical(cleanTarget);
+  if (!critical) return;
+  state.systemHousekeeping.actionLoading = cleanTarget;
+  render();
+  try {
+    const result = await api(API_PATHS.housekeeping.run, {
+      method: 'POST',
+      body: { target: cleanTarget, ...critical },
+      forceTokenRefresh: true,
+    });
+    state.systemHousekeeping.lastRun = result || null;
+    setMessage(`${cleanTarget} housekeeping completed. Page reloaded with latest settings.`);
+    await loadLearningHousekeepingData();
+  } catch (error) {
+    setMessage(toFriendlyErrorMessage(error, 'System housekeeping action failed.'), true);
+  } finally {
+    state.systemHousekeeping.actionLoading = '';
+    render();
+  }
+}
+
+function renderSystemHousekeepingOverview() {
+  const overview = normalizeHousekeepingOverview();
+  const settings = Array.isArray(overview.retentionSettings) ? overview.retentionSettings : [];
+  const jobs = Array.isArray(overview.cleanupJobs) ? overview.cleanupJobs : [];
+  return el('div', { class: 'system-housekeeping-overview' }, [
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'System housekeeping contract' }), el('h3', { text: 'Single retention control surface' })]),
+        el('span', { class: overview.globalEnabled === false ? 'status-pill danger' : 'status-pill success', text: overview.globalEnabled === false ? 'Global disabled' : 'Global enabled' }),
+      ]),
+      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Runtime values are read from backend retention config/env so the admin UI and scheduled jobs use the same source.' }),
+      renderLearningOpsMetricRows([
+        ['Timezone', overview.timezone || 'Asia/Kuala_Lumpur'],
+        ['Data retention cron', overview.dataRetentionCron || '0 30 3 * * *'],
+        ['Learning housekeeping', overview.learningHousekeepingEnabled === false ? 'Disabled' : 'Enabled'],
+      ]),
     ]),
-    el('div', { class: 'privacy-note compact-help-row' }, [
-      el('span', { text: 'Global rules are review-only by default. No auto-save / quick-save from global/template family rules. Category pattern global rules are high risk and manual-review only. No raw notification/OCR/transaction text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector is displayed. Exact template ratings remain; family is a non-destructive layer.' }),
+    state.systemHousekeeping.lastRun ? el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Last system housekeeping run' })]),
+      el('pre', { class: 'json-preview', text: compactJson(state.systemHousekeeping.lastRun) }),
+    ]) : null,
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Retention settings' }), el('h3', { text: 'Current backend values' })]),
+      ]),
+      settings.length ? el('div', { class: 'control-dashboard-grid' }, settings.map(renderSystemHousekeepingSettingCard)) : renderEmptyState('No retention settings returned.', 'Check the backend /api/admin/housekeeping/overview endpoint.'),
     ]),
-    review.length ? el('section', { class: 'card' }, [el('h3', { text: 'Needs Admin Review' }), ...review.map((item) => renderTemplateFamilyCandidateCard(item, 'candidate'))]) : null,
-    unstable.length ? el('section', { class: 'card' }, [el('h3', { text: 'Unstable / rollback candidates' }), ...unstable.map((item) => renderTemplateFamilyCandidateCard(item, 'family'))]) : null,
-    collecting.length ? el('section', { class: 'card' }, [el('h3', { text: 'Collecting hidden feedback' }), ...collecting.map((item) => renderTemplateFamilyCandidateCard(item, 'candidate'))]) : null,
-    families.length ? el('section', { class: 'card' }, [el('h3', { text: 'Families / auto decisions' }), ...families.map((item) => renderTemplateFamilyCandidateCard(item, 'family'))]) : renderEmptyState('No template families yet.'),
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Cleanup jobs' }), el('h3', { text: 'Schedulers and manual controls' })]),
+        el('button', { class: 'btn danger small', text: state.systemHousekeeping.actionLoading === 'ALL_SAFE' ? 'Running...' : 'Run all safe cleanup', disabled: Boolean(state.systemHousekeeping.actionLoading), onclick: () => runSystemHousekeepingAction('ALL_SAFE') }),
+      ]),
+      jobs.length ? el('div', { class: 'control-dashboard-grid' }, jobs.map(renderSystemHousekeepingJobCard)) : renderEmptyState('No housekeeping jobs returned.'),
+    ]),
   ]);
 }
 
@@ -7628,24 +7686,31 @@ function renderLearningHousekeepingDomainCard(domain) {
 }
 
 function renderLearningHousekeepingPage() {
-  const domains = state.data?.content || [];
-  const runs = state.data?.runs || [];
-  const error = state.learningHousekeeping.error || state.data?.loadError || '';
-  return el('div', { class: 'learning-housekeeping-page' }, [
-    renderAdminControlHero('Learning Housekeeping', 'Centralized version-aware retention for Smart Capture, OCR Receipt, and Statement Import learning.', 'Dry-run first. Automatic cleanup protects active rules, pending candidates, latest protected versions, and recent events.', [
+  const scoped = getScopedData() || {};
+  const domains = scoped.content || [];
+  const runs = scoped.runs || [];
+  const error = state.learningHousekeeping.error || state.systemHousekeeping.error || scoped.loadError || '';
+  return el('div', { class: 'learning-housekeeping-page system-housekeeping-page' }, [
+    renderAdminControlHero('System Housekeeping', 'View and control every retention cleanup path from one operations surface.', 'This keeps the old learning-version controls, but also shows the same backend retention time used by feedback status, user notifications, soft-deleted data, Smart Capture, cloud backup, audit logs, and support cleanup.', [
       el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh', disabled: state.loading, onclick: loadData }),
     ]),
     error ? el('div', { class: 'notice warning inline-notice', text: error }) : null,
+    renderSystemHousekeepingOverview(),
     el('div', { class: 'privacy-note compact-help-row' }, [
-      el('span', { text: 'This page displays only learning versions, counters, protection flags, and retention plans. It must not display raw statement text, OCR text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector.' }),
+      el('span', { text: 'Learning cleanup displays only versions, counters, protection flags, and retention plans. It must not display raw statement text, OCR text, payee, merchant, exact amount, date, reference, account/card number, image URL, embedding, or vector.' }),
     ]),
     state.learningHousekeeping.lastPlan ? el('section', { class: 'card' }, [
-      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Last housekeeping plan/result' })]),
+      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Last learning housekeeping plan/result' })]),
       el('pre', { class: 'json-preview', text: compactJson(state.learningHousekeeping.lastPlan) }),
     ]) : null,
-    domains.length ? el('div', { class: 'learning-ops-grid' }, domains.map(renderLearningHousekeepingDomainCard)) : renderEmptyState('No learning housekeeping domains found.'),
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Learning version cleanup' }), el('h3', { text: 'Protected learning domains' })]),
+      ]),
+      domains.length ? el('div', { class: 'learning-ops-grid' }, domains.map(renderLearningHousekeepingDomainCard)) : renderEmptyState('No learning housekeeping domains found.'),
+    ]),
     runs.length ? el('section', { class: 'card' }, [
-      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Recent housekeeping runs' })]),
+      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Recent learning housekeeping runs' })]),
       el('div', { class: 'table-wrap' }, [el('table', { class: 'admin-table compact-table' }, [
         el('thead', {}, [el('tr', {}, ['Domain', 'Mode', 'Dry run', 'Hard delete', 'Status', 'Rows matched', 'Rows deleted', 'Reason'].map((label) => el('th', { text: label })))]),
         el('tbody', {}, runs.map((run) => el('tr', {}, [
@@ -7662,6 +7727,7 @@ function renderLearningHousekeepingPage() {
     ]) : null,
   ]);
 }
+
 
 function renderLearningOpsMetricRows(rows) {
   return el('div', { class: 'learning-ops-metrics' }, rows.map(([label, value, hint, danger]) => el('div', { class: danger ? 'learning-ops-metric danger' : 'learning-ops-metric' }, [
@@ -8036,7 +8102,7 @@ function renderLearningConsoleJobsAndHousekeeping(consoleData) {
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Jobs & Housekeeping' }), el('h3', { text: 'Protected learning operations' })]),
         el('div', { class: 'actions compact-actions' }, [
           el('button', { class: 'btn small ghost', text: 'Open Learning Ops', onclick: () => setActiveTab('learningOps') }),
-          el('button', { class: 'btn small ghost', text: 'Open Learning Housekeeping', onclick: () => setActiveTab('learningHousekeeping') }),
+          el('button', { class: 'btn small ghost', text: 'Open System Housekeeping', onclick: () => setActiveTab('learningHousekeeping') }),
         ]),
       ]),
       el('p', { class: 'muted', text: 'reusesLearningOps: true. reusesLearningHousekeeping: true. Job history heavy endpoints are not auto-loaded.' }),
@@ -8158,7 +8224,7 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'learningConsole') {
     children.push(renderLearningConsolePage());
   } else if (state.activeTab === 'learningHousekeeping') {
-    children.push(renderLearningConsoleCompatibilityNote('Learning Housekeeping'));
+    children.push(renderLearningConsoleCompatibilityNote('System Housekeeping'));
     children.push(renderLearningHousekeepingPage());
   } else if (state.activeTab === 'templateFamilies') {
     children.push(renderLearningConsoleCompatibilityNote('Template Families'));
