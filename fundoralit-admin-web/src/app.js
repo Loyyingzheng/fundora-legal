@@ -393,6 +393,9 @@ const state = {
   actionLoadingKey: '',
   actionLoadingMessage: '',
   data: null,
+  tabDataCache: {},
+  activeDataCacheMeta: null,
+  adminDataMutationVersion: 0,
   error: '',
   message: '',
   modal: null,
@@ -492,6 +495,7 @@ function beginLoadRequest(tab = state.activeTab) {
     id: state.loadRequestSeq,
     tab,
     userEmail: state.user?.email || '',
+    cacheKey: buildAdminTabCacheKey(tab),
   };
   state.activeLoadRequest = request;
   return request;
@@ -518,12 +522,15 @@ function setScopedData(data, request) {
   if (!isLoadRequestCurrent(request)) return false;
   state.data = data;
   state.dataScope = request.tab;
+  state.activeDataCacheMeta = { cachedAt: Date.now(), stale: false, heavy: ADMIN_TAB_CACHE_HEAVY_TABS.has(request.tab) };
+  rememberAdminTabData(request.tab, data, request);
   return true;
 }
 
 function clearScopedData(tab = state.activeTab) {
   state.data = null;
   state.dataScope = tab;
+  state.activeDataCacheMeta = null;
 }
 
 function getScopedData() {
@@ -541,6 +548,125 @@ function finishLoadRequest(request, { renderAfter = true } = {}) {
   if (state.activeLoadRequest?.id === request.id) state.activeLoadRequest = null;
   if (renderAfter) render();
   return true;
+}
+
+
+function stableStringifyForCache(value) {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringifyForCache).join(',')}]`;
+  if (typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringifyForCache(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function getAdminTabCacheFilters(tab = state.activeTab) {
+  if (tab === 'feedback') return { feedbackFilters: state.feedbackFilters, page: state.page, size: state.size };
+  if (tab === 'analytics') return { analyticsDateRange: state.analyticsDateRange, analyticsPreset: state.analyticsPreset };
+  if (tab === 'premium' || tab === 'review') return { page: state.page, size: 50 };
+  if (tab === 'auditLogs') return { action: state.adminFilters.action, targetType: state.adminFilters.targetType, page: state.page, size: state.size };
+  if (tab === 'usage') return { userEmail: state.adminFilters.userEmail, featureKey: state.adminFilters.featureKey, periodKey: state.adminFilters.periodKey };
+  if (tab === 'subscriptionSupport') return {
+    userEmail: state.adminFilters.userEmail,
+    status: state.adminFilters.subscriptionRequestStatus,
+    userTier: state.adminFilters.subscriptionUserTier,
+    userStatus: state.adminFilters.subscriptionUserStatus,
+  };
+  if (tab === 'featureAnalytics') return { from: state.adminFilters.dateFrom, to: state.adminFilters.dateTo, featureKey: state.adminFilters.featureKey };
+  if (tab === 'planMatrix') return {
+    module: state.adminFilters.planMatrixModule,
+    status: state.adminFilters.planMatrixStatus,
+    search: state.adminFilters.planMatrixSearch,
+    plan: state.adminFilters.planMatrixPlanPolicyValuePlan,
+  };
+  if (tab === 'featureFlags') return { flagKey: state.adminFilters.featureFlagKey, plan: state.adminFilters.plan };
+  if (tab === 'productPolicies') return { policyKey: state.adminFilters.productPolicyKey };
+  if (tab === 'policyVersions') return {
+    targetType: state.adminFilters.targetType,
+    targetId: state.adminFilters.policyVersionTargetId,
+    policyKey: state.adminFilters.policyVersionPolicyKey,
+  };
+  if (tab === 'rateLimitOverrides') return { routeGroup: state.adminFilters.rateLimitRouteGroup };
+  if (tab === 'learningConsole') return { subtab: state.learningConsole.activeSubtab };
+  if (tab === 'smartCaptureRules') return { globalLearningSourceType: state.adminFilters.globalLearningSourceType };
+  return {};
+}
+
+function buildAdminTabCacheKey(tab = state.activeTab) {
+  return `${ADMIN_TAB_CACHE_VERSION}:${tab}:${stableStringifyForCache(getAdminTabCacheFilters(tab))}`;
+}
+
+function isAdminTabCacheFresh(entry) {
+  return Boolean(
+    entry
+    && entry.version === ADMIN_TAB_CACHE_VERSION
+    && entry.mutationVersion === state.adminDataMutationVersion
+    && Date.now() - Number(entry.cachedAt || 0) <= ADMIN_TAB_CACHE_TTL_MS
+  );
+}
+
+function getAdminTabCacheEntry(tab = state.activeTab) {
+  return state.tabDataCache?.[buildAdminTabCacheKey(tab)] || null;
+}
+
+function rememberAdminTabData(tab, data, request) {
+  if (!state.tabDataCache) state.tabDataCache = {};
+  const cacheKey = request?.cacheKey || buildAdminTabCacheKey(tab);
+  state.tabDataCache[cacheKey] = {
+    version: ADMIN_TAB_CACHE_VERSION,
+    tab,
+    data,
+    cachedAt: Date.now(),
+    mutationVersion: state.adminDataMutationVersion,
+  };
+  const keys = Object.keys(state.tabDataCache);
+  if (keys.length > ADMIN_TAB_CACHE_MAX_ENTRIES) {
+    keys
+      .map((key) => [key, Number(state.tabDataCache[key]?.cachedAt || 0)])
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, keys.length - ADMIN_TAB_CACHE_MAX_ENTRIES)
+      .forEach(([key]) => delete state.tabDataCache[key]);
+  }
+}
+
+function restoreAdminTabCache(tab = state.activeTab, { allowStale = false } = {}) {
+  const entry = getAdminTabCacheEntry(tab);
+  if (!entry || (!allowStale && !isAdminTabCacheFresh(entry))) return false;
+  state.data = entry.data;
+  state.dataScope = tab;
+  state.activeDataCacheMeta = {
+    cachedAt: entry.cachedAt,
+    stale: !isAdminTabCacheFresh(entry),
+    heavy: ADMIN_TAB_CACHE_HEAVY_TABS.has(tab),
+  };
+  return true;
+}
+
+function clearAdminTabDataCache({ preserveMutationVersion = false } = {}) {
+  state.tabDataCache = {};
+  state.activeDataCacheMeta = null;
+  if (!preserveMutationVersion) state.adminDataMutationVersion = Number(state.adminDataMutationVersion || 0) + 1;
+}
+
+function invalidateAdminTabDataCache() {
+  clearAdminTabDataCache();
+}
+
+async function forceLoadData() {
+  return loadData({ force: true });
+}
+
+function renderDataCacheStatus() {
+  const meta = state.activeDataCacheMeta;
+  if (!meta?.cachedAt || state.loading) return null;
+  const seconds = Math.max(0, Math.round((Date.now() - Number(meta.cachedAt || 0)) / 1000));
+  const copy = meta.stale
+    ? 'Showing cached data while checking for updates.'
+    : `Cached ${seconds}s ago. Use Refresh to force-check backend.`;
+  return el('div', { class: 'compact-help-row cache-status-row' }, [
+    el('span', { class: 'badge success', text: meta.heavy ? 'Smart cache' : 'Cached' }),
+    el('span', { class: 'muted', text: copy }),
+  ]);
 }
 
 
@@ -936,6 +1062,11 @@ const LEARNING_HOUSEKEEPING_CONTRACT = {
   autoLoadJobHistoryHeavyEndpoint: false,
 };
 
+const ADMIN_TAB_CACHE_VERSION = '20260706-tab-delta-v1';
+const ADMIN_TAB_CACHE_TTL_MS = 2 * 60 * 1000;
+const ADMIN_TAB_CACHE_MAX_ENTRIES = 24;
+const ADMIN_TAB_CACHE_HEAVY_TABS = new Set(['analytics', 'learningHousekeeping', 'smartCaptureRules', 'templateFamilies', 'auditLogs']);
+
 const NAV_GROUPS = [
   {
     title: 'Overview',
@@ -1021,7 +1152,7 @@ function setActiveTab(tabId) {
   invalidateLoadRequests();
   state.activeTab = nextTab;
   state.page = 0;
-  clearScopedData(tabId);
+  restoreAdminTabCache(nextTab, { allowStale: true });
   state.loading = false;
   state.analyticsLoading = false;
   state.message = '';
@@ -1296,6 +1427,7 @@ async function signOutAdmin() {
   state.expandedItemIds = {};
   state.actionLoadingKey = '';
   state.actionLoadingMessage = '';
+  clearAdminTabDataCache({ preserveMutationVersion: true });
   state.message = '';
   state.error = '';
   render();
@@ -1450,6 +1582,11 @@ async function api(path, options = {}) {
     error.service = service;
     error.url = url.toString();
     throw error;
+  }
+
+  const method = String(options.method || 'GET').toUpperCase();
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    invalidateAdminTabDataCache();
   }
 
   if (json && Object.prototype.hasOwnProperty.call(json, 'data')) return json.data;
@@ -1659,15 +1796,28 @@ async function loadAdminSession({ renderAfter = false } = {}) {
   }
 }
 
-async function loadData() {
+async function loadData(options = {}) {
+  const force = options?.force === true;
   if (!state.user) return;
-  const loadRequest = beginLoadRequest(state.activeTab);
   let shouldAutoLoadFeedbackScreenshots = false;
+  if (!force && restoreAdminTabCache(state.activeTab)) {
+    state.loading = false;
+    state.error = '';
+    render();
+    if (state.activeTab === 'feedback' && (getScopedData()?.content || []).some(feedbackItemHasScreenshot)) {
+      scheduleFeedbackScreenshotAutoLoad();
+    }
+    return;
+  }
+
+  const hadStaleCache = !force && restoreAdminTabCache(state.activeTab, { allowStale: true });
+  const loadRequest = beginLoadRequest(state.activeTab);
   if (state.activeTab === 'feedback') {
     loadFeedbackOptions(loadRequest).catch(() => {});
   }
   state.loading = true;
   state.error = '';
+  if (!hadStaleCache) clearScopedData(state.activeTab);
   render();
 
   try {
@@ -2158,7 +2308,7 @@ async function refreshAfterAdminMutation(successMessage) {
   state.actionLoadingMessage = '';
   state.loading = true;
   render();
-  await loadData();
+  await loadData({ force: true });
 }
 
 async function performPatchAction(path, successMessage, body) {
@@ -2306,7 +2456,7 @@ function renderPageContextBar() {
         type: 'button',
         text: state.loading ? 'Refreshing\u2026' : 'Refresh',
         disabled: state.loading,
-        onclick: () => loadData(),
+        onclick: forceLoadData,
       }),
     ]),
   ]);
@@ -3452,7 +3602,7 @@ function renderFeedbackToolbar() {
       renderInfoHint('Review \u2192 select bug level \u2192 backend suggests credit \u2192 admin confirms. Different statuses trigger different user-friendly backend messages.', { compact: true, label: 'Service credit workflow details' }),
     ]),
     el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ]);
 }
 
@@ -4445,7 +4595,7 @@ function renderPlanMatrixToolbar(plans) {
       el('span', { text: `${plans.length || 0} dynamic plan column${plans.length === 1 ? '' : 's'}` }),
       renderInfoHint('Columns come from backend subscription_plans/plan matrix response. The UI does not hardcode Free/Pro.', { compact: true, label: 'Dynamic plan columns' }),
     ]),
-    el('button', { class: 'btn', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn', text: 'Refresh', onclick: () => loadData({ force: true }) }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.planMatrixModule = ''; state.adminFilters.planMatrixStatus = ''; state.adminFilters.planMatrixSearch = ''; state.adminFilters.planMatrixPlanPolicyValuePlan = ''; loadData(); } }),
   ], 'plan-matrix-toolbar');
 }
@@ -5000,7 +5150,7 @@ function renderFeatureLimitToolbar() {
     ]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.featureLimitKey = ''; state.adminFilters.plan = ''; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ], 'control-toolbar-inline-double');
 }
 
@@ -5076,7 +5226,7 @@ function renderFeatureFlagToolbar() {
     el('div', {}, [el('label', { text: 'Target plan' }), plan]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.featureFlagKey = ''; state.adminFilters.plan = ''; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ], 'control-toolbar-inline-double');
 }
 
@@ -5150,7 +5300,7 @@ function renderProductPolicyToolbar() {
     el('div', {}, [el('label', { text: 'Policy key' }), policy, el('small', { class: 'field-help', text: 'Loaded from backend product policy keys.' })]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.productPolicyKey = ''; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ], 'control-toolbar-inline-single');
 }
 
@@ -5301,7 +5451,7 @@ function renderSubscriptionSupportToolbar() {
     el('div', {}, [el('label', { text: 'User status' }), userStatus]),
     el('div', {}, [el('label', { text: 'Request status' }), requestStatus]),
     el('button', { class: 'btn', text: 'Search', onclick: () => loadData() }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ]);
 }
 
@@ -5525,7 +5675,7 @@ function renderUsageToolbar() {
     el('div', {}, [el('label', { text: 'Feature key' }), feature]),
     el('div', {}, [el('label', { text: 'Period' }), period]),
     el('button', { class: 'btn', text: 'Search', onclick: () => loadData() }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ]);
 }
 
@@ -5666,7 +5816,7 @@ function renderAuditToolbar() {
     el('div', {}, [el('label', { text: 'Action' }), action]),
     el('div', {}, [el('label', { text: 'Target type' }), target]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => { state.page = 0; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ]);
 }
 
@@ -5691,7 +5841,7 @@ function renderAuditItem(item) {
 function renderAnnouncementToolbar() {
   return renderControlToolbar([
     el('button', { class: 'btn', text: 'Create announcement', onclick: () => openAnnouncementModal(null) }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ]);
 }
 
@@ -7086,7 +7236,7 @@ function renderPolicyVersionToolbar() {
     el('div', {}, [el('label', { text: 'Policy key' }), policyKey]),
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.targetType = ''; state.adminFilters.policyVersionTargetId = ''; state.adminFilters.policyVersionPolicyKey = ''; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ], 'control-toolbar-inline-double');
 }
 
@@ -7134,7 +7284,7 @@ function renderRateLimitOverrideToolbar() {
     el('button', { class: 'btn', text: 'Apply', onclick: () => loadData() }),
     el('button', { class: 'btn secondary', text: 'Create override', onclick: () => openRateLimitOverrideModal(null) }),
     el('button', { class: 'btn ghost', text: 'Clear', onclick: () => { state.adminFilters.rateLimitRouteGroup = ''; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData() }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ], 'control-toolbar-inline-double');
 }
 
@@ -7430,29 +7580,32 @@ function buildLearningHousekeepingRequest(domain, overrides = {}) {
     dryRun: overrides.dryRun !== false,
     reason: overrides.reason || 'Admin reviewed learning housekeeping retention plan',
   };
-  ['hashVersion', 'parserVersion', 'ruleVersionBefore', 'createdBefore'].forEach((key) => {
+  ['hashVersion', 'parserVersion', 'ruleVersionBefore', 'mergeIntoHashVersion', 'mergeIntoParserVersion', 'mergeIntoRuleVersion'].forEach((key) => {
     if (overrides[key] !== undefined && overrides[key] !== null && String(overrides[key]).trim() !== '') request[key] = overrides[key];
   });
   return request;
 }
 
-function promptLearningHousekeepingHardDeleteRange() {
-  const hashVersion = window.prompt('Optional hashVersion to hard delete. Leave blank if using parser/rule/time range.') || '';
-  const parserVersion = window.prompt('Optional parserVersion to hard delete. Leave blank if using hash/rule/time range.') || '';
-  const ruleVersionBeforeRaw = window.prompt('Optional ruleVersionBefore. Example: 4. Leave blank if not applicable.') || '';
-  const createdBefore = window.prompt('Optional createdBefore ISO timestamp. Example: 2026-07-01T00:00:00Z. Leave blank if not applicable.') || '';
-  const olderThanDaysRaw = window.prompt('olderThanDays for hard delete fallback. Minimum 180 days.', '180') || '';
-  const ruleVersionBefore = ruleVersionBeforeRaw.trim() ? Number(ruleVersionBeforeRaw) : null;
-  const olderThanDays = olderThanDaysRaw.trim() ? Math.max(180, Number(olderThanDaysRaw) || 180) : null;
+function promptLearningHousekeepingMergeRetireRange() {
+  const sourceHashVersion = window.prompt('Source hashVersion to retire after merge. Required.') || '';
+  const sourceParserVersion = window.prompt('Source parserVersion to retire after merge. Required.') || '';
+  const sourceRuleVersionRaw = window.prompt('Source ruleVersion. Use 0 if this domain does not use ruleVersion.', '0') || '0';
+  const targetHashVersion = window.prompt('Merge target hashVersion. Must already exist and be protected/latest or active. Required.') || '';
+  const targetParserVersion = window.prompt('Merge target parserVersion. Must already exist and be protected/latest or active. Required.') || '';
+  const targetRuleVersionRaw = window.prompt('Merge target ruleVersion. Use 0 if this domain does not use ruleVersion.', sourceRuleVersionRaw || '0') || '0';
+  const sourceRuleVersion = Number(sourceRuleVersionRaw.trim() || '0');
+  const targetRuleVersion = Number(targetRuleVersionRaw.trim() || '0');
   const range = {
-    hashVersion: hashVersion.trim(),
-    parserVersion: parserVersion.trim(),
-    ruleVersionBefore: Number.isFinite(ruleVersionBefore) ? ruleVersionBefore : null,
-    createdBefore: createdBefore.trim(),
-    olderThanDays,
+    hashVersion: sourceHashVersion.trim(),
+    parserVersion: sourceParserVersion.trim(),
+    ruleVersionBefore: Number.isFinite(sourceRuleVersion) ? sourceRuleVersion : 0,
+    mergeIntoHashVersion: targetHashVersion.trim(),
+    mergeIntoParserVersion: targetParserVersion.trim(),
+    mergeIntoRuleVersion: Number.isFinite(targetRuleVersion) ? targetRuleVersion : 0,
   };
-  const hasExplicitRange = Boolean(range.hashVersion || range.parserVersion || range.ruleVersionBefore || range.createdBefore || range.olderThanDays);
-  return hasExplicitRange ? range : null;
+  const hasExactSource = Boolean(range.hashVersion && range.parserVersion);
+  const hasExactTarget = Boolean(range.mergeIntoHashVersion && range.mergeIntoParserVersion);
+  return hasExactSource && hasExactTarget ? range : null;
 }
 
 async function runLearningHousekeepingAction(domain, action) {
@@ -7464,19 +7617,19 @@ async function runLearningHousekeepingAction(domain, action) {
     : isHardDelete
       ? API_PATHS.learningHousekeeping.hardDelete
       : API_PATHS.learningHousekeeping.plan;
-  const hardDeleteReason = isHardDelete ? window.prompt('Reason for hard delete? This must target a specific learning version/range.') : '';
+  const hardDeleteReason = isHardDelete ? window.prompt('Reason for merge-retiring a deprecated learning version? This does not delete raw rows and must target exact source/target versions.') : '';
   if (isHardDelete && (!hardDeleteReason || hardDeleteReason.trim().length < 10)) {
-    setMessage('Hard delete requires a clear 10+ character reason.', true);
+    setMessage('Merge-retire requires a clear 10+ character reason.', true);
     return;
   }
-  const hardDeleteRange = isHardDelete ? promptLearningHousekeepingHardDeleteRange() : null;
+  const hardDeleteRange = isHardDelete ? promptLearningHousekeepingMergeRetireRange() : null;
   if (isHardDelete && !hardDeleteRange) {
-    setMessage('Hard delete requires hashVersion, parserVersion, ruleVersionBefore, createdBefore, or olderThanDays.', true);
+    setMessage('Merge-retire requires exact source hash/parser and exact target hash/parser versions.', true);
     return;
   }
   let critical = null;
   if (isExecute || isHardDelete) {
-    const expectedPhrase = isHardDelete ? 'HARD DELETE LEARNING DATA' : 'EXECUTE HOUSEKEEPING';
+    const expectedPhrase = isHardDelete ? 'MERGE RETIRE LEARNING VERSION' : 'EXECUTE HOUSEKEEPING';
     const reason = isHardDelete ? hardDeleteReason : (window.prompt(`Reason for executing learning housekeeping on ${domain}?`, `Execute safe learning housekeeping for ${domain}`) || '');
     if (reason.trim().length < 10) {
       setMessage('Learning housekeeping execute requires a 10+ character reason.', true);
@@ -7493,7 +7646,7 @@ async function runLearningHousekeepingAction(domain, action) {
   render();
   try {
     const body = buildLearningHousekeepingRequest(domain, {
-      mode: isHardDelete ? 'ADMIN_HARD_DELETE_LEARNING_VERSION' : isExecute ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
+      mode: isHardDelete ? 'ADMIN_MERGE_RETIRE_LEARNING_VERSION' : isExecute ? 'ADMIN_SAFE_CLEANUP' : 'ADMIN_DRY_RUN',
       dryRun: !isExecute && !isHardDelete,
       hardDelete: isHardDelete,
       ...(isHardDelete ? hardDeleteRange : { olderThanDays: 60 }),
@@ -7502,7 +7655,7 @@ async function runLearningHousekeepingAction(domain, action) {
     if (critical) Object.assign(body, critical);
     const result = await api(endpoint, { method: 'POST', body, forceTokenRefresh: Boolean(critical) });
     state.learningHousekeeping.lastPlan = result || null;
-    setMessage(`${action === 'plan' ? 'Dry run' : action} completed for ${domain}.`);
+    setMessage(`${action === 'plan' ? 'Dry run' : isHardDelete ? 'Merge-retire' : action} completed for ${domain}.`);
     await loadLearningHousekeepingData();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'Learning housekeeping action failed.'), true);
@@ -7758,7 +7911,7 @@ function renderLearningHousekeepingDomainCard(domain) {
     el('div', { class: 'button-row wrap' }, [
       el('button', { class: 'btn ghost small', text: loading ? 'Working...' : 'Dry run', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'plan') }),
       el('button', { class: 'btn secondary small', text: 'Execute safe cleanup', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'execute') }),
-      el('button', { class: 'btn danger small', text: 'Hard delete version/range', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'hardDelete') }),
+      el('button', { class: 'btn danger small', text: 'Merge retire deprecated version', disabled: loading, onclick: () => runLearningHousekeepingAction(name, 'hardDelete') }),
     ]),
   ]);
 }
@@ -7770,7 +7923,7 @@ function renderLearningHousekeepingPage() {
   const error = state.learningHousekeeping.error || state.systemHousekeeping.error || scoped.loadError || '';
   return el('div', { class: 'learning-housekeeping-page system-housekeeping-page' }, [
     renderAdminControlHero('System Housekeeping', 'View and control every retention cleanup path from one operations surface.', 'This keeps the old learning-version controls, but also shows the same backend retention time used by feedback status, user notifications, soft-deleted data, Smart Capture, cloud backup, audit logs, and support cleanup.', [
-      el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh', disabled: state.loading, onclick: loadData }),
+      el('button', { class: 'btn ghost small', text: state.loading ? 'Refreshing...' : 'Refresh', disabled: state.loading, onclick: forceLoadData }),
     ]),
     error ? el('div', { class: 'notice warning inline-notice', text: error }) : null,
     renderSystemHousekeepingOverview(),
@@ -7790,12 +7943,12 @@ function renderLearningHousekeepingPage() {
     runs.length ? el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [el('h3', { text: 'Recent learning housekeeping runs' })]),
       el('div', { class: 'table-wrap' }, [el('table', { class: 'admin-table compact-table' }, [
-        el('thead', {}, [el('tr', {}, ['Domain', 'Mode', 'Dry run', 'Hard delete', 'Status', 'Rows matched', 'Rows deleted', 'Reason'].map((label) => el('th', { text: label })))]),
+        el('thead', {}, [el('tr', {}, ['Domain', 'Mode', 'Dry run', 'Merge retired', 'Status', 'Rows matched', 'Rows deleted', 'Reason'].map((label) => el('th', { text: label })))]),
         el('tbody', {}, runs.map((run) => el('tr', {}, [
           el('td', { text: run.domain || '-' }),
           el('td', { text: run.mode || '-' }),
           el('td', { text: run.dryRun ? 'Yes' : 'No' }),
-          el('td', { text: run.hardDelete ? 'Yes' : 'No' }),
+          el('td', { text: run.hardDelete ? 'Merged/retired' : 'No' }),
           el('td', { text: run.status || '-' }),
           el('td', { text: String(run.rowsMatched ?? 0) }),
           el('td', { text: String(run.rowsDeleted ?? 0) }),
@@ -8498,6 +8651,8 @@ function renderSignedIn() {
   const scopedData = getScopedData();
   const items = scopedData?.content || [];
   const children = [...renderNotice()];
+  const cacheStatus = renderDataCacheStatus();
+  if (cacheStatus) children.push(cacheStatus);
 
   if (state.activeTab === 'analytics') {
     children.push(renderAnalyticsDashboard());
@@ -8518,7 +8673,7 @@ function renderSignedIn() {
   }
 
   if (state.activeTab === 'feedback') children.push(renderFeedbackToolbar());
-  else children.push(el('div', { class: 'toolbar' }, [el('button', { class: 'btn', text: state.loading ? 'Loading...' : 'Refresh', disabled: state.loading, onclick: () => loadData() })]));
+  else children.push(el('div', { class: 'toolbar' }, [el('button', { class: 'btn', text: state.loading ? 'Loading...' : 'Refresh', disabled: state.loading, onclick: () => loadData({ force: true }) })]));
 
   children.push(renderStats(items));
 

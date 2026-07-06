@@ -19,5 +19,5 @@ assert(!/\bLIMITS\./.test(app.replace(/ADMIN_LIMITS\./g, '')), 'Feedback modal r
 assert(app.includes('ADMIN_LIMITS.announcementCtaLabelMax'), 'Feedback notification CTA fields must use the shared ADMIN_LIMITS constant.');
 assert(indexHtml.includes("img-src 'self' data: blob:"), 'CSP should allow blob: for compatibility while screenshot previews use data: URLs.');
 assert(app.includes('function blobToDataUrl(blob)'), 'Screenshot autoload must use data: URLs so it is not blocked by stale CSP.');
-assert(indexHtml.includes('src/app.js?v=20260706-housekeeping-schedule-v1'), 'Admin app.js must be cache-busted so deployed pages do not keep the previous runtime.');
+assert(indexHtml.includes('src/app.js?v=20260706-admin-tab-cache-v1'), 'Admin app.js must be cache-busted so deployed pages do not keep the previous runtime.');
 console.log('PASS admin feedback action autoload audit');
