@@ -2980,9 +2980,14 @@ function openEmergencyRuleActionModal(rule, action) {
   render();
 }
 
-async function clearCollaborationPolicyCache(reason = '') {
+async function clearCollaborationPolicyCache(reason = '', options = {}) {
   if (!collaborationApiBaseUrl) return { skipped: true, message: 'Collaboration API base URL is not configured; collaboration backend will refresh after its cache TTL.' };
-  await api(API_PATHS.collaborationPolicy.clearCache, { service: 'collaboration', method: 'POST', body: criticalActionFields(reason, 'CLEAR COLLABORATION CACHE', 'clear_collaboration_cache') });
+  await api(API_PATHS.collaborationPolicy.clearCache, {
+    service: 'collaboration',
+    method: 'POST',
+    body: criticalActionFields(reason, 'CLEAR COLLABORATION CACHE', 'clear_collaboration_cache'),
+    forceTokenRefresh: options.forceTokenRefresh === true,
+  });
   return { skipped: false, message: 'Collaboration policy cache cleared.' };
 }
 
@@ -3024,7 +3029,7 @@ async function submitEmergencyActionModal() {
     }
     let cacheMessage = '';
     if (module.collaborationCache) {
-      const cacheResult = await clearCollaborationPolicyCache(reason.value);
+      const cacheResult = await clearCollaborationPolicyCache(reason.value, { forceTokenRefresh: true });
       cacheMessage = cacheResult.message;
     }
     setMessage(`${module.title} updated. ${cacheMessage}`.trim());
@@ -6883,7 +6888,9 @@ function renderEmergencyModuleCard(module) {
           state.error = '';
           render();
           try {
-            const result = await clearCollaborationPolicyCache('Manual emergency console cache clear.');
+            const password = window.prompt('Enter admin password to re-authenticate before clearing collaboration cache.') || '';
+            await reauthenticateAdminForCriticalAction(password);
+            const result = await clearCollaborationPolicyCache('Manual emergency console cache clear.', { forceTokenRefresh: true });
             setMessage(result.message);
             await loadData();
           } catch (error) {
