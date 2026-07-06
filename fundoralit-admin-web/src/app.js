@@ -573,6 +573,8 @@ const ADMIN_LIMITS = {
   routeGroupMax: 120,
 };
 
+const LIMITS = ADMIN_LIMITS; // Backward-compatible alias for legacy modal render helpers.
+
 const ANNOUNCEMENT_CTA_MODES = ['NONE', 'INTERNAL', 'EXTERNAL_URL', 'CUSTOM'];
 const ANNOUNCEMENT_MEDIA_TYPES = ['NONE', 'IMAGE'];
 const ANNOUNCEMENT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
@@ -1494,7 +1496,7 @@ async function apiRaw(path, options = {}) {
 
 function clearFeedbackScreenshotPreviews() {
   Object.values(state.feedbackScreenshotPreviews || {}).forEach((preview) => {
-    if (preview?.objectUrl) URL.revokeObjectURL(preview.objectUrl);
+    revokeFeedbackPreviewUrl(preview?.objectUrl);
   });
   state.feedbackScreenshotPreviews = {};
   state.feedbackScreenshotAutoLoadScheduled = false;
@@ -1505,11 +1507,26 @@ function feedbackItemHasScreenshot(item) {
   return Boolean(item?.screenshotStoragePath || item?.screenshotUrl);
 }
 
+function revokeFeedbackPreviewUrl(url) {
+  if (typeof url === 'string' && url.startsWith('blob:')) {
+    try { URL.revokeObjectURL(url); } catch (_) {}
+  }
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Screenshot could not be read.'));
+    reader.readAsDataURL(blob);
+  });
+}
+
 function setFeedbackScreenshotPreview(id, next) {
   if (!id) return;
   const previous = state.feedbackScreenshotPreviews?.[id];
   if (previous?.objectUrl && previous.objectUrl !== next?.objectUrl) {
-    URL.revokeObjectURL(previous.objectUrl);
+    revokeFeedbackPreviewUrl(previous.objectUrl);
   }
   state.feedbackScreenshotPreviews = {
     ...(state.feedbackScreenshotPreviews || {}),
@@ -1533,7 +1550,8 @@ async function fetchFeedbackScreenshotPreview(item) {
     const response = await apiRaw(API_PATHS.feedback.screenshot(id), { accept: 'image/*' });
     const blob = await response.blob();
     if (!blob || blob.size <= 0) throw new Error('Screenshot is empty.');
-    const objectUrl = URL.createObjectURL(blob);
+    const objectUrl = await blobToDataUrl(blob);
+    if (!objectUrl) throw new Error('Screenshot could not be converted for preview.');
     setFeedbackScreenshotPreview(id, { loading: false, error: '', objectUrl, contentType: blob.type || response.headers.get('Content-Type') || '' });
   } catch (error) {
     setFeedbackScreenshotPreview(id, { loading: false, error: toFriendlyErrorMessage(error, 'Screenshot could not be loaded.'), objectUrl: '' });
