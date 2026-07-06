@@ -3675,7 +3675,7 @@ function renderFeedbackNotificationCtaFields(modal, { defaultLabel = 'View feedb
   if (!modal.notificationCtaAction) modal.notificationCtaAction = defaultAction;
   const labelInput = el('input', {
     value: modal.notificationCtaLabel || defaultLabel,
-    maxlength: String(LIMITS.announcementCtaLabelMax),
+    maxlength: String(ADMIN_LIMITS.announcementCtaLabelMax),
     placeholder: defaultLabel,
   });
   labelInput.addEventListener('input', () => { modal.notificationCtaLabel = labelInput.value; });
