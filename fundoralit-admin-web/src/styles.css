@@ -3630,6 +3630,18 @@ summary:focus-visible {
   gap: 16px;
 }
 
+
+.collaboration-policy-status-card {
+  display: grid;
+  gap: 12px;
+  border-color: rgba(138, 208, 171, 0.28);
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.72), rgba(255, 255, 255, 0.96));
+}
+
+.collaboration-policy-status-card .meta-grid {
+  margin-top: 0;
+}
+
 .emergency-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -3709,7 +3721,19 @@ summary:focus-visible {
 }
 
 @media (max-width: 760px) {
-  .emergency-grid {
+  
+.collaboration-policy-status-card {
+  display: grid;
+  gap: 12px;
+  border-color: rgba(138, 208, 171, 0.28);
+  background: linear-gradient(180deg, rgba(236, 253, 245, 0.72), rgba(255, 255, 255, 0.96));
+}
+
+.collaboration-policy-status-card .meta-grid {
+  margin-top: 0;
+}
+
+.emergency-grid {
     grid-template-columns: 1fr;
   }
 

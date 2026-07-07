@@ -127,6 +127,7 @@ const API_PATHS = {
     delete: (id) => `/api/admin/rate-limit-overrides/${encodeURIComponent(id)}`,
   },
   collaborationPolicy: {
+    status: '/api/admin/collaboration-policy/cache/status',
     clearCache: '/api/admin/collaboration-policy/cache/clear',
   },
   smartCaptureRules: {
@@ -2850,6 +2851,7 @@ async function loadEmergencyConsoleData(loadRequest) {
     api(API_PATHS.auditLogs.list, { params: { page: 0, size: 10 } }).catch((error) => ({ content: [], loadError: toFriendlyErrorMessage(error) })),
     api(API_PATHS.mobilePolicy.current, { params: { platform: 'WEB', appVersion: 'admin-web', buildNumber: 'admin-web', plan: 'PRO', rolloutSeed: 'admin-web' } }).catch((error) => ({ loadError: toFriendlyErrorMessage(error) })),
     api(API_PATHS.mobilePolicy.revision, { params: { platform: 'WEB', appVersion: 'admin-web', buildNumber: 'admin-web', plan: 'PRO', rolloutSeed: 'admin-web' } }).catch((error) => ({ loadError: toFriendlyErrorMessage(error) })),
+    loadCollaborationPolicyCacheStatus(),
   ]);
 
   const read = (index, fallback) => results[index].status === 'fulfilled' ? results[index].value : fallback;
@@ -2862,7 +2864,7 @@ async function loadEmergencyConsoleData(loadRequest) {
   const loadErrors = results
     .map((result, index) => result.status === 'rejected' ? `Section ${index + 1}: ${toFriendlyErrorMessage(result.reason)}` : '')
     .filter(Boolean);
-  [smartActive, ocrActive, auditsPayload, read(5, {}), read(6, {})].forEach((payload) => {
+  [smartActive, ocrActive, auditsPayload, read(5, {}), read(6, {}), read(7, {})].forEach((payload) => {
     if (payload?.loadError) loadErrors.push(payload.loadError);
   });
 
@@ -2883,6 +2885,7 @@ async function loadEmergencyConsoleData(loadRequest) {
     recentCriticalChanges,
     mobilePolicy: normalizeAdminObjectResponse(read(5, {})),
     mobilePolicyRevision: normalizeAdminObjectResponse(read(6, {})),
+    collaborationPolicyStatus: normalizeAdminObjectResponse(read(7, {})),
     loadErrors,
     page: 0,
     size: featureFlags.length,
@@ -2978,6 +2981,65 @@ function openEmergencyRuleActionModal(rule, action) {
     password: '',
   };
   render();
+}
+
+
+async function loadCollaborationPolicyCacheStatus() {
+  if (!collaborationApiBaseUrl) {
+    return {
+      skipped: true,
+      status: 'not_configured',
+      policySource: 'admin_web_not_configured',
+      loadError: 'Collaboration API base URL is not configured. Add collaborationApiBaseUrl to inspect policy cache status.',
+    };
+  }
+  try {
+    const status = await api(API_PATHS.collaborationPolicy.status, { service: 'collaboration' });
+    return normalizeAdminObjectResponse(status);
+  } catch (error) {
+    return {
+      status: 'status_unavailable',
+      policySource: 'admin_web_status_fetch_failed',
+      loadError: toFriendlyErrorMessage(error),
+    };
+  }
+}
+
+function collaborationPolicyStatusLabel(status = {}) {
+  if (status.skipped || status.status === 'not_configured') return { text: 'Not configured', tone: 'neutral' };
+  if (status.loadError) return { text: 'Status unavailable', tone: 'warn' };
+  if (status.dataPlaneMaintenanceEnabled === true) return { text: 'Write blocked', tone: 'danger' };
+  if (status.staleWriteStopSanitized === true) return { text: 'Fail-open sanitized', tone: 'warn' };
+  if (status.failOpenDataPlane === true) return { text: 'Fail-open active', tone: 'warn' };
+  if (status.fresh === true) return { text: 'Fresh', tone: 'success' };
+  if (status.controlPlaneStale === true) return { text: 'Stale safe', tone: 'warn' };
+  return { text: status.status || 'Unknown', tone: 'neutral' };
+}
+
+function formatSecondsAge(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds < 0) return '-';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${Math.round(seconds % 60)}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+async function refreshCollaborationPolicyStatusOnly() {
+  if (!state.data) state.data = {};
+  state.actionLoadingKey = 'collaboration_policy_status';
+  state.error = '';
+  render();
+  try {
+    state.data.collaborationPolicyStatus = await loadCollaborationPolicyCacheStatus();
+    state.actionLoadingKey = '';
+    render();
+  } catch (error) {
+    state.actionLoadingKey = '';
+    setMessage(error, true);
+    render();
+  }
 }
 
 async function clearCollaborationPolicyCache(reason = '', options = {}) {
@@ -6815,6 +6877,83 @@ async function submitAnnouncementModal() {
   }
 }
 
+
+function renderCollaborationPolicyStatusCard() {
+  const status = state.data?.collaborationPolicyStatus || {};
+  const label = collaborationPolicyStatusLabel(status);
+  const loading = state.actionLoadingKey === 'collaboration_policy_status';
+  const clearDisabled = !collaborationApiBaseUrl || state.loading || loading;
+  const statusHint = status.dataPlaneMaintenanceEnabled === true
+    ? 'Write APIs are blocked because a fresh trusted policy explicitly enabled maintenance/read-only.'
+    : status.staleWriteStopSanitized === true
+      ? 'A stale maintenance/write-stop flag was detected and sanitized, so normal CRUD stays available while Core policy refreshes.'
+      : status.failOpenDataPlane === true
+        ? 'Core policy is unavailable or stale. Collaboration data-plane is fail-open for normal CRUD and will retry in the background.'
+        : 'Fresh policy is available. Admin changes still require cache clear or TTL refresh to propagate quickly.';
+
+  return el('section', { class: 'card collaboration-policy-status-card' }, [
+    el('div', { class: 'emergency-card-head' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Collaboration policy cache' }),
+        el('h3', { text: 'Data-plane write gate status' }),
+      ]),
+      el('span', { class: `badge ${label.tone}`, text: label.text }),
+    ]),
+    el('p', { class: 'muted', text: statusHint }),
+    status.loadError ? el('div', { class: 'notice warning inline-notice', text: status.loadError }) : null,
+    renderMetaGrid([
+      ['Status code', status.status || '-'],
+      ['Policy source', status.policySource || status.policy_source || '-'],
+      ['Fresh Core policy', status.fresh === true ? 'Yes' : 'No'],
+      ['Write stop trusted', status.writeStopTrusted === true ? 'Yes' : 'No'],
+      ['Fail-open data-plane', status.failOpenDataPlane === true ? 'Yes' : 'No'],
+      ['Stale write-stop sanitized', status.staleWriteStopSanitized === true ? 'Yes' : 'No'],
+      ['Maintenance read-only', status.dataPlaneMaintenanceEnabled === true ? 'ON' : 'OFF'],
+      ['Group Event write', status.dataPlaneGroupEventWriteEnabled === false ? 'Blocked' : 'Allowed'],
+      ['Group Event upload', status.dataPlaneGroupEventUploadEnabled === false ? 'Blocked' : 'Allowed'],
+      ['Group Goal write', status.dataPlaneGroupGoalWriteEnabled === false ? 'Blocked' : 'Allowed'],
+      ['Cached at', formatDate(status.cachedAt)],
+      ['Cache age', formatSecondsAge(status.cacheAgeSeconds)],
+      ['Last fetch failed', formatDate(status.lastFetchFailedAt)],
+      ['Failure age', formatSecondsAge(status.lastFetchFailureAgeSeconds)],
+      ['Refresh in flight', status.refreshInFlight === true ? 'Yes' : 'No'],
+      ['Cache TTL', formatSecondsAge(status.cacheTtlSeconds)],
+      ['Failure backoff', formatSecondsAge(status.failureBackoffSeconds)],
+      ['Stale write-stop window', formatSecondsAge(status.staleControlPlaneMaxSeconds)],
+      ['Config version', status.configVersion || '-'],
+    ]),
+    el('div', { class: 'actions' }, [
+      el('button', {
+        class: 'btn ghost small',
+        text: loading ? 'Refreshing status...' : 'Refresh status',
+        disabled: loading || state.loading || !collaborationApiBaseUrl,
+        onclick: refreshCollaborationPolicyStatusOnly,
+      }),
+      el('button', {
+        class: 'btn ghost small',
+        text: collaborationApiBaseUrl ? 'Clear cache + reload status' : 'Cache clear not configured',
+        disabled: clearDisabled,
+        onclick: async () => {
+          state.loading = true;
+          state.error = '';
+          render();
+          try {
+            const password = window.prompt('Enter admin password to re-authenticate before clearing collaboration cache.') || '';
+            await reauthenticateAdminForCriticalAction(password);
+            const result = await clearCollaborationPolicyCache('Manual emergency console cache clear from status panel.', { forceTokenRefresh: true });
+            setMessage(result.message);
+            await loadData({ force: true });
+          } catch (error) {
+            setMessage(error, true);
+            state.loading = false;
+            render();
+          }
+        },
+      }),
+    ]),
+  ]);
+}
+
 function renderEmergencyConsole() {
   const loadErrors = state.data?.loadErrors || [];
   const mobilePolicy = state.data?.mobilePolicy || {};
@@ -6837,6 +6976,7 @@ function renderEmergencyConsole() {
       ['Changed keys', formatChangedKeys(mobilePolicyRevision.changedKeys || mobilePolicyRevision.changed_keys || mobilePolicy.changedKeys || mobilePolicy.changed_keys)],
       ['Collaboration cache clear', collaborationApiBaseUrl ? 'Available' : 'Skipped until collaborationApiBaseUrl is configured'],
     ]),
+    renderCollaborationPolicyStatusCard(),
     el('div', { class: 'emergency-grid' }, EMERGENCY_MODULES.map(renderEmergencyModuleCard)),
     renderEmergencyRulesSection(),
     renderRecentCriticalChanges(),
