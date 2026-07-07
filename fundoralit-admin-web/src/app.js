@@ -1089,7 +1089,7 @@ const NAV_GROUPS = [
       { id: 'learningConsole', label: 'Learning Console', helper: 'Central AI ops', description: 'Centralized learning console for overview, review queue, template families, rules, jobs, housekeeping, safety switches, and future evaluation.', info: 'Use this single workflow surface instead of opening a new top-level page for every learning source. Old learning pages remain available for compatibility while this console reuses their existing actions.' },
       { id: 'smartCaptureRules', label: 'Global Learning Review', helper: 'Smart Capture + OCR + Statement Import', description: 'Review privacy-safe anonymous Smart Capture, OCR, and Statement Import rule candidates before activation.', info: 'One review surface handles Smart Capture, OCR Receipt, OCR Financial List, OCR Handwritten, and Statement Import candidates. Only aggregate hashes, counters, and safe distributions are shown; no notification text, OCR text, merchant, payee, payer, counterparty, exact amount, account/card number, receipt id, image URL, embedding, or vector is displayed.' },
       { id: 'learningOps', label: 'Learning Ops', helper: 'Learning health', description: 'Monitor Smart Capture, OCR learning, and Shadow ML without heavy API calls.', info: 'Overview uses cached backend snapshots and one lightweight API call. Manual jobs are protected by cooldown, row limits, and single-flight lock so Render free is not overloaded.' },
-      { id: 'learningHousekeeping', label: 'System Housekeeping', helper: 'Retention control', description: 'View all retention and cleanup settings, trigger safe housekeeping jobs, and manage learning-version cleanup from one centralized operations surface.', info: 'Retention values come from backend env/config. Use safe jobs for normal cleanup and dry-run before any learning version deletion. Active rules, pending candidates, latest protected versions, recent events, and open support records are protected.' },
+      { id: 'learningHousekeeping', label: 'System Housekeeping', helper: 'Retention control', description: 'View all retention and cleanup settings, trigger safe housekeeping jobs, and manage learning-version cleanup from one centralized operations surface.', info: 'Retention values come from Product Policy housekeeping_policy with env fallback. Use safe jobs for normal cleanup and dry-run before any learning version deletion. Active rules, pending candidates, latest protected versions, recent events, and open support records are protected.' },
       { id: 'templateFamilies', label: 'Template Families', helper: 'Similarity + hidden feedback', description: 'Track Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern, and Category learning family candidates, 3-month hidden feedback windows, auto-merge decisions, rollback and split records.', info: 'High-confidence family candidates can auto-approve or auto-reject from 3-month hidden shadow feedback. Admin reviews inconclusive or unstable families only.' },
     ],
   },
@@ -5401,6 +5401,7 @@ function renderProductPolicyItem(item) {
 function getProductPolicyHint(key) {
   const normalized = String(key || '').toLowerCase();
   if (normalized.includes('smart_capture')) return 'Controls Smart Capture parser thresholds, review policy, internal transfer handling, and future provider profile versions. Do not store raw notification text here.';
+  if (normalized.includes('housekeeping')) return 'Controls production retention days used by System Housekeeping. Runtime cleanup reads this policy first and falls back to env only if the row is absent or invalid.';
   if (normalized.includes('collaboration_plan')) return 'Controls group event and group goal plan behavior. Keep Free at 2 events, 5 members, 30 expenses, 0 receipt uploads, 15 day retention, and 1 active group goal with 3 members unless intentionally changing the product policy.';
   if (normalized.includes('cloud')) return 'Controls backup/recovery kill switches and safe restore defaults. Use carefully because restore behavior affects user data safety.';
   if (normalized.includes('group')) return 'Controls cloud collaboration limits such as participants, expenses, receipt uploads, retention, and invite behavior.';
@@ -7619,10 +7620,11 @@ async function loadLearningHousekeepingData(loadRequest = null) {
   state.learningHousekeeping.error = '';
   state.systemHousekeeping.error = '';
   try {
-    const [domainsResult, runsResult, overviewResult] = await Promise.allSettled([
+    const [domainsResult, runsResult, overviewResult, policiesResult] = await Promise.allSettled([
       api(API_PATHS.learningHousekeeping.domains),
       api(API_PATHS.learningHousekeeping.runs, { params: { limit: 20 } }),
       api(API_PATHS.housekeeping.overview),
+      api(API_PATHS.productPolicies.list),
     ]);
     if (!isLoadRequestCurrent(request)) return;
     if (domainsResult.status === 'rejected' && overviewResult.status === 'rejected') {
@@ -7631,13 +7633,16 @@ async function loadLearningHousekeepingData(loadRequest = null) {
     const domains = domainsResult.status === 'fulfilled' ? normalizeLearningHousekeepingDomains(domainsResult.value) : [];
     const runs = runsResult.status === 'fulfilled' ? normalizeAdminListResponse(runsResult.value) : [];
     const overview = overviewResult.status === 'fulfilled' ? (overviewResult.value || null) : null;
+    const policies = policiesResult.status === 'fulfilled' ? normalizeAdminListResponse(policiesResult.value) : [];
+    const systemHousekeepingPolicy = policies.find((policy) => getPolicyKey(policy) === 'housekeeping_policy') || null;
     const warnings = [];
     if (domainsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(domainsResult.reason, 'Learning housekeeping domains failed to load.'));
     if (runsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(runsResult.reason, 'Learning housekeeping run history failed to load.'));
     if (overviewResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(overviewResult.reason, 'System housekeeping overview failed to load.'));
+    if (policiesResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(policiesResult.reason, 'Housekeeping product policy failed to load. Retention editing will open Product Policy instead.'));
     state.learningHousekeeping.error = warnings.join(' ');
     state.systemHousekeeping.error = warnings.join(' ');
-    setScopedData({ content: domains, runs, systemOverview: overview, loadError: warnings.join(' ') }, request);
+    setScopedData({ content: domains, runs, systemOverview: overview, systemHousekeepingPolicy, loadError: warnings.join(' ') }, request);
   } catch (error) {
     if (!isLoadRequestCurrent(request)) return;
     const friendly = toFriendlyErrorMessage(error, 'Failed to load System Housekeeping data.');
@@ -7817,11 +7822,108 @@ function normalizeHousekeepingOverview() {
   return scoped.systemOverview || { retentionSettings: [], cleanupJobs: [], globalEnabled: false, learningHousekeepingEnabled: false };
 }
 
+const HOUSEKEEPING_POLICY_FIELD_RANGES = {
+  personalDeletedDays: { min: 1, max: 3650, unit: 'days' },
+  auditLogDays: { min: 30, max: 3650, unit: 'days' },
+  smartCaptureDays: { min: 7, max: 365, unit: 'days' },
+  cloudBackupDays: { min: 1, max: 3650, unit: 'days' },
+  subscriptionSupportClosedRequestDays: { min: 30, max: 3650, unit: 'days' },
+  subscriptionSupportApplyFailedRequestDays: { min: 1, max: 365, unit: 'days' },
+  learningEventRetentionDays: { min: 7, max: 3650, unit: 'days' },
+  learningRejectedCandidateRetentionDays: { min: 7, max: 3650, unit: 'days' },
+  learningInactiveRuleRetentionDays: { min: 30, max: 3650, unit: 'days' },
+  learningAggregateRetentionDays: { min: 30, max: 3650, unit: 'days' },
+  learningProtectedLatestRuleVersions: { min: 1, max: 50, unit: 'versions' },
+};
+
+function getHousekeepingProductPolicy() {
+  const scoped = getScopedData() || {};
+  return scoped.systemHousekeepingPolicy || null;
+}
+
+function housekeepingPolicyValue(policy) {
+  return parseMaybeJsonObject(policy?.valueJson ?? policy?.value_json ?? policy?.value);
+}
+
+function housekeepingPolicyFieldForSetting(setting) {
+  const key = String(setting?.key || '').trim();
+  if (key === 'feedbackStatusAndNotifications') return 'personalDeletedDays';
+  return HOUSEKEEPING_POLICY_FIELD_RANGES[key] ? key : '';
+}
+
+function housekeepingPolicyFieldLabel(field) {
+  if (!field) return 'retention value';
+  return field.replace(/([A-Z])/g, ' $1').replace(/^./, (value) => value.toUpperCase());
+}
+
+function openHousekeepingProductPolicy() {
+  state.adminFilters.productPolicyKey = 'housekeeping_policy';
+  setActiveTab('productPolicies');
+}
+
+async function updateHousekeepingRetentionSetting(setting) {
+  const policy = getHousekeepingProductPolicy();
+  if (!policy || !getItemId(policy)) {
+    setMessage('housekeeping_policy is not loaded. Opening Product Policy so you can review the row.', true);
+    openHousekeepingProductPolicy();
+    return;
+  }
+  const field = housekeepingPolicyFieldForSetting(setting);
+  const range = HOUSEKEEPING_POLICY_FIELD_RANGES[field];
+  if (!field || !range) {
+    setMessage('This housekeeping value is informational only. Edit the full housekeeping_policy JSON from Product Policy if needed.', true);
+    return;
+  }
+  const currentPolicyValue = housekeepingPolicyValue(policy);
+  const current = currentPolicyValue[field] ?? setting?.retentionDays ?? '';
+  const raw = window.prompt(`Set ${housekeepingPolicyFieldLabel(field)} (${range.unit}, ${range.min}-${range.max}).`, String(current));
+  if (raw === null) return;
+  const parsed = parseWholeNumber(raw, housekeepingPolicyFieldLabel(field), { min: range.min, max: range.max });
+  if (!parsed.ok) {
+    setMessage(parsed.message, true);
+    return;
+  }
+  const reason = window.prompt(`Reason for updating ${field}?`, `Adjust housekeeping retention ${field} from System Housekeeping`) || '';
+  if (reason.trim().length < 10) {
+    setMessage('Housekeeping retention update requires a 10+ character reason.', true);
+    return;
+  }
+  const confirmPhrase = window.prompt('Type UPDATE PRODUCT POLICY to continue.') || '';
+  if (confirmPhrase !== 'UPDATE PRODUCT POLICY') {
+    setMessage('Housekeeping retention update cancelled because confirmation phrase did not match.', true);
+    return;
+  }
+  const nextValue = { ...currentPolicyValue, version: Math.max(2, Number(currentPolicyValue.version || 1)), [field]: parsed.value };
+  state.systemHousekeeping.actionLoading = `POLICY:${field}`;
+  render();
+  try {
+    await api(API_PATHS.productPolicies.update(getItemId(policy)), {
+      method: 'PATCH',
+      body: {
+        enabled: policy.enabled !== false,
+        platform: policy.platform || 'SERVER',
+        minAppVersion: policy.minAppVersion || policy.min_app_version || null,
+        value: nextValue,
+        ...criticalActionFields(reason.trim(), confirmPhrase, 'update_housekeeping_policy'),
+      },
+      forceTokenRefresh: true,
+    });
+    setMessage(`${housekeepingPolicyFieldLabel(field)} updated to ${parsed.value} ${range.unit}.`);
+    await loadLearningHousekeepingData();
+  } catch (error) {
+    setMessage(toFriendlyErrorMessage(error, 'Housekeeping retention update failed.'), true);
+  } finally {
+    state.systemHousekeeping.actionLoading = '';
+    render();
+  }
+}
+
 function retentionSettingValue(setting) {
   if (!setting) return '-';
   if (setting.enabled === false) return 'Disabled';
   if (setting.retentionDays === undefined || setting.retentionDays === null) return '-';
-  return `${setting.retentionDays} day${Number(setting.retentionDays) === 1 ? '' : 's'}`;
+  const unit = String(setting.key || '') === 'learningProtectedLatestRuleVersions' ? 'version' : 'day';
+  return `${setting.retentionDays} ${unit}${Number(setting.retentionDays) === 1 ? '' : 's'}`;
 }
 
 function renderSystemHousekeepingSettingCard(setting) {
@@ -7836,9 +7938,17 @@ function renderSystemHousekeepingSettingCard(setting) {
     renderLearningOpsMetricRows([
       ['Retention', retentionSettingValue(setting), setting.source || 'Backend retention config'],
       ['Env key', setting.envKey || '-'],
-      ['Managed by', setting.managedBy || 'DataRetentionProperties'],
+      ['Managed by', setting.managedBy || 'HousekeepingPolicyService'],
     ]),
     setting.description ? el('p', { class: 'muted section-helper', text: setting.description }) : null,
+    el('div', { class: 'button-row wrap' }, [
+      el('button', {
+        class: 'btn ghost small',
+        text: state.systemHousekeeping.actionLoading === `POLICY:${housekeepingPolicyFieldForSetting(setting)}` ? 'Updating...' : 'Edit retention',
+        disabled: Boolean(state.systemHousekeeping.actionLoading),
+        onclick: () => updateHousekeepingRetentionSetting(setting),
+      }),
+    ]),
   ]);
 }
 
@@ -7993,17 +8103,22 @@ function renderSystemHousekeepingOverview() {
         el('div', {}, [el('p', { class: 'eyebrow', text: 'System housekeeping contract' }), el('h3', { text: 'Single retention control surface' })]),
         el('span', { class: overview.globalEnabled === false ? 'status-pill danger' : 'status-pill success', text: overview.globalEnabled === false ? 'Global disabled' : 'Global enabled' }),
       ]),
-      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values still come from backend config/env. Schedule time can be overridden by Super Admin from this page and is used by the dynamic backend scheduler.' }),
+      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values are runtime-backed by Product Policy housekeeping_policy with safe env fallback. Schedule time can be overridden by Super Admin from this page and is used by the dynamic backend scheduler.' }),
       renderLearningOpsMetricRows([
         ['Timezone', overview.timezone || 'Asia/Kuala_Lumpur'],
         ['Data retention schedule', (jobs.find((job) => job.target === 'DATA_RETENTION') || {}).schedule || 'Daily at 03:30 MYT'],
         ['Learning housekeeping', overview.learningHousekeepingEnabled === false ? 'Disabled' : 'Enabled'],
       ]),
+      el('div', { class: 'button-row wrap' }, [
+        el('button', { class: 'btn secondary small', text: 'Edit housekeeping policy', onclick: () => { const policy = getHousekeepingProductPolicy(); policy ? openProductPolicyModal(policy) : openHousekeepingProductPolicy(); } }),
+        el('button', { class: 'btn ghost small', text: 'Open Product Policy', onclick: openHousekeepingProductPolicy }),
+      ]),
     ]),
     state.systemHousekeeping.lastRun ? renderSystemHousekeepingLastRun(state.systemHousekeeping.lastRun) : null,
     el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
-        el('div', {}, [el('p', { class: 'eyebrow', text: 'Retention settings' }), el('h3', { text: 'Current backend values' })]),
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Retention settings' }), el('h3', { text: 'Current runtime values' })]),
+        el('button', { class: 'btn ghost small', text: 'Edit JSON', onclick: () => { const policy = getHousekeepingProductPolicy(); policy ? openProductPolicyModal(policy) : openHousekeepingProductPolicy(); } }),
       ]),
       settings.length ? el('div', { class: 'control-dashboard-grid' }, settings.map(renderSystemHousekeepingSettingCard)) : renderEmptyState('No retention settings returned.', 'Check the backend /api/admin/housekeeping/overview endpoint.'),
     ]),
