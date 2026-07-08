@@ -12,10 +12,15 @@ const brandLogoSrc = config.brandLogoSrc || './src/assets/fundora-logo.png';
 const FIREBASE_TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 const ADMIN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const ADMIN_ABSOLUTE_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+const ADMIN_SESSION_MONITOR_INTERVAL_MS = 15 * 1000;
+const ADMIN_ACTIVITY_THROTTLE_MS = 5 * 1000;
 const FIREBASE_IDENTITY_TOOLKIT_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
 const FIREBASE_SECURE_TOKEN_BASE_URL = 'https://securetoken.googleapis.com/v1';
 let memoryAuthSession = null;
 let lastAdminActivityAt = Date.now();
+let lastAdminActivityWriteAt = 0;
+let adminSessionMonitorId = null;
+let sessionExpiryHandling = false;
 
 // Centralized admin API path presets.
 // Keep all backend route links here so future backend changes only need one small update.
@@ -1281,6 +1286,150 @@ function getStoredAuthSession() {
   return null;
 }
 
+function resetAdminActivityClock(now = Date.now()) {
+  lastAdminActivityAt = now;
+  lastAdminActivityWriteAt = 0;
+}
+
+function isAdminPageVisible() {
+  if (typeof document === 'undefined') return true;
+  const visible = document.visibilityState !== 'hidden';
+  const focused = typeof document.hasFocus === 'function' ? document.hasFocus() : visible;
+  return visible && focused;
+}
+
+function getAdminSessionExpiryReason(session = memoryAuthSession, now = Date.now()) {
+  if (!session) return 'missing';
+  if (now - Number(lastAdminActivityAt || now) > ADMIN_IDLE_TIMEOUT_MS) return 'idle';
+  if (now - Number(session.signedInAt || now) > ADMIN_ABSOLUTE_TIMEOUT_MS) return 'absolute';
+  return '';
+}
+
+function buildAdminSessionExpiredNotice(reason = '') {
+  if (reason === 'idle') return 'Your admin session expired after being idle. You have been signed out safely. Please sign in again before continuing.';
+  if (reason === 'absolute') return 'Your admin session reached the maximum allowed duration. You have been signed out safely. Please sign in again.';
+  if (reason === 'server') return 'Your backend admin session expired or was revoked. You have been signed out safely. Please sign in again.';
+  if (reason === 'refresh') return 'Your Firebase admin token could not be refreshed. You have been signed out safely. Please sign in again.';
+  return 'Your admin session expired. You have been signed out safely. Please sign in again.';
+}
+
+function isAdminAuthFailure(errorOrMessage) {
+  const status = Number(errorOrMessage?.status || 0);
+  const raw = normalizedTrim(
+    errorOrMessage?.payload?.message
+    || errorOrMessage?.payload?.error
+    || errorOrMessage?.payload?.code
+    || errorOrMessage?.message
+    || errorOrMessage
+  ).toLowerCase();
+  return status === 401
+    || raw.includes('session expired')
+    || raw.includes('admin session expired')
+    || raw.includes('token expired')
+    || raw.includes('invalid_refresh_token')
+    || raw.includes('invalid refresh token')
+    || raw.includes('user token expired')
+    || raw.includes('id token has expired')
+    || raw.includes('please sign in first');
+}
+
+function stopAdminSessionMonitor() {
+  if (adminSessionMonitorId) {
+    window.clearInterval(adminSessionMonitorId);
+    adminSessionMonitorId = null;
+  }
+}
+
+function checkAdminSessionDeadline(source = 'monitor') {
+  if (!state.user || !memoryAuthSession) {
+    stopAdminSessionMonitor();
+    return false;
+  }
+  const reason = getAdminSessionExpiryReason(memoryAuthSession);
+  if (!reason) return false;
+  handleAdminSessionExpired(reason, { source });
+  return true;
+}
+
+function startAdminSessionMonitor() {
+  stopAdminSessionMonitor();
+  if (!state.user || !memoryAuthSession) return;
+  adminSessionMonitorId = window.setInterval(() => checkAdminSessionDeadline('interval'), ADMIN_SESSION_MONITOR_INTERVAL_MS);
+}
+
+function recordAdminActivity({ force = false } = {}) {
+  if (!state.user || !memoryAuthSession) return;
+  const now = Date.now();
+  if (!force && now - lastAdminActivityWriteAt < ADMIN_ACTIVITY_THROTTLE_MS) return;
+  lastAdminActivityAt = now;
+  lastAdminActivityWriteAt = now;
+}
+
+function resetSignedInRuntimeState() {
+  invalidateLoadRequests();
+  state.adminSession = null;
+  state.modal = null;
+  state.navOpen = false;
+  state.loading = false;
+  state.analyticsLoading = false;
+  state.analyticsError = '';
+  state.analyticsRangeNotice = '';
+  state.feedbackOptions = null;
+  clearFeedbackScreenshotPreviews();
+  state.feedbackScreenshotAutoLoadScheduled = false;
+  state.feedbackScreenshotAutoLoading = false;
+  state.expandedItemIds = {};
+  state.actionLoadingKey = '';
+  state.actionLoadingMessage = '';
+  state.activeDataCacheMeta = null;
+  state.data = null;
+  state.tabDataCache = {};
+  state.learningOps = {
+    overview: null,
+    jobs: [],
+    jobsLoaded: false,
+    jobsLoading: false,
+    showRunHistory: false,
+    actionLoading: '',
+    jobResult: null,
+    overviewError: '',
+    jobsError: '',
+  };
+  state.learningHousekeeping = {
+    actionLoading: '',
+    lastPlan: null,
+    error: '',
+  };
+  state.systemHousekeeping = {
+    actionLoading: '',
+    lastRun: null,
+    error: '',
+  };
+  state.learningTemplateFamilies = {
+    actionLoading: '',
+    error: '',
+  };
+  state.analyticsData = {
+    overview: null,
+    retention: null,
+    funnel: null,
+    features: null,
+    invites: null,
+    smartCapture: null,
+    conversion: null,
+  };
+  try { closeAllInfoHints(); } catch (_) {}
+}
+
+function handleAdminSessionExpired(reason = 'expired', { source = 'unknown', visible } = {}) {
+  if (sessionExpiryHandling) return;
+  sessionExpiryHandling = true;
+  const shouldPrompt = visible !== undefined ? Boolean(visible) : isAdminPageVisible();
+  const notice = shouldPrompt ? buildAdminSessionExpiredNotice(reason) : '';
+  signOutAdmin({ notice, isError: Boolean(notice), reason, source });
+  sessionExpiryHandling = false;
+}
+
 
 function normalizeAdminRole(role) {
   return String(role || '').trim().toUpperCase();
@@ -1311,7 +1460,7 @@ function adminRoleClass(role) {
 function saveAuthSession(session) {
   memoryAuthSession = {
     ...(session || {}),
-    signedInAt: session?.signedInAt || Date.now(),
+    signedInAt: Number(session?.signedInAt || 0) || Date.now(),
   };
 }
 
@@ -1320,13 +1469,15 @@ function clearAuthSession() {
 }
 
 function normalizeSignInSession(response, existing = {}) {
+  const now = Date.now();
   const expiresInMs = Math.max(0, Number(response.expiresIn || response.expires_in || 3600)) * 1000;
   return {
     idToken: response.idToken || response.id_token || response.access_token || existing.idToken || '',
     refreshToken: response.refreshToken || response.refresh_token || existing.refreshToken || '',
     email: response.email || existing.email || '',
     localId: response.localId || response.local_id || response.user_id || existing.localId || '',
-    expiresAt: Date.now() + expiresInMs,
+    expiresAt: now + expiresInMs,
+    signedInAt: Number(existing.signedInAt || 0) || now,
   };
 }
 
@@ -1346,8 +1497,9 @@ function applyAuthSession(session) {
     return null;
   }
   saveAuthSession(session);
-  lastAdminActivityAt = Date.now();
-  state.user = createFirebaseRestUser(session);
+  resetAdminActivityClock();
+  state.user = createFirebaseRestUser(memoryAuthSession);
+  startAdminSessionMonitor();
   return state.user;
 }
 
@@ -1369,17 +1521,11 @@ async function signInAdminWithPassword(email, password, { persist = true } = {})
 }
 
 function assertSessionActive(session = memoryAuthSession) {
-  if (!session) throw new Error('Your admin session expired. Please sign in again.');
-  const now = Date.now();
-  if (now - lastAdminActivityAt > ADMIN_IDLE_TIMEOUT_MS) {
-    clearAuthSession();
-    throw new Error('Your admin session expired after being idle. Please sign in again.');
+  const reason = getAdminSessionExpiryReason(session);
+  if (reason) {
+    handleAdminSessionExpired(reason, { source: 'assert-session-active' });
+    throw new Error(buildAdminSessionExpiredNotice(reason));
   }
-  if (now - Number(session.signedInAt || now) > ADMIN_ABSOLUTE_TIMEOUT_MS) {
-    clearAuthSession();
-    throw new Error('Your admin session reached the maximum duration. Please sign in again.');
-  }
-  lastAdminActivityAt = now;
 }
 
 async function refreshFirebaseAuthSession(existing = memoryAuthSession) {
@@ -1389,15 +1535,26 @@ async function refreshFirebaseAuthSession(existing = memoryAuthSession) {
     grant_type: 'refresh_token',
     refresh_token: existing.refreshToken,
   }).toString();
-  const response = await firebaseFormRequest(FIREBASE_SECURE_TOKEN_BASE_URL, 'token', body);
+  let response;
+  try {
+    response = await firebaseFormRequest(FIREBASE_SECURE_TOKEN_BASE_URL, 'token', body);
+  } catch (error) {
+    handleAdminSessionExpired('refresh', { source: 'token-refresh-failed' });
+    throw error;
+  }
   const session = normalizeSignInSession(response, existing);
-  if (!session.idToken || !session.refreshToken) throw new Error('Firebase did not return a refreshed admin token.');
+  if (!session.idToken || !session.refreshToken) {
+    handleAdminSessionExpired('refresh', { source: 'token-refresh-invalid' });
+    throw new Error('Firebase did not return a refreshed admin token.');
+  }
   applyAuthSession(session);
   return session;
 }
 
 async function restoreAuthSession() {
+  stopAdminSessionMonitor();
   clearAuthSession();
+  resetAdminActivityClock();
   state.user = null;
   state.adminSession = null;
   return null;
@@ -1413,24 +1570,16 @@ async function getFirebaseRestIdToken(forceRefresh = false) {
   return refreshed.idToken;
 }
 
-async function signOutAdmin() {
-  invalidateLoadRequests();
+function signOutAdmin({ notice = '', isError = false } = {}) {
+  stopAdminSessionMonitor();
   clearAuthSession();
+  resetAdminActivityClock();
   state.user = null;
-  state.adminSession = null;
+  resetSignedInRuntimeState();
   clearScopedData(state.activeTab);
-  state.loading = false;
-  state.analyticsLoading = false;
-  state.feedbackOptions = null;
-  clearFeedbackScreenshotPreviews();
-  state.feedbackScreenshotAutoLoadScheduled = false;
-  state.feedbackScreenshotAutoLoading = false;
-  state.expandedItemIds = {};
-  state.actionLoadingKey = '';
-  state.actionLoadingMessage = '';
   clearAdminTabDataCache({ preserveMutationVersion: true });
-  state.message = '';
-  state.error = '';
+  state.message = isError ? '' : normalizedTrim(notice);
+  state.error = isError ? normalizedTrim(notice) : '';
   render();
 }
 
@@ -1563,12 +1712,17 @@ async function api(path, options = {}) {
   });
 
   if (response.status === 401 && options.forceTokenRefresh !== true) {
-    headers.Authorization = `Bearer ${await getToken(true)}`;
-    response = await fetch(url.toString(), {
-      method: options.method || 'GET',
-      headers,
-      body,
-    });
+    try {
+      headers.Authorization = `Bearer ${await getToken(true)}`;
+      response = await fetch(url.toString(), {
+        method: options.method || 'GET',
+        headers,
+        body,
+      });
+    } catch (error) {
+      if (isAdminAuthFailure(error)) handleAdminSessionExpired('refresh', { source: 'api-token-refresh' });
+      throw error;
+    }
   }
 
   const text = await response.text();
@@ -1582,6 +1736,10 @@ async function api(path, options = {}) {
     error.payload = json;
     error.service = service;
     error.url = url.toString();
+    if (isAdminAuthFailure(error)) {
+      error.message = buildAdminSessionExpiredNotice('server');
+      handleAdminSessionExpired('server', { source: 'api-response' });
+    }
     throw error;
   }
 
@@ -1621,11 +1779,16 @@ async function apiRaw(path, options = {}) {
   });
 
   if (response.status === 401 && options.forceTokenRefresh !== true) {
-    headers.Authorization = `Bearer ${await getToken(true)}`;
-    response = await fetch(url.toString(), {
-      method: options.method || 'GET',
-      headers,
-    });
+    try {
+      headers.Authorization = `Bearer ${await getToken(true)}`;
+      response = await fetch(url.toString(), {
+        method: options.method || 'GET',
+        headers,
+      });
+    } catch (error) {
+      if (isAdminAuthFailure(error)) handleAdminSessionExpired('refresh', { source: 'api-raw-token-refresh' });
+      throw error;
+    }
   }
 
   if (!response.ok) {
@@ -1638,6 +1801,10 @@ async function apiRaw(path, options = {}) {
     error.payload = json;
     error.service = service;
     error.url = url.toString();
+    if (isAdminAuthFailure(error)) {
+      error.message = buildAdminSessionExpiredNotice('server');
+      handleAdminSessionExpired('server', { source: 'api-raw-response' });
+    }
     throw error;
   }
 
@@ -2508,7 +2675,10 @@ function createAdminLoginForm({ className = 'login-grid', compact = false } = {}
     try {
       await signInAdminWithPassword(email.value, password.value);
       state.page = 0;
+      state.modal = null;
+      state.navOpen = false;
       clearScopedData(state.activeTab);
+      clearAdminTabDataCache({ preserveMutationVersion: true });
       state.message = '';
       state.error = '';
       await loadAdminSession();
@@ -9037,6 +9207,7 @@ async function boot() {
 }
 
 document.addEventListener('keydown', (event) => {
+  recordAdminActivity();
   if (event.key !== 'Escape') return;
   if (state.navOpen) {
     closeNavigation();
@@ -9047,6 +9218,22 @@ document.addEventListener('keydown', (event) => {
     return;
   }
   closeAllInfoHints();
+});
+
+['pointerdown', 'input', 'change'].forEach((eventName) => {
+  document.addEventListener(eventName, () => recordAdminActivity(), { capture: true, passive: true });
+});
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    checkAdminSessionDeadline('visibility-hidden');
+    return;
+  }
+  if (!checkAdminSessionDeadline('visibility-visible')) recordAdminActivity({ force: true });
+});
+
+window.addEventListener('focus', () => {
+  if (!checkAdminSessionDeadline('window-focus')) recordAdminActivity({ force: true });
 });
 
 document.addEventListener('click', (event) => {

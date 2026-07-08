@@ -4770,3 +4770,130 @@ body {
 .admin-role-status-checking {
   color: var(--muted);
 }
+
+/* Session expiry + small-screen UX hardening -------------------------------
+   Keep expired admin sessions obvious when the user is actively viewing the
+   web app, and keep dense admin screens usable on small phones. */
+.error,
+.success-msg,
+.notice {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px; /* prevent mobile browser zoom while typing */
+  }
+
+  .breadcrumb {
+    font-size: 0.72rem;
+    gap: 5px;
+  }
+
+  .page-context-bar {
+    padding: 10px 11px !important;
+    border-radius: 16px !important;
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+
+  .page-context-copy strong {
+    font-size: 0.92rem;
+    line-height: 1.18;
+  }
+
+  .page-context-copy span:last-child {
+    display: none;
+  }
+
+  .page-context-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .section-header-card,
+  .card,
+  .item,
+  .analytics-section,
+  .analytics-hero {
+    padding: 13px !important;
+  }
+
+  .modal-card,
+  .modal-card-wide {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+
+  .modal-body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 8px;
+  }
+
+  .modal-actions {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin-inline: -18px;
+    margin-bottom: -18px;
+    padding: 12px max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+    background: rgba(255, 255, 255, 0.96);
+    backdrop-filter: blur(12px);
+  }
+
+  .modal-head h2 {
+    font-size: clamp(18px, 6vw, 24px);
+  }
+
+  .admin-sidebar {
+    inset: 8px auto 8px 8px;
+    width: min(92vw, 360px) !important;
+    max-height: calc(100dvh - 16px);
+  }
+
+  .sidebar-nav {
+    gap: 8px;
+  }
+
+  .sidebar-link {
+    min-height: 46px;
+    border-radius: 14px;
+  }
+}
+
+@media (max-width: 420px) {
+  #mainContent {
+    padding-left: max(8px, env(safe-area-inset-left)) !important;
+    padding-right: max(8px, env(safe-area-inset-right)) !important;
+  }
+
+  .app-header.topbar {
+    padding-left: max(8px, env(safe-area-inset-left)) !important;
+    padding-right: max(8px, env(safe-area-inset-right)) !important;
+  }
+
+  .header-title-row,
+  .page-context-copy,
+  .item-summary-copy {
+    min-width: 0;
+  }
+
+  .item-summary-right,
+  .actions,
+  .compact-actions,
+  .pagination {
+    gap: 7px;
+  }
+
+  .badge,
+  .chip,
+  .mini-badge {
+    font-size: 0.72rem;
+  }
+}
