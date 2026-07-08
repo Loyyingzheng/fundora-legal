@@ -17,5 +17,5 @@ assert(app.includes('function renderSystemHousekeepingOverview()'), 'System Hous
 assert(app.includes('feedback status/notifications') || app.includes('feedback status, user notifications'), 'System Housekeeping copy must make feedback/user notification retention visible.');
 assert(app.includes('RUN SYSTEM HOUSEKEEPING'), 'Manual housekeeping controls must require an explicit confirmation phrase.');
 assert(app.includes('criticalActionFields(reason.trim(), confirmPhrase'), 'Manual housekeeping controls must send critical action fields.');
-assert(indexHtml.includes('app.js?v=20260708-plan-policy-field-error-v4'), 'Admin app runtime must be cache busted after System Housekeeping schedule fix.');
+assert(indexHtml.includes('app.js?v=20260708-other-tab-field-error-v5'), 'Admin app runtime must be cache busted after System Housekeeping schedule fix.');
 console.log('PASS admin system housekeeping audit');

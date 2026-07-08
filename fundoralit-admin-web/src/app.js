@@ -1088,6 +1088,41 @@ const MODAL_FIELD_ALIASES = {
   period: 'periodType',
   is_unlimited: 'unlimited',
   isUnlimited: 'unlimited',
+  route_group: 'routeGroup',
+  per_minute: 'perMinute',
+  expires_at: 'expiresAt',
+  title_en: 'titleEn',
+  title_zh: 'titleZh',
+  title_ms: 'titleMs',
+  message_en: 'messageEn',
+  message_zh: 'messageZh',
+  message_ms: 'messageMs',
+  display_mode: 'displayMode',
+  target_plan: 'targetPlan',
+  target_platform: 'targetPlatform',
+  start_at: 'startAt',
+  end_at: 'endAt',
+  cta_label_en: 'ctaLabelEn',
+  cta_label_zh: 'ctaLabelZh',
+  cta_label_ms: 'ctaLabelMs',
+  cta_action: 'ctaAction',
+  media_type: 'mediaType',
+  media_url: 'mediaUrl',
+  media_alt_text: 'mediaAltText',
+  value_json: 'valueJson',
+  rollout_percentage: 'rolloutPercentage',
+  min_app_version: 'minAppVersion',
+  max_app_version: 'maxAppVersion',
+  review_status: 'reviewStatus',
+  review_reason: 'reviewReason',
+  review_evidence: 'reviewEvidence',
+  credit_days: 'creditDays',
+  new_used_count: 'newUsedCount',
+  cooldown_days: 'cooldownDays',
+  max_prompt_count: 'maxPromptCount',
+  min_account_age_days: 'minAccountAgeDays',
+  min_positive_action_count: 'minPositiveActionCount',
+  group_invite_prompt_cooldown_days: 'groupInvitePromptCooldownDays',
 };
 
 function toCamelFieldKey(value) {
@@ -1119,10 +1154,19 @@ function inferModalFieldErrorsFromBackend(errorOrMessage, friendlyMessage) {
   const modal = state.modal || {};
   const text = `${friendlyMessage || ''} ${primitiveText(errorOrMessage?.message) || ''}`.toLowerCase();
   const inferred = {};
-  if (modal.kind === 'planPolicyValueEdit' && /plan policy value/.test(text) && /already exists|duplicate|unique/.test(text)) {
-    const duplicateMessage = 'This policy and plan already has a value. Use edit/update for the existing record instead of creating another one.';
-    inferred.policyKey = duplicateMessage;
-    inferred.planKey = duplicateMessage;
+  const duplicateLike = /already exists|duplicate|unique constraint|already been created|conflict/i.test(text);
+  if (duplicateLike) {
+    if (modal.kind === 'planPolicyValueEdit' && /plan policy value|policy value|value/.test(text)) {
+      const duplicateMessage = 'This policy and plan already has a value. Use edit/update for the existing record instead of creating another one.';
+      inferred.policyKey = duplicateMessage;
+      inferred.planKey = duplicateMessage;
+    } else if (modal.kind === 'policyDefinitionEdit') {
+      inferred.policyKey = 'This policy key already exists. Use edit/update for the existing policy definition instead of creating another one.';
+    } else if (modal.kind === 'subscriptionPlanEdit') {
+      inferred.planKey = 'This plan key already exists. Use edit/update for the existing subscription plan instead of creating another one.';
+    } else if (modal.kind === 'rateLimitOverrideEdit') {
+      inferred.routeGroup = 'This route group already has an override. Use edit/update for the existing override instead of creating another one.';
+    }
   }
   if (/audit reason/.test(text) || /critical action reason/.test(text)) {
     inferred.reason = friendlyMessage;
@@ -4969,6 +5013,80 @@ function isPlanPolicyValueRecordPresent(record) {
   return normalized.status && normalizeMatrixStatus(normalized.status) !== 'MISSING_VALUE';
 }
 
+function findExistingPolicyDefinitionRecord(policyKey) {
+  const target = normalizedTrim(policyKey);
+  if (!target) return null;
+  return (state.data?.policyDefinitions || [])
+    .map((item) => normalizePolicyDefinitionItem(item))
+    .find((item) => item.policyKey === target) || null;
+}
+
+function applyPolicyDefinitionRecordToModal(modal, record, { preserveUserValue = true } = {}) {
+  const normalized = normalizePolicyDefinitionItem(record || {});
+  if (!normalized.policyKey) return false;
+  modal.id = normalized.id || normalized.policyKey;
+  modal.isCreate = false;
+  modal.item = normalized;
+  if (!preserveUserValue) {
+    Object.assign(modal, buildPolicyDefinitionModalState(normalized), { isCreate: false });
+  }
+  return true;
+}
+
+function findExistingSubscriptionPlanRecord(planKey) {
+  const target = normalizedTrim(planKey).toUpperCase();
+  if (!target) return null;
+  return (state.data?.subscriptionPlans || [])
+    .map((item) => normalizeSubscriptionPlanItem(item))
+    .find((item) => String(item.planKey || '').toUpperCase() === target) || null;
+}
+
+function applySubscriptionPlanRecordToModal(modal, record, { preserveUserValue = true } = {}) {
+  const normalized = normalizeSubscriptionPlanItem(record || {});
+  if (!normalized.planKey) return false;
+  modal.id = normalized.id || normalized.planKey;
+  modal.isCreate = false;
+  if (!preserveUserValue) {
+    Object.assign(modal, {
+      id: normalized.id || normalized.planKey,
+      isCreate: false,
+      planKey: normalized.planKey || '',
+      displayNameEn: normalized.displayNameEn || '',
+      displayNameZh: normalized.displayNameZh || '',
+      displayNameMs: normalized.displayNameMs || '',
+      sortOrder: normalized.sortOrder || 100,
+      enabled: normalized.enabled !== false,
+      publicVisible: normalized.publicVisible !== false,
+      isPaid: Boolean(normalized.isPaid),
+    });
+  }
+  return true;
+}
+
+function findExistingRateLimitOverrideRecord(routeGroup) {
+  const target = normalizedTrim(routeGroup).toLowerCase();
+  if (!target) return null;
+  const scopedItems = normalizeAdminListResponse(getScopedData()?.content || []);
+  return scopedItems.find((item) => String(item.routeGroup || item.route_group || '').toLowerCase() === target) || null;
+}
+
+function applyRateLimitOverrideRecordToModal(modal, record, { preserveUserValue = true } = {}) {
+  if (!record) return false;
+  const id = getItemId(record);
+  const routeGroup = record.routeGroup || record.route_group || '';
+  if (!id && !routeGroup) return false;
+  modal.item = record;
+  modal.title = `Edit ${routeGroup || 'override'}`;
+  modal.submitLabel = 'Save override';
+  if (!preserveUserValue) {
+    modal.routeGroup = routeGroup;
+    modal.perMinute = record.perMinute ?? record.per_minute ?? '';
+    modal.enabled = record.enabled !== false;
+    modal.expiresAt = toDateTimeLocalValue(record.expiresAt || record.expires_at);
+  }
+  return true;
+}
+
 function findExistingPlanPolicyValueRecord(policyKey, planKey, matrixItem = null) {
   const targetPolicy = normalizedTrim(policyKey);
   const targetPlan = normalizedTrim(planKey).toUpperCase();
@@ -5557,6 +5675,10 @@ async function submitPolicyDefinitionModal() {
     enabled: Boolean(modal.enabled),
     ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_definition'),
   };
+  const existingRecord = findExistingPolicyDefinitionRecord(body.policyKey);
+  if (modal.isCreate && existingRecord) {
+    applyPolicyDefinitionRecordToModal(modal, existingRecord, { preserveUserValue: true });
+  }
   const path = modal.isCreate ? API_PATHS.policyDefinitions.create : API_PATHS.policyDefinitions.update(modal.id || body.policyKey);
   const action = modal.isCreate ? performPostAction : performPatchAction;
   await action(path, modal.isCreate ? 'Policy definition created.' : 'Policy definition updated.', body);
@@ -5633,6 +5755,10 @@ async function submitSubscriptionPlanModal() {
     isPaid: Boolean(modal.isPaid),
     ...criticalActionFields(critical.reason, critical.confirmPhrase, 'subscription_plan'),
   };
+  const existingRecord = findExistingSubscriptionPlanRecord(body.planKey);
+  if (modal.isCreate && existingRecord) {
+    applySubscriptionPlanRecordToModal(modal, existingRecord, { preserveUserValue: true });
+  }
   const path = modal.isCreate ? API_PATHS.subscriptionPlans.create : API_PATHS.subscriptionPlans.update(modal.id || body.planKey);
   const action = modal.isCreate ? performPostAction : performPatchAction;
   await action(path, modal.isCreate ? 'Subscription plan created.' : 'Subscription plan updated.', body);
@@ -7090,29 +7216,29 @@ async function disableAnnouncement(item) {
 function renderAnnouncementModal() {
   const modal = state.modal;
   const textInput = (key, label, placeholder = '') => {
-    const input = el('input', { value: modal[key] || '', placeholder });
+    const input = el('input', { value: modal[key] || '', placeholder, 'data-field-key': key });
     input.addEventListener('input', () => { modal[key] = input.value; });
-    return el('div', { class: 'field' }, [el('label', { text: label }), input]);
+    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
   };
   const textArea = (key, label) => {
-    const input = el('textarea', { rows: key === 'messageEn' ? '4' : '3' });
+    const input = el('textarea', { rows: key === 'messageEn' ? '4' : '3', 'data-field-key': key });
     input.value = modal[key] || '';
     input.addEventListener('input', () => { modal[key] = input.value; });
-    return el('div', { class: 'field' }, [el('label', { text: label }), input]);
+    return el('div', { class: modalFieldClass(key) }, [el('label', { text: label }), input, renderFieldError(key)]);
   };
-  const type = select(ADMIN_ENUMS.announcementTypes, modal.type, (value) => { modal.type = value; });
-  const display = select(['BANNER', 'MODAL'], modal.displayMode, (value) => { modal.displayMode = value; });
-  const plan = select(['ALL', 'FREE', 'PRO'], modal.targetPlan, (value) => { modal.targetPlan = value; });
-  const platform = select(['ALL', 'ANDROID', 'IOS', 'WEB'], modal.targetPlatform, (value) => { modal.targetPlatform = value; });
+  const type = select(ADMIN_ENUMS.announcementTypes, modal.type, (value) => { modal.type = value; }); type.setAttribute('data-field-key', 'type');
+  const display = select(['BANNER', 'MODAL'], modal.displayMode, (value) => { modal.displayMode = value; }); display.setAttribute('data-field-key', 'displayMode');
+  const plan = select(['ALL', 'FREE', 'PRO'], modal.targetPlan, (value) => { modal.targetPlan = value; }); plan.setAttribute('data-field-key', 'targetPlan');
+  const platform = select(['ALL', 'ANDROID', 'IOS', 'WEB'], modal.targetPlatform, (value) => { modal.targetPlatform = value; }); platform.setAttribute('data-field-key', 'targetPlatform');
   const minVersionInput = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '', 'data-field-key': 'minAppVersion' });
   minVersionInput.addEventListener('input', () => { modal.minAppVersion = minVersionInput.value; });
   const maxVersionInput = el('input', { placeholder: 'Optional max app version', value: modal.maxAppVersion || '', 'data-field-key': 'maxAppVersion' });
   maxVersionInput.addEventListener('input', () => { modal.maxAppVersion = maxVersionInput.value; });
-  const priority = el('input', { type: 'number', min: '0', value: modal.priority ?? 0 });
+  const priority = el('input', { type: 'number', min: '0', value: modal.priority ?? 0, 'data-field-key': 'priority' });
   priority.addEventListener('input', () => { modal.priority = priority.value; });
-  const startAt = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.startAt) });
+  const startAt = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.startAt), 'data-field-key': 'startAt' });
   startAt.addEventListener('input', () => { modal.startAt = startAt.value; });
-  const endAt = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.endAt) });
+  const endAt = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.endAt), 'data-field-key': 'endAt' });
   endAt.addEventListener('input', () => { modal.endAt = endAt.value; });
   const dismissible = el('input', { type: 'checkbox' }); dismissible.checked = Boolean(modal.dismissible); dismissible.addEventListener('change', () => { modal.dismissible = dismissible.checked; });
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
@@ -7124,17 +7250,18 @@ function renderAnnouncementModal() {
     if (value === 'EXTERNAL_URL' && !isExternalAnnouncementUrl(modal.ctaAction)) modal.ctaAction = '';
     render();
   });
+  ctaMode.setAttribute('data-field-key', 'ctaAction');
   const hasAnyCtaLabelDraft = Boolean(normalizedTrim(modal.ctaLabelEn) || normalizedTrim(modal.ctaLabelZh) || normalizedTrim(modal.ctaLabelMs));
   const hasCtaDestinationDraft = Boolean(normalizedTrim(modal.ctaAction));
   const ctaWillRenderDraft = Boolean(modal.clickable && hasAnyCtaLabelDraft && hasCtaDestinationDraft);
-  const internalDestination = select(ANNOUNCEMENT_INTERNAL_DESTINATIONS.map((item) => item.value), modal.ctaAction || '', (value) => { modal.ctaAction = value; });
+  const internalDestination = select(ANNOUNCEMENT_INTERNAL_DESTINATIONS.map((item) => item.value), modal.ctaAction || '', (value) => { modal.ctaAction = value; }); internalDestination.setAttribute('data-field-key', 'ctaAction');
   Array.from(internalDestination.options || []).forEach((option) => {
     const match = ANNOUNCEMENT_INTERNAL_DESTINATIONS.find((item) => item.value === option.value);
     if (match) option.textContent = match.label;
   });
-  const externalUrlInput = el('input', { value: modal.ctaAction || '', placeholder: 'https://youtu.be/your-video or https://youtube.com/watch?v=...' });
+  const externalUrlInput = el('input', { value: modal.ctaAction || '', placeholder: 'https://youtu.be/your-video or https://youtube.com/watch?v=...', 'data-field-key': 'ctaAction' });
   externalUrlInput.addEventListener('input', () => { modal.ctaAction = externalUrlInput.value; });
-  const customDestinationInput = el('input', { value: modal.ctaAction || '', placeholder: 'Legacy key or supported fundoralit:// deep link' });
+  const customDestinationInput = el('input', { value: modal.ctaAction || '', placeholder: 'Legacy key or supported fundoralit:// deep link', 'data-field-key': 'ctaAction' });
   customDestinationInput.addEventListener('input', () => { modal.ctaAction = customDestinationInput.value; });
   const mediaType = select(ANNOUNCEMENT_MEDIA_TYPES, modal.mediaType || 'NONE', (value) => {
     modal.mediaType = value;
@@ -7146,11 +7273,12 @@ function renderAnnouncementModal() {
     }
     render();
   });
-  const mediaUrlInput = el('input', { value: modal.mediaUrl || '', placeholder: 'Uploaded image URL will appear here automatically, or paste a Supabase public URL.' });
+  mediaType.setAttribute('data-field-key', 'mediaType');
+  const mediaUrlInput = el('input', { value: modal.mediaUrl || '', placeholder: 'Uploaded image URL will appear here automatically, or paste a Supabase public URL.', 'data-field-key': 'mediaUrl' });
   mediaUrlInput.addEventListener('input', () => { modal.mediaUrl = mediaUrlInput.value; });
-  const mediaAltInput = el('input', { value: modal.mediaAltText || '', placeholder: 'Short image description for accessibility' });
+  const mediaAltInput = el('input', { value: modal.mediaAltText || '', placeholder: 'Short image description for accessibility', 'data-field-key': 'mediaAltText' });
   mediaAltInput.addEventListener('input', () => { modal.mediaAltText = mediaAltInput.value; });
-  const mediaFileInput = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp' });
+  const mediaFileInput = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', 'data-field-key': 'mediaUrl' });
   mediaFileInput.addEventListener('change', () => {
     const file = mediaFileInput.files && mediaFileInput.files[0] ? mediaFileInput.files[0] : null;
     if (!file) return;
@@ -7195,15 +7323,15 @@ function renderAnnouncementModal() {
   return renderControlModal(modal.id ? 'Edit announcement' : 'Create announcement', 'Announcement', [
     renderPolicySafetyNote('Banner is best for normal updates. Modal should be reserved for maintenance or critical notices. The app only stores dismissed announcement IDs locally, not announcement content.'),
     el('div', { class: 'form-grid two' }, [
-      el('div', { class: 'field' }, [el('label', { text: 'Type' }), type]),
-      el('div', { class: 'field' }, [el('label', { text: 'Display mode' }), display]),
-      el('div', { class: 'field' }, [el('label', { text: 'Target plan' }), plan]),
-      el('div', { class: 'field' }, [el('label', { text: 'Target platform' }), platform]),
+      el('div', { class: modalFieldClass('type') }, [el('label', { text: 'Type' }), type, renderFieldError('type')]),
+      el('div', { class: modalFieldClass('displayMode') }, [el('label', { text: 'Display mode' }), display, renderFieldError('displayMode')]),
+      el('div', { class: modalFieldClass('targetPlan') }, [el('label', { text: 'Target plan' }), plan, renderFieldError('targetPlan')]),
+      el('div', { class: modalFieldClass('targetPlatform') }, [el('label', { text: 'Target platform' }), platform, renderFieldError('targetPlatform')]),
       el('div', { class: modalFieldClass('minAppVersion') }, [el('label', { text: 'Min app version' }), minVersionInput, renderFieldError('minAppVersion')]),
       el('div', { class: modalFieldClass('maxAppVersion') }, [el('label', { text: 'Max app version' }), maxVersionInput, renderFieldError('maxAppVersion')]),
-      el('div', { class: 'field' }, [el('label', { text: 'Priority' }), priority]),
-      el('div', { class: 'field' }, [el('label', { text: 'Start at' }), startAt]),
-      el('div', { class: 'field' }, [el('label', { text: 'End at' }), endAt]),
+      el('div', { class: modalFieldClass('priority') }, [el('label', { text: 'Priority' }), priority, renderFieldError('priority')]),
+      el('div', { class: modalFieldClass('startAt') }, [el('label', { text: 'Start at' }), startAt, renderFieldError('startAt')]),
+      el('div', { class: modalFieldClass('endAt') }, [el('label', { text: 'End at' }), endAt, renderFieldError('endAt')]),
     ]),
     el('div', { class: 'form-grid two' }, [
       el('label', { class: 'check-row' }, [dismissible, el('span', { text: 'Dismissible' })]),
@@ -7235,7 +7363,7 @@ function renderAnnouncementModal() {
       el('summary', { text: 'Optional media / modal image' }),
       renderPolicySafetyNote('Image media is optional. You can upload directly to the dedicated Supabase announcement bucket. Modal uses it as a large hero image; banner stays lightweight. Leave media as NONE to use the app fallback illustration.'),
       el('div', { class: 'form-grid two' }, [
-        el('div', { class: 'field' }, [el('label', { text: 'Media type' }), mediaType]),
+        el('div', { class: modalFieldClass('mediaType') }, [el('label', { text: 'Media type' }), mediaType, renderFieldError('mediaType')]),
         modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaUrl') }, [
           el('label', { text: 'Upload image' }),
           mediaFileInput,
@@ -7262,7 +7390,7 @@ function renderAnnouncementModal() {
         ? renderPolicySafetyNote('This announcement will show a CTA button because it has a label and destination.')
         : renderPolicySafetyNote('No complete CTA is configured, so the app will show this announcement as read-only content.'),
       el('div', { class: 'form-grid two' }, [
-        el('div', { class: 'field' }, [el('label', { text: 'CTA destination type' }), ctaMode]),
+        el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'CTA destination type' }), ctaMode, renderFieldError('ctaAction')]),
         modal.ctaDestinationMode === 'INTERNAL' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'Internal app destination' }), internalDestination, renderFieldError('ctaAction')]) : null,
         modal.ctaDestinationMode === 'EXTERNAL_URL' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'External URL' }), externalUrlInput, renderFieldError('ctaAction')]) : null,
         modal.ctaDestinationMode === 'CUSTOM' ? el('div', { class: modalFieldClass('ctaAction') }, [el('label', { text: 'Custom destination' }), customDestinationInput, renderFieldError('ctaAction')]) : null,
@@ -7296,45 +7424,45 @@ function fromDateTimeLocalValue(value) {
 async function submitAnnouncementModal() {
   const modal = state.modal;
   const titleEn = requireMaxLength(modal.titleEn, 'English title', ADMIN_LIMITS.announcementTitleMax, { required: true });
-  if (!titleEn.ok) return validationError(titleEn.message);
+  if (!titleEn.ok) return validationError(titleEn.message, 'titleEn');
   const messageEn = requireMaxLength(modal.messageEn, 'English message', ADMIN_LIMITS.announcementMessageMax, { required: true });
-  if (!messageEn.ok) return validationError(messageEn.message);
+  if (!messageEn.ok) return validationError(messageEn.message, 'messageEn');
   const titleZh = requireMaxLength(modal.titleZh, 'Chinese title', ADMIN_LIMITS.announcementTitleMax);
-  if (!titleZh.ok) return validationError(titleZh.message);
+  if (!titleZh.ok) return validationError(titleZh.message, 'titleZh');
   const titleMs = requireMaxLength(modal.titleMs, 'Malay title', ADMIN_LIMITS.announcementTitleMax);
-  if (!titleMs.ok) return validationError(titleMs.message);
+  if (!titleMs.ok) return validationError(titleMs.message, 'titleMs');
   const messageZh = requireMaxLength(modal.messageZh, 'Chinese message', ADMIN_LIMITS.announcementMessageMax);
-  if (!messageZh.ok) return validationError(messageZh.message);
+  if (!messageZh.ok) return validationError(messageZh.message, 'messageZh');
   const messageMs = requireMaxLength(modal.messageMs, 'Malay message', ADMIN_LIMITS.announcementMessageMax);
-  if (!messageMs.ok) return validationError(messageMs.message);
+  if (!messageMs.ok) return validationError(messageMs.message, 'messageMs');
 
   const type = requireOneOf(modal.type, ADMIN_ENUMS.announcementTypes, 'Announcement type');
-  if (!type.ok) return validationError(type.message);
+  if (!type.ok) return validationError(type.message, 'type');
   const displayMode = requireOneOf(modal.displayMode, ADMIN_ENUMS.announcementDisplayModes, 'Display mode');
-  if (!displayMode.ok) return validationError(displayMode.message);
+  if (!displayMode.ok) return validationError(displayMode.message, 'displayMode');
   const targetPlan = requireOneOf(modal.targetPlan, ADMIN_ENUMS.announcementTargetPlans, 'Target plan');
   if (!targetPlan.ok) return validationError(targetPlan.message, 'targetPlan');
   const targetPlatform = requireOneOf(modal.targetPlatform, ADMIN_ENUMS.announcementTargetPlatforms, 'Target platform');
-  if (!targetPlatform.ok) return validationError(targetPlatform.message);
+  if (!targetPlatform.ok) return validationError(targetPlatform.message, 'targetPlatform');
   const minAppVersion = validateVersionText(modal.minAppVersion, 'Min app version');
   if (!minAppVersion.ok) return validationError(minAppVersion.message, 'minAppVersion');
   const maxAppVersion = validateVersionText(modal.maxAppVersion, 'Max app version');
   if (!maxAppVersion.ok) return validationError(maxAppVersion.message, 'maxAppVersion');
   const priority = parseWholeNumber(modal.priority, 'Priority', { min: 0, max: ADMIN_LIMITS.announcementPriorityMax });
-  if (!priority.ok) return validationError(priority.message);
+  if (!priority.ok) return validationError(priority.message, 'priority');
 
   const startAt = parseOptionalDateTime(modal.startAt, 'Start time');
-  if (!startAt.ok) return validationError(startAt.message);
+  if (!startAt.ok) return validationError(startAt.message, 'startAt');
   const endAt = parseOptionalDateTime(modal.endAt, 'End time');
-  if (!endAt.ok) return validationError(endAt.message);
-  if (startAt.time !== null && endAt.time !== null && startAt.time > endAt.time) return validationError('Start time cannot be later than end time.');
+  if (!endAt.ok) return validationError(endAt.message, 'endAt');
+  if (startAt.time !== null && endAt.time !== null && startAt.time > endAt.time) return validationError('Start time cannot be later than end time.', 'startAt');
 
   const ctaLabelEn = requireMaxLength(modal.ctaLabelEn, 'English action button label', ADMIN_LIMITS.announcementCtaLabelMax);
-  if (!ctaLabelEn.ok) return validationError(ctaLabelEn.message);
+  if (!ctaLabelEn.ok) return validationError(ctaLabelEn.message, 'ctaLabelEn');
   const ctaLabelZh = requireMaxLength(modal.ctaLabelZh, 'Chinese action button label', ADMIN_LIMITS.announcementCtaLabelMax);
-  if (!ctaLabelZh.ok) return validationError(ctaLabelZh.message);
+  if (!ctaLabelZh.ok) return validationError(ctaLabelZh.message, 'ctaLabelZh');
   const ctaLabelMs = requireMaxLength(modal.ctaLabelMs, 'Malay action button label', ADMIN_LIMITS.announcementCtaLabelMax);
-  if (!ctaLabelMs.ok) return validationError(ctaLabelMs.message);
+  if (!ctaLabelMs.ok) return validationError(ctaLabelMs.message, 'ctaLabelMs');
   const ctaAction = requireMaxLength(modal.ctaAction, 'Action destination', ADMIN_LIMITS.announcementCtaActionMax);
   if (!ctaAction.ok) return validationError(ctaAction.message, 'ctaAction');
   const clickable = Boolean(modal.clickable);
@@ -7872,8 +8000,12 @@ async function submitRateLimitOverrideModal() {
     expiresAt: expiryCheck.value,
     ...criticalActionFields(reasonCheck.value, modal.expectedPhrase, 'update_rate_limit'),
   };
+  const existingRecord = !modal.item ? findExistingRateLimitOverrideRecord(body.routeGroup) : null;
+  if (!modal.item && existingRecord) {
+    applyRateLimitOverrideRecordToModal(modal, existingRecord, { preserveUserValue: true });
+  }
   if (modal.item) {
-    await performPatchAction(API_PATHS.rateLimitOverrides.update(getItemId(modal.item)), 'Rate limit override updated.', body);
+    await performPatchAction(API_PATHS.rateLimitOverrides.update(getItemId(modal.item) || body.routeGroup), 'Rate limit override updated.', body);
   } else {
     await performPostAction(API_PATHS.rateLimitOverrides.create, 'Rate limit override created.', body);
   }
@@ -9367,7 +9499,7 @@ function renderFeatureLimitModal() {
 function renderFeatureFlagModal() {
   const modal = state.modal;
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
-  const rollout = el('input', { type: 'number', min: '0', max: '100', value: modal.rolloutPercentage }); rollout.addEventListener('input', () => { modal.rolloutPercentage = rollout.value; });
+  const rollout = el('input', { type: 'number', min: '0', max: '100', value: modal.rolloutPercentage, 'data-field-key': 'rolloutPercentage' }); rollout.addEventListener('input', () => { modal.rolloutPercentage = rollout.value; });
   const targetPlan = select(ADMIN_ENUMS.featureFlagTargetPlans, modal.targetPlan || '', (value) => { modal.targetPlan = value; }); targetPlan.setAttribute('data-field-key', 'targetPlan');
   const minVersion = el('input', { placeholder: 'Optional min app version', value: modal.minAppVersion || '', 'data-field-key': 'minAppVersion' }); minVersion.addEventListener('input', () => { modal.minAppVersion = minVersion.value; });
   const description = el('textarea', { rows: '3', 'data-field-key': 'description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
