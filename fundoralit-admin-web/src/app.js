@@ -694,6 +694,7 @@ const ADMIN_ENUMS = {
 };
 
 const ADMIN_LIMITS = {
+  auditReasonMin: 10,
   auditReasonMax: 500,
   descriptionMax: 500,
   resetTimezoneMax: 80,
@@ -822,29 +823,213 @@ function blankToNull(value) {
   return text ? text : null;
 }
 
-function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong. Please try again.') {
-  const status = Number(errorOrMessage?.status || 0);
-  const payload = errorOrMessage?.payload || {};
-  const nestedData = payload?.data && typeof payload.data === 'object' ? payload.data : {};
-  const errorList = Array.isArray(payload?.errors) ? payload.errors : Array.isArray(nestedData?.errors) ? nestedData.errors : [];
-  const firstError = errorList.map((item) => item?.message || item?.defaultMessage || item).find(Boolean);
-  const rawMessage = normalizedTrim(
-    payload.message
-    || payload.error
-    || nestedData.message
-    || nestedData.error
-    || firstError
-    || payload.code
-    || errorOrMessage?.message
-    || errorOrMessage
-    || fallback
-  );
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
 
-  if (status === 401) return 'Your admin session has expired. Please sign in again before continuing.';
-  if (status === 403) return rawMessage && !/request failed/i.test(rawMessage)
-    ? `Permission denied: ${rawMessage}`
+function primitiveText(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return normalizedTrim(value);
+  if (typeof value === 'number' || typeof value === 'boolean') return normalizedTrim(String(value));
+  return '';
+}
+
+function addUniqueText(list, value) {
+  const text = primitiveText(value);
+  if (!text || text === '[object Object]') return;
+  if (!list.some((item) => item.toLowerCase() === text.toLowerCase())) list.push(text);
+}
+
+function normalizeBackendFieldErrors(value, target = {}) {
+  if (!value) return target;
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      if (isPlainObject(item)) {
+        const field = primitiveText(item.field || item.name || item.property || item.path || item.parameter || item.key) || `field_${index + 1}`;
+        const message = primitiveText(item.message || item.defaultMessage || item.reason || item.error || item.detail || item.title || item.value);
+        if (field && message && !target[field]) target[field] = message;
+      } else {
+        const message = primitiveText(item);
+        if (message && !target[`field_${index + 1}`]) target[`field_${index + 1}`] = message;
+      }
+    });
+    return target;
+  }
+  if (!isPlainObject(value)) return target;
+  Object.entries(value).forEach(([field, raw]) => {
+    let message = '';
+    if (Array.isArray(raw)) {
+      message = raw.map((item) => primitiveText(isPlainObject(item) ? (item.message || item.defaultMessage || item.reason || item.error) : item)).filter(Boolean).join(', ');
+    } else if (isPlainObject(raw)) {
+      message = primitiveText(raw.message || raw.defaultMessage || raw.reason || raw.error || raw.detail || raw.title || raw.value);
+    } else {
+      message = primitiveText(raw);
+    }
+    if (field && message && !target[field]) target[field] = message;
+  });
+  return target;
+}
+
+function collectBackendMessages(value, list = [], depth = 0) {
+  if (depth > 4 || value === undefined || value === null) return list;
+  const direct = primitiveText(value);
+  if (direct) {
+    addUniqueText(list, direct);
+    return list;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectBackendMessages(item, list, depth + 1));
+    return list;
+  }
+  if (!isPlainObject(value)) return list;
+
+  [
+    'message',
+    'userMessage',
+    'defaultMessage',
+    'detail',
+    'title',
+    'reason',
+    'summary',
+    'description',
+    'error_description',
+    'errorDescription',
+  ].forEach((key) => addUniqueText(list, value[key]));
+
+  const fieldErrors = normalizeBackendFieldErrors(value.fieldErrors, {});
+  Object.entries(fieldErrors).forEach(([field, message]) => addUniqueText(list, `${field}: ${message}`));
+
+  ['errors', 'violations', 'validationErrors'].forEach((key) => collectBackendMessages(value[key], list, depth + 1));
+  if (isPlainObject(value.error)) collectBackendMessages(value.error, list, depth + 1);
+  if (isPlainObject(value.data)) collectBackendMessages(value.data, list, depth + 1);
+  if (isPlainObject(value.details)) collectBackendMessages(value.details, list, depth + 1);
+  return list;
+}
+
+function extractBackendFieldErrors(errorOrMessage) {
+  const payload = isPlainObject(errorOrMessage?.payload) ? errorOrMessage.payload : {};
+  const nestedData = isPlainObject(payload.data) ? payload.data : {};
+  const errorNode = isPlainObject(payload.error) ? payload.error : {};
+  const nestedErrorNode = isPlainObject(nestedData.error) ? nestedData.error : {};
+  const target = {};
+  [
+    errorOrMessage?.fieldErrors,
+    payload.fieldErrors,
+    errorNode.fieldErrors,
+    nestedData.fieldErrors,
+    nestedErrorNode.fieldErrors,
+    errorNode.details?.fieldErrors,
+    nestedErrorNode.details?.fieldErrors,
+    payload.errors,
+    nestedData.errors,
+  ].forEach((value) => normalizeBackendFieldErrors(value, target));
+  return target;
+}
+
+function extractBackendCode(errorOrMessage) {
+  const payload = isPlainObject(errorOrMessage?.payload) ? errorOrMessage.payload : {};
+  const nestedData = isPlainObject(payload.data) ? payload.data : {};
+  const errorNode = isPlainObject(payload.error) ? payload.error : {};
+  const nestedErrorNode = isPlainObject(nestedData.error) ? nestedData.error : {};
+  return primitiveText(
+    errorOrMessage?.backendCode
+    || errorOrMessage?.code
+    || payload.code
+    || errorNode.code
+    || nestedData.code
+    || nestedErrorNode.code
+    || payload.errorCode
+    || errorNode.errorCode
+    || nestedData.errorCode
+    || nestedErrorNode.errorCode
+  );
+}
+
+function extractBackendRequestId(errorOrMessage) {
+  const payload = isPlainObject(errorOrMessage?.payload) ? errorOrMessage.payload : {};
+  const nestedData = isPlainObject(payload.data) ? payload.data : {};
+  const errorNode = isPlainObject(payload.error) ? payload.error : {};
+  return primitiveText(errorOrMessage?.requestId || payload.requestId || errorNode.requestId || nestedData.requestId);
+}
+
+function normalizeBackendError(errorOrMessage, fallback = 'Something went wrong. Please try again.') {
+  const payload = isPlainObject(errorOrMessage?.payload) ? errorOrMessage.payload : {};
+  const nestedData = isPlainObject(payload.data) ? payload.data : {};
+  const errorNode = isPlainObject(payload.error) ? payload.error : {};
+  const nestedErrorNode = isPlainObject(nestedData.error) ? nestedData.error : {};
+  const fieldErrors = extractBackendFieldErrors(errorOrMessage);
+  const messages = [];
+
+  [
+    errorOrMessage?.backendMessage,
+    payload.message,
+    errorNode.message,
+    nestedData.message,
+    nestedErrorNode.message,
+    primitiveText(payload.error),
+    primitiveText(nestedData.error),
+    errorOrMessage?.message,
+  ].forEach((value) => addUniqueText(messages, value));
+
+  collectBackendMessages(payload.errors, messages);
+  collectBackendMessages(nestedData.errors, messages);
+  collectBackendMessages(errorNode.details, messages);
+  collectBackendMessages(nestedErrorNode.details, messages);
+  if (!messages.length) collectBackendMessages(payload, messages);
+  if (!messages.length) collectBackendMessages(errorNode, messages);
+  if (!messages.length) collectBackendMessages(nestedData, messages);
+  if (!messages.length) collectBackendMessages(nestedErrorNode, messages);
+  if (!messages.length) addUniqueText(messages, errorOrMessage);
+  if (!messages.length) addUniqueText(messages, fallback);
+
+  const message = messages.find((item) => !/request failed \(\d+\)/i.test(item)) || messages[0] || fallback;
+  return {
+    status: Number(errorOrMessage?.status || 0),
+    message,
+    fieldErrors,
+    code: extractBackendCode(errorOrMessage),
+    requestId: extractBackendRequestId(errorOrMessage),
+  };
+}
+
+function appendBackendDiagnostics(message, details = {}) {
+  const parts = [primitiveText(message)].filter(Boolean);
+  const fieldErrors = details.fieldErrors || {};
+  const fieldSummary = Object.entries(fieldErrors)
+    .map(([field, value]) => `${field}: ${value}`)
+    .filter((line) => !parts.some((part) => part.toLowerCase().includes(line.toLowerCase())))
+    .join('; ');
+  if (fieldSummary) parts.push(`Fields: ${fieldSummary}`);
+  if (details.code && !parts.some((part) => part.toLowerCase().includes(String(details.code).toLowerCase()))) {
+    parts.push(`Backend code: ${details.code}`);
+  }
+  if (details.requestId) parts.push(`Request ID: ${details.requestId}`);
+  return parts.join(' ');
+}
+
+function backendMessageOrFallback(errorOrMessage, fallback) {
+  const normalized = normalizeBackendError(errorOrMessage, fallback);
+  return appendBackendDiagnostics(normalized.message || fallback, normalized);
+}
+
+function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong. Please try again.') {
+  const normalized = normalizeBackendError(errorOrMessage, fallback);
+  const status = normalized.status;
+  const rawMessage = normalized.message || fallback;
+  const backendMessage = appendBackendDiagnostics(rawMessage, normalized);
+  const hasBackendMessage = Boolean(rawMessage && !/request failed \(\d+\)/i.test(rawMessage));
+
+  if (status === 401) {
+    if (isAdminAuthFailure(errorOrMessage)) return 'Your admin session has expired. Please sign in again before continuing.';
+    return hasBackendMessage
+      ? backendMessage
+      : 'This admin action was rejected by the backend. Check the form values, audit reason, and permissions before retrying.';
+  }
+  if (status === 403) return hasBackendMessage
+    ? backendMessage
     : 'You do not have permission to perform this admin action. Please check FUNDORA_ADMIN_EMAILS / backend admin permission settings.';
   if (status === 404) {
+    if (hasBackendMessage && rawMessage !== 'Route not found.') return backendMessage;
     const url = String(errorOrMessage?.url || '');
     if (url.includes('/api/config/plan-matrix')) return 'Plan Matrix backend endpoint is not deployed yet. Deploy the dynamic policy backend first, then refresh this page.';
     if (url.includes('/api/admin/policy-definitions')) return 'Policy Definition backend endpoint is not deployed yet. Deploy the dynamic policy registry backend first.';
@@ -853,18 +1038,18 @@ function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong
     if (url.includes('/api/admin/policy-versions')) return 'Policy version backend endpoint is not deployed yet, or the selected policy version no longer exists.';
     if (url.includes('/api/admin/review-prompt-policy')) return 'Review Prompt Policy backend endpoint is not deployed yet. Deploy the backend endpoint or use the Product Policy fallback for review_prompt_policy.';
     if (url.includes('/api/admin/rate-limit-overrides')) return 'Rate Limit Override backend endpoint is not deployed yet, or the selected override no longer exists.';
-    return 'The selected record or endpoint could not be found. Refresh the page and confirm the backend migration/endpoints are deployed.';
+    return backendMessage || 'The selected record or endpoint could not be found. Refresh the page and confirm the backend migration/endpoints are deployed.';
   }
-  if (status === 409) return 'This record was changed by another admin or by the backend. Refresh the latest data before saving again.';
-  if (status === 429) return 'Too many admin requests were sent in a short time. Wait a moment, then try again.';
-  if (status >= 500) return rawMessage && !/request failed/i.test(rawMessage)
-    ? `Backend service error: ${rawMessage}`
+  if (status === 409) return hasBackendMessage ? backendMessage : 'This record was changed by another admin or by the backend. Refresh the latest data before saving again.';
+  if (status === 429) return hasBackendMessage ? backendMessage : 'Too many admin requests were sent in a short time. Wait a moment, then try again.';
+  if (status >= 500) return hasBackendMessage
+    ? backendMessage
     : 'The backend service failed while processing this admin action. Check backend logs and retry after it is healthy.';
 
   if (/request failed \(400\)/i.test(rawMessage)) return 'The backend rejected this request because one or more values are invalid. Check the highlighted fields and audit reason.';
   if (/request failed/i.test(rawMessage)) return 'The request could not be completed. Check the form values, backend URL, and admin permission, then try again.';
   if (/invalid json/i.test(rawMessage)) return rawMessage.replace(/^Invalid JSON:/i, 'Policy JSON is not valid:');
-  return rawMessage || fallback;
+  return backendMessage || fallback;
 }
 
 function clearModalFeedback() {
@@ -881,14 +1066,17 @@ function setModalError(message, fieldKey = '') {
     return;
   }
   const friendlyMessage = toFriendlyErrorMessage(message);
+  const backendFieldErrors = extractBackendFieldErrors(message);
   state.modal.error = friendlyMessage;
   state.modal.message = '';
-  state.modal.fieldErrors = fieldKey ? { [fieldKey]: friendlyMessage } : {};
-  state.modal.focusFieldKey = fieldKey || '';
+  state.modal.fieldErrors = fieldKey
+    ? { ...backendFieldErrors, [fieldKey]: friendlyMessage }
+    : backendFieldErrors;
+  state.modal.focusFieldKey = fieldKey || Object.keys(backendFieldErrors)[0] || '';
   render();
-  if (fieldKey) {
+  if (state.modal.focusFieldKey) {
     window.setTimeout(() => {
-      const input = document.querySelector(`[data-field-key="${CSS.escape(fieldKey)}"]`);
+      const input = document.querySelector(`[data-field-key="${CSS.escape(state.modal.focusFieldKey)}"]`);
       if (input && typeof input.focus === 'function') input.focus();
     }, 0);
   }
@@ -941,6 +1129,7 @@ function renderModalNotice() {
 function requireAuditReason(reason, actionLabel = 'this admin change') {
   const text = normalizedTrim(reason);
   if (!text) return { ok: false, message: `Please enter an audit reason before saving ${actionLabel}.` };
+  if (text.length < ADMIN_LIMITS.auditReasonMin) return { ok: false, message: `Audit reason must be ${ADMIN_LIMITS.auditReasonMin}-${ADMIN_LIMITS.auditReasonMax} characters.` };
   if (text.length > ADMIN_LIMITS.auditReasonMax) return { ok: false, message: `Audit reason must be ${ADMIN_LIMITS.auditReasonMax} characters or less.` };
   return { ok: true, value: text };
 }
@@ -1315,22 +1504,34 @@ function buildAdminSessionExpiredNotice(reason = '') {
 
 function isAdminAuthFailure(errorOrMessage) {
   const status = Number(errorOrMessage?.status || 0);
-  const raw = normalizedTrim(
-    errorOrMessage?.payload?.message
-    || errorOrMessage?.payload?.error
-    || errorOrMessage?.payload?.code
-    || errorOrMessage?.message
-    || errorOrMessage
-  ).toLowerCase();
-  return status === 401
-    || raw.includes('session expired')
+  const normalized = normalizeBackendError(errorOrMessage, '');
+  const code = normalizedTrim(normalized.code).toUpperCase();
+  const raw = normalizedTrim(normalized.message || errorOrMessage?.message || errorOrMessage).toLowerCase();
+  const authCodeLooksExpired = /(^|_)(TOKEN|SESSION|REFRESH).*EXPIRED/.test(code)
+    || /INVALID_REFRESH_TOKEN|USER_DISABLED|USER_NOT_FOUND|AUTH_SESSION_EXPIRED|AUTH_TOKEN_EXPIRED|AUTH_INVALID_TOKEN|AUTH_TOKEN_MISSING|AUTH_TOKEN_INVALID|UNAUTHENTICATED/.test(code);
+  const messageLooksExpired = raw.includes('session expired')
     || raw.includes('admin session expired')
+    || raw.includes('session has expired')
+    || raw.includes('session revoked')
     || raw.includes('token expired')
     || raw.includes('invalid_refresh_token')
     || raw.includes('invalid refresh token')
     || raw.includes('user token expired')
     || raw.includes('id token has expired')
-    || raw.includes('please sign in first');
+    || raw.includes('firebase token expired')
+    || raw.includes('auth token expired')
+    || raw.includes('authorization token is missing')
+    || raw.includes('missing authorization')
+    || raw.includes('missing auth')
+    || raw.includes('missing token')
+    || raw.includes('invalid token')
+    || raw.includes('invalid firebase token')
+    || raw.includes('auth header')
+    || raw.includes('not authenticated')
+    || raw.includes('unauthenticated')
+    || raw.includes('please sign in first')
+    || raw.includes('please sign in again');
+  return authCodeLooksExpired || messageLooksExpired || (status === 401 && !raw && !code);
 }
 
 function stopAdminSessionMonitor() {
@@ -1674,6 +1875,21 @@ async function applyAdminRequestIntegrityHeaders(headers, path, method, body) {
   };
 }
 
+function buildApiError(status, payload, service, url) {
+  const shell = { status, payload, service, url };
+  const normalized = normalizeBackendError(shell, `Request failed (${status})`);
+  const error = new Error(normalized.message || `Request failed (${status})`);
+  error.status = status;
+  error.payload = payload;
+  error.service = service;
+  error.url = url;
+  error.backendMessage = normalized.message;
+  error.backendCode = normalized.code;
+  error.fieldErrors = normalized.fieldErrors;
+  error.requestId = normalized.requestId;
+  return error;
+}
+
 async function api(path, options = {}) {
   const service = options.service || 'core';
   const baseUrl = service === 'collaboration' ? collaborationApiBaseUrl : coreApiBaseUrl;
@@ -1729,13 +1945,8 @@ async function api(path, options = {}) {
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
 
-  if (!response.ok) {
-    const message = json?.message || json?.error || json?.data?.message || json?.code || `Request failed (${response.status})`;
-    const error = new Error(message);
-    error.status = response.status;
-    error.payload = json;
-    error.service = service;
-    error.url = url.toString();
+  if (!response.ok || json?.success === false) {
+    const error = buildApiError(response.status || 400, json, service, url.toString());
     if (isAdminAuthFailure(error)) {
       error.message = buildAdminSessionExpiredNotice('server');
       handleAdminSessionExpired('server', { source: 'api-response' });
@@ -1795,12 +2006,7 @@ async function apiRaw(path, options = {}) {
     const text = await response.text().catch(() => '');
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
-    const message = json?.message || json?.error || json?.data?.message || json?.code || `Request failed (${response.status})`;
-    const error = new Error(message);
-    error.status = response.status;
-    error.payload = json;
-    error.service = service;
-    error.url = url.toString();
+    const error = buildApiError(response.status, json, service, url.toString());
     if (isAdminAuthFailure(error)) {
       error.message = buildAdminSessionExpiredNotice('server');
       handleAdminSessionExpired('server', { source: 'api-raw-response' });
@@ -2023,7 +2229,7 @@ async function loadData(options = {}) {
   } catch (error) {
     if (!isLoadRequestCurrent(loadRequest)) return;
     clearScopedData(loadRequest.tab);
-    setMessage(error.message || 'Failed to load admin data.', true);
+    setMessage(toFriendlyErrorMessage(error, 'Failed to load admin data.'), true);
   } finally {
     const finished = finishLoadRequest(loadRequest);
     if (finished && shouldAutoLoadFeedbackScreenshots) scheduleFeedbackScreenshotAutoLoad();
@@ -2074,7 +2280,7 @@ async function loadAnalyticsData(loadRequest = null) {
       const response = await api(path, { params });
       return { key, data: normalizeAnalyticsResponse(response) };
     } catch (error) {
-      return { key, error: error.message || 'Failed to load section.' };
+      return { key, error: toFriendlyErrorMessage(error, 'Failed to load section.') };
     }
   });
 
@@ -2306,7 +2512,7 @@ async function loadAdminControlData(loadRequest) {
     const [requests, users, user] = await Promise.all([
       api(API_PATHS.subscriptionSupport.requests, { params: { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail } }),
       api(API_PATHS.subscriptionSupport.usersList, { params: { email: filters.userEmail, tier: filters.subscriptionUserTier, status: filters.subscriptionUserStatus } }),
-      filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: error.message || 'User not found.' })) : Promise.resolve(null),
+      filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'User not found.') })) : Promise.resolve(null),
     ]);
     const requestPayload = normalizeAdminObjectResponse(requests);
     const userPayload = normalizeAdminObjectResponse(users);
@@ -2685,7 +2891,7 @@ function createAdminLoginForm({ className = 'login-grid', compact = false } = {}
       render();
       loadData();
     } catch (error) {
-      setMessage(error.message || 'Login failed.', true);
+      setMessage(toFriendlyErrorMessage(error, 'Login failed.'), true);
       render();
     }
   });
@@ -4662,7 +4868,7 @@ function normalizePlanPolicyValueItem(item = {}) {
   const planKey = String(item.planKey || item.plan_key || item.plan || '').toUpperCase();
   return {
     ...item,
-    id: getItemId(item) || item.planPolicyValueId || item.plan_policy_value_id || `${policyKey}:${planKey}`,
+    id: getItemId(item) || item.planPolicyValueId || item.plan_policy_value_id || (policyKey && planKey ? `${policyKey}:${planKey}` : ''),
     policyKey,
     planKey,
     value: item.value ?? item.valueNumber ?? item.value_number ?? item.valueText ?? item.value_text ?? item.valueBoolean ?? item.value_boolean ?? item.limitCount ?? item.limit_count ?? '',
@@ -5293,10 +5499,12 @@ function openPlanPolicyValueModal({ matrixItem = null, planKey = '', valueRecord
   const selectedPlan = String(sourceItem.planKey || planKey || state.adminOptions.planMatrixPlanKeys?.[0] || '').toUpperCase();
   const valueFromMatrix = matrixItem?.values?.[selectedPlan] || {};
   const raw = valueItem || sourceItem || valueFromMatrix.raw || {};
+  const explicitId = raw.id || raw.planPolicyValueId || raw.plan_policy_value_id || '';
+  const hasExistingValue = Boolean(valueItem || valueRecord || explicitId);
   state.modal = {
     kind: 'planPolicyValueEdit',
-    id: valueItem ? valueItem.id : (raw.id || raw.planPolicyValueId || raw.plan_policy_value_id || ''),
-    isCreate: !(valueItem || raw.id || raw.planPolicyValueId || raw.plan_policy_value_id),
+    id: explicitId,
+    isCreate: !hasExistingValue,
     matrixItem,
     policyKey,
     planKey: selectedPlan,
@@ -5310,6 +5518,7 @@ function openPlanPolicyValueModal({ matrixItem = null, planKey = '', valueRecord
   };
   render();
 }
+
 
 function renderPlanPolicyValueModal() {
   const modal = state.modal;
@@ -5369,7 +5578,9 @@ async function submitPlanPolicyValueModal() {
     enabled: Boolean(modal.enabled),
     ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_value'),
   };
-  const path = modal.isCreate ? API_PATHS.planPolicyValues.create : API_PATHS.planPolicyValues.update(modal.id || `${body.policyKey}:${body.planKey}`);
+  const valueKey = modal.id || (body.policyKey && body.planKey ? `${body.policyKey}:${body.planKey}` : '');
+  if (!modal.isCreate && !valueKey) return validationError('Plan policy value id is missing. Refresh Plan Matrix and try again.', 'policyKey');
+  const path = modal.isCreate ? API_PATHS.planPolicyValues.create : API_PATHS.planPolicyValues.update(valueKey);
   const action = modal.isCreate ? performPostAction : performPatchAction;
   await action(path, modal.isCreate ? 'Plan policy value created.' : 'Plan policy value updated.', body);
 }
@@ -6307,7 +6518,7 @@ async function decideGlobalLearningCandidate(item, approve) {
       : 'Candidate rejected.');
     await loadData();
   } catch (error) {
-    setMessage(error.message || 'Unable to update global learning candidate.', true);
+    setMessage(toFriendlyErrorMessage(error, 'Unable to update global learning candidate.'), true);
     state.loading = false;
     render();
   }
@@ -9201,7 +9412,7 @@ async function boot() {
     clearAuthSession();
     state.user = null;
     state.adminSession = null;
-    state.error = error.message || 'Failed to initialize Firebase authentication.';
+    state.error = toFriendlyErrorMessage(error, 'Failed to initialize Firebase authentication.');
     render();
   }
 }

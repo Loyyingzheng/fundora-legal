@@ -22,11 +22,13 @@ assert(app.includes("document.addEventListener('visibilitychange'"), 'Visibility
 assert(app.includes("window.addEventListener('focus'"), 'Window focus must trigger proactive session checks.');
 assert(/state\.modal\s*=\s*null/.test(app), 'Logout/session expiry must close any open modal.');
 assert(/state\.navOpen\s*=\s*false/.test(app), 'Logout/session expiry must close the mobile/admin drawer.');
-assert(app.includes('isAdminAuthFailure(error)'), '401/token refresh failures must be treated as auth failures.');
-assert(app.includes("handleAdminSessionExpired('server'"), 'Backend 401 responses must force a safe sign-out.');
+assert(app.includes('isAdminAuthFailure(error)'), 'Token refresh failures must be treated as auth failures.');
+assert(app.includes("handleAdminSessionExpired('server'"), 'Confirmed backend auth expiry responses must force a safe sign-out.');
+assert(app.includes('if (isAdminAuthFailure(error)) {'), 'API failures must use the centralized auth-failure classifier before signing out.');
+assert(!/return\s+status\s*={3}\s*401/.test(app), 'Do not treat every backend 401 as a session expiry; backend may return 401 for critical-action validation.');
 assert(app.includes('signedInAt: Number(existing.signedInAt'), 'Token refresh must preserve the original absolute session start time.');
 
-assert(html.includes('20260708-session-responsive-v1'), 'Admin assets must be cache-busted for the session/responsive fix.');
+assert(html.includes('20260708-backend-error-surface-v3'), 'Admin assets must be cache-busted for the session/auth classifier fix.');
 assert(/@media\s*\(max-width:\s*760px\)[\s\S]*input,[\s\S]*font-size:\s*16px/.test(styles), 'Mobile form fields must use 16px font size to avoid browser zoom.');
 assert(/@media\s*\(max-width:\s*760px\)[\s\S]*\.modal-card,[\s\S]*min-height:\s*100dvh/.test(styles), 'Mobile modals must use the dynamic viewport height.');
 assert(/@media\s*\(max-width:\s*760px\)[\s\S]*\.modal-actions[\s\S]*position:\s*sticky/.test(styles), 'Mobile modal actions must remain reachable.');

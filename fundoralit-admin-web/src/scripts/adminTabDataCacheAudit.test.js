@@ -16,7 +16,7 @@ assert(app.includes('restoreAdminTabCache(state.activeTab, { allowStale: true })
 assert(app.includes('invalidateAdminTabDataCache()'), 'Admin mutations must invalidate cached tab data.');
 assert(app.includes('forceLoadData'), 'Manual Refresh buttons must be able to bypass the cache.');
 assert(app.includes('renderDataCacheStatus'), 'Admin UI must disclose when cached data is displayed.');
-assert(indexHtml.includes('app.js?v=20260708-session-responsive-v1'), 'Admin runtime must be cache-busted after tab cache enhancement.');
-assert(indexHtml.includes('styles.css?v=20260708-session-responsive-v1'), 'Admin styles must be cache-busted after tab cache enhancement.');
+assert(indexHtml.includes('app.js?v=20260708-backend-error-surface-v3'), 'Admin runtime must be cache-busted after tab cache enhancement.');
+assert(indexHtml.includes('styles.css?v=20260708-backend-error-surface-v3'), 'Admin styles must be cache-busted after tab cache enhancement.');
 
 console.log('adminTabDataCacheAudit passed');

@@ -19,6 +19,6 @@ assert(app.includes("['Schedule', scheduleText"), 'Job cards must display readab
 assert(!app.includes("['Cron'"), 'Job cards must not expose raw cron rows.');
 assert(app.includes('Run now only deletes rows older than their retention cutoff'), 'Audit cleanup explanation must tell admins why recent rows remain.');
 assert(app.includes('renderSystemHousekeepingLastRun'), 'Run-now result must render deleted counts instead of raw-only feedback.');
-assert(index.includes('20260708-session-responsive-v1'), 'Index must cache-bust the updated housekeeping runtime.');
+assert(index.includes('20260708-backend-error-surface-v3'), 'Index must cache-bust the updated housekeeping runtime.');
 
 console.log('adminHousekeepingScheduleEditAudit passed');
