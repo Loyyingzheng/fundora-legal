@@ -21,7 +21,7 @@ assert(!app.includes('json?.message || json?.error || json?.data?.message || jso
 assert(app.includes("setMessage(toFriendlyErrorMessage(error, 'Failed to load admin data.'), true)"), 'loadData must not drop backend payload by using error.message only.');
 assert(app.includes("return { key, error: toFriendlyErrorMessage(error, 'Failed to load section.') };"), 'Analytics partial failures must show backend messages.');
 assert(app.includes("setMessage(toFriendlyErrorMessage(error, 'Unable to update global learning candidate.'), true)"), 'Global learning actions must show backend response messages.');
-assert(app.includes('state.modal.fieldErrors = fieldKey') && app.includes('...backendFieldErrors'), 'Modal errors must merge backend fieldErrors with client-side field errors.');
+assert(app.includes('normalizeModalFieldErrors(extractBackendFieldErrors(message))') && app.includes('...backendFieldErrors') && app.includes('...inferredFieldErrors'), 'Modal errors must merge backend fieldErrors, inferred field errors, and client-side field errors.');
 assert(app.includes('Backend code:') && app.includes('backendCode'), 'Backend error code must be preserved for admin diagnostics.');
 assert(app.includes('AUTH_TOKEN_MISSING') && app.includes('AUTH_TOKEN_INVALID'), 'True token failures must still be detected by code.');
 assert(!/payload\.error\s*\|\|\s*nestedData\.message/.test(app), 'Do not treat object payload.error as a display string.');

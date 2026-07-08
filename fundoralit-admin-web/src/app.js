@@ -1060,19 +1060,98 @@ function clearModalFeedback() {
   state.modal.focusFieldKey = '';
 }
 
+const MODAL_FIELD_ALIASES = {
+  auditReason: 'reason',
+  audit_reason: 'reason',
+  reasonText: 'reason',
+  reason_text: 'reason',
+  criticalActionReason: 'reason',
+  critical_action_reason: 'reason',
+  confirmationPhrase: 'confirmPhrase',
+  confirmation_phrase: 'confirmPhrase',
+  confirm_phrase: 'confirmPhrase',
+  confirmText: 'confirmPhrase',
+  confirm_text: 'confirmPhrase',
+  policy_key: 'policyKey',
+  policy: 'policyKey',
+  policyDefinition: 'policyKey',
+  policy_definition: 'policyKey',
+  plan_key: 'planKey',
+  plan: 'planKey',
+  value_number: 'value',
+  valueNumber: 'value',
+  value_text: 'value',
+  valueText: 'value',
+  value_boolean: 'value',
+  valueBoolean: 'value',
+  period_type: 'periodType',
+  period: 'periodType',
+  is_unlimited: 'unlimited',
+  isUnlimited: 'unlimited',
+};
+
+function toCamelFieldKey(value) {
+  const text = normalizedTrim(value);
+  if (!text) return '';
+  return text.replace(/[.\[\]]+/g, '_').split('_').filter(Boolean).map((part, index) => {
+    const lower = part.charAt(0).toLowerCase() + part.slice(1);
+    return index === 0 ? lower : lower.charAt(0).toUpperCase() + lower.slice(1);
+  }).join('');
+}
+
+function canonicalModalFieldKey(fieldKey) {
+  const raw = normalizedTrim(fieldKey);
+  if (!raw) return '';
+  return MODAL_FIELD_ALIASES[raw] || MODAL_FIELD_ALIASES[toCamelFieldKey(raw)] || toCamelFieldKey(raw) || raw;
+}
+
+function normalizeModalFieldErrors(fieldErrors = {}) {
+  const target = {};
+  Object.entries(fieldErrors || {}).forEach(([field, message]) => {
+    const key = canonicalModalFieldKey(field);
+    const text = primitiveText(message);
+    if (key && text && !target[key]) target[key] = text;
+  });
+  return target;
+}
+
+function inferModalFieldErrorsFromBackend(errorOrMessage, friendlyMessage) {
+  const modal = state.modal || {};
+  const text = `${friendlyMessage || ''} ${primitiveText(errorOrMessage?.message) || ''}`.toLowerCase();
+  const inferred = {};
+  if (modal.kind === 'planPolicyValueEdit' && /plan policy value/.test(text) && /already exists|duplicate|unique/.test(text)) {
+    const duplicateMessage = 'This policy and plan already has a value. Use edit/update for the existing record instead of creating another one.';
+    inferred.policyKey = duplicateMessage;
+    inferred.planKey = duplicateMessage;
+  }
+  if (/audit reason/.test(text) || /critical action reason/.test(text)) {
+    inferred.reason = friendlyMessage;
+  }
+  if (/confirmation phrase|confirm phrase|type exactly/.test(text)) {
+    inferred.confirmPhrase = friendlyMessage;
+  }
+  return inferred;
+}
+
 function setModalError(message, fieldKey = '') {
   if (!state.modal) {
     setMessage(message, true);
     return;
   }
   const friendlyMessage = toFriendlyErrorMessage(message);
-  const backendFieldErrors = extractBackendFieldErrors(message);
-  state.modal.error = friendlyMessage;
+  const backendFieldErrors = normalizeModalFieldErrors(extractBackendFieldErrors(message));
+  const explicitFieldKey = canonicalModalFieldKey(fieldKey);
+  const inferredFieldErrors = inferModalFieldErrorsFromBackend(message, friendlyMessage);
+  const fieldErrors = {
+    ...backendFieldErrors,
+    ...inferredFieldErrors,
+    ...(explicitFieldKey ? { [explicitFieldKey]: friendlyMessage } : {}),
+  };
   state.modal.message = '';
-  state.modal.fieldErrors = fieldKey
-    ? { ...backendFieldErrors, [fieldKey]: friendlyMessage }
-    : backendFieldErrors;
-  state.modal.focusFieldKey = fieldKey || Object.keys(backendFieldErrors)[0] || '';
+  state.modal.fieldErrors = fieldErrors;
+  state.modal.focusFieldKey = explicitFieldKey || Object.keys(fieldErrors)[0] || '';
+  // Field-level backend/client validation should stay beside the fields instead of showing a large red banner.
+  state.modal.error = Object.keys(fieldErrors).length ? '' : friendlyMessage;
   render();
   if (state.modal.focusFieldKey) {
     window.setTimeout(() => {
@@ -4883,6 +4962,72 @@ function normalizePlanPolicyValueItem(item = {}) {
   };
 }
 
+function isPlanPolicyValueRecordPresent(record) {
+  if (!record || typeof record !== 'object') return false;
+  const normalized = normalizePlanPolicyValueItem(record);
+  if (normalized.id || normalized.policyKey || normalized.planKey) return true;
+  return normalized.status && normalizeMatrixStatus(normalized.status) !== 'MISSING_VALUE';
+}
+
+function findExistingPlanPolicyValueRecord(policyKey, planKey, matrixItem = null) {
+  const targetPolicy = normalizedTrim(policyKey);
+  const targetPlan = normalizedTrim(planKey).toUpperCase();
+  if (!targetPolicy || !targetPlan) return null;
+  const fromList = (state.data?.planPolicyValues || [])
+    .map((item) => normalizePlanPolicyValueItem(item))
+    .find((item) => item.policyKey === targetPolicy && item.planKey === targetPlan);
+  if (fromList) return fromList;
+  const matrixValue = matrixItem?.values?.[targetPlan];
+  if (matrixValue && normalizeMatrixStatus(matrixValue.status) !== 'MISSING_VALUE') {
+    const raw = matrixValue.raw && typeof matrixValue.raw === 'object' ? matrixValue.raw : matrixValue;
+    return normalizePlanPolicyValueItem({
+      ...raw,
+      policyKey: raw.policyKey || raw.policy_key || targetPolicy,
+      planKey: raw.planKey || raw.plan_key || targetPlan,
+      id: getItemId(raw) || raw.planPolicyValueId || raw.plan_policy_value_id || `${targetPolicy}:${targetPlan}`,
+      value: raw.value ?? matrixValue.value ?? raw.valueNumber ?? raw.value_number ?? '',
+      unlimited: raw.unlimited ?? matrixValue.unlimited,
+      periodType: raw.periodType || raw.period_type || matrixValue.periodType || 'NONE',
+      enabled: raw.enabled ?? matrixValue.enabled,
+    });
+  }
+  return null;
+}
+
+function applyPlanPolicyValueRecordToModal(modal, record, { preserveUserValue = false } = {}) {
+  const normalized = normalizePlanPolicyValueItem(record || {});
+  if (!normalized.policyKey || !normalized.planKey) return false;
+  modal.id = normalized.id || `${normalized.policyKey}:${normalized.planKey}`;
+  modal.isCreate = false;
+  modal.policyKey = normalized.policyKey;
+  modal.planKey = normalized.planKey;
+  if (!preserveUserValue) {
+    modal.value = normalized.value ?? '';
+    modal.unlimited = Boolean(normalized.unlimited);
+    modal.periodType = normalized.periodType || 'NONE';
+    modal.enabled = normalized.enabled !== false;
+  }
+  return true;
+}
+
+function syncPlanPolicyValueExistingRecord(modal, { preserveUserValue = false } = {}) {
+  if (!modal || modal.kind !== 'planPolicyValueEdit') return false;
+  const existing = findExistingPlanPolicyValueRecord(modal.policyKey, modal.planKey, modal.matrixItem);
+  if (existing) return applyPlanPolicyValueRecordToModal(modal, existing, { preserveUserValue });
+  modal.id = '';
+  modal.isCreate = true;
+  return false;
+}
+
+function onPlanPolicyValueSelectionChange(modal, key, value) {
+  modal[key] = key === 'planKey' ? normalizedTrim(value).toUpperCase() : value;
+  modal.fieldErrors = {};
+  modal.error = '';
+  modal.message = '';
+  syncPlanPolicyValueExistingRecord(modal);
+  render();
+}
+
 function normalizeCsvList(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean);
   if (value && typeof value === 'object') return Object.values(value).map((item) => String(item || '').trim()).filter(Boolean);
@@ -5494,20 +5639,22 @@ async function submitSubscriptionPlanModal() {
 }
 
 function openPlanPolicyValueModal({ matrixItem = null, planKey = '', valueRecord = null, valueItem = null } = {}) {
-  const sourceItem = valueItem || normalizePlanPolicyValueItem(valueRecord || {});
+  const sourceItem = normalizePlanPolicyValueItem(valueItem || valueRecord || {});
   const policyKey = sourceItem.policyKey || matrixItem?.policyKey || state.adminOptions.planMatrixPolicyKeys?.[0] || '';
   const selectedPlan = String(sourceItem.planKey || planKey || state.adminOptions.planMatrixPlanKeys?.[0] || '').toUpperCase();
   const valueFromMatrix = matrixItem?.values?.[selectedPlan] || {};
-  const raw = valueItem || sourceItem || valueFromMatrix.raw || {};
-  const explicitId = raw.id || raw.planPolicyValueId || raw.plan_policy_value_id || '';
-  const hasExistingValue = Boolean(valueItem || valueRecord || explicitId);
+  const existingRecord = sourceItem.id ? sourceItem : findExistingPlanPolicyValueRecord(policyKey, selectedPlan, matrixItem);
+  const normalizedExisting = existingRecord ? normalizePlanPolicyValueItem(existingRecord) : null;
+  const raw = normalizedExisting || sourceItem || valueFromMatrix.raw || {};
+  const explicitId = raw.id || raw.planPolicyValueId || raw.plan_policy_value_id || (normalizedExisting?.id || '');
+  const hasExistingValue = Boolean(normalizedExisting || explicitId);
   state.modal = {
     kind: 'planPolicyValueEdit',
-    id: explicitId,
+    id: explicitId || (hasExistingValue && policyKey && selectedPlan ? `${policyKey}:${selectedPlan}` : ''),
     isCreate: !hasExistingValue,
     matrixItem,
-    policyKey,
-    planKey: selectedPlan,
+    policyKey: normalizedExisting?.policyKey || policyKey,
+    planKey: normalizedExisting?.planKey || selectedPlan,
     value: raw.value ?? raw.valueNumber ?? raw.value_number ?? raw.limitCount ?? raw.limit_count ?? valueFromMatrix.value ?? '',
     unlimited: asBoolean(raw.unlimited ?? raw.isUnlimited ?? raw.is_unlimited ?? valueFromMatrix.unlimited, false),
     periodType: String(raw.periodType || raw.period_type || valueFromMatrix.periodType || 'NONE').toUpperCase(),
@@ -5516,6 +5663,7 @@ function openPlanPolicyValueModal({ matrixItem = null, planKey = '', valueRecord
     confirmPhrase: '',
     expectedPhrase: 'UPDATE PRODUCT POLICY',
   };
+  syncPlanPolicyValueExistingRecord(state.modal, { preserveUserValue: true });
   render();
 }
 
@@ -5524,8 +5672,8 @@ function renderPlanPolicyValueModal() {
   const modal = state.modal;
   const policies = ['', ...(state.adminOptions.planMatrixPolicyKeys || [])];
   const plans = ['', ...(state.adminOptions.planMatrixPlanKeys || [])];
-  const policySelect = select(policies, modal.policyKey || '', (value) => { modal.policyKey = value; }); policySelect.setAttribute('data-field-key', 'policyKey');
-  const planSelect = select(plans, modal.planKey || '', (value) => { modal.planKey = value; }); planSelect.setAttribute('data-field-key', 'planKey');
+  const policySelect = select(policies, modal.policyKey || '', (value) => onPlanPolicyValueSelectionChange(modal, 'policyKey', value)); policySelect.setAttribute('data-field-key', 'policyKey');
+  const planSelect = select(plans, modal.planKey || '', (value) => onPlanPolicyValueSelectionChange(modal, 'planKey', value)); planSelect.setAttribute('data-field-key', 'planKey');
   const value = el('input', { type: 'text', value: modal.value ?? '', placeholder: '20, true, custom text...', 'data-field-key': 'value' }); value.addEventListener('input', () => { modal.value = value.value; });
   const definition = (state.data?.policyDefinitions || []).find((item) => item.policyKey === modal.policyKey) || modal.matrixItem?.definition || {};
   const allowedPeriods = definition.supportsPeriod ? ['NONE', ...normalizeCsvList(definition.allowedPeriods).filter((item) => item !== 'NONE')] : ['NONE'];
@@ -5578,6 +5726,10 @@ async function submitPlanPolicyValueModal() {
     enabled: Boolean(modal.enabled),
     ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_value'),
   };
+  const existingRecord = findExistingPlanPolicyValueRecord(body.policyKey, body.planKey, modal.matrixItem);
+  if (modal.isCreate && existingRecord) {
+    applyPlanPolicyValueRecordToModal(modal, existingRecord, { preserveUserValue: true });
+  }
   const valueKey = modal.id || (body.policyKey && body.planKey ? `${body.policyKey}:${body.planKey}` : '');
   if (!modal.isCreate && !valueKey) return validationError('Plan policy value id is missing. Refresh Plan Matrix and try again.', 'policyKey');
   const path = modal.isCreate ? API_PATHS.planPolicyValues.create : API_PATHS.planPolicyValues.update(valueKey);
