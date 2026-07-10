@@ -1,286 +1,389 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fundoralit Account Deletion</title>
-    <meta name="description"
-        content="Learn how to delete your Fundoralit account and request data removal from our personal finance app.">
-    <meta name="keywords" content="Fundoralit, account deletion, data removal, privacy, mobile app">
-    <meta name="author" content="Fundoralit">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Securely delete your Fundoralit account and associated personal data.">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; connect-src 'self' https:; frame-src https://accounts.google.com https://*.firebaseapp.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>Fundoralit Account Deletion</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f8fafc;
+      --surface: #ffffff;
+      --text: #172033;
+      --muted: #5f6b7a;
+      --border: #dfe5ec;
+      --primary: #2f855a;
+      --primary-dark: #276749;
+      --danger: #c53030;
+      --danger-dark: #9b2c2c;
+      --danger-soft: #fff5f5;
+      --warning-soft: #fffaf0;
+      --success-soft: #f0fff4;
+      --shadow: 0 18px 50px rgba(23, 32, 51, 0.08);
+    }
 
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            line-height: 1.6;
-            color: #1a202c;
-            background-color: #ffffff;
-            font-size: 16px;
-        }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
 
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
+    header {
+      padding: 54px 20px 38px;
+      text-align: center;
+      background: linear-gradient(180deg, #f5efe1 0%, #fbfaf6 100%);
+      border-bottom: 1px solid var(--border);
+    }
 
-        header {
-            background-color: #f5efe1;
-            padding: 40px 0;
-            text-align: center;
-            border-bottom: 1px solid #e2e8f0;
-            margin-bottom: 40px;
-        }
+    header h1 {
+      margin: 0 0 10px;
+      font-size: clamp(2rem, 5vw, 3rem);
+      line-height: 1.15;
+    }
 
-        header h1 {
-            font-size: 2.5rem;
-            font-weight: 700;
-            color: #2d3748;
-            margin-bottom: 10px;
-        }
+    header p {
+      margin: 0 auto;
+      max-width: 720px;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
 
-        header p {
-            font-size: 1.1rem;
-            color: #4a5568;
-        }
+    main {
+      width: min(900px, calc(100% - 32px));
+      margin: 34px auto 64px;
+    }
 
-        .section {
-            margin-bottom: 40px;
-        }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: var(--shadow);
+      padding: clamp(20px, 4vw, 34px);
+      margin-bottom: 24px;
+    }
 
-        .section h2 {
-            font-size: 1.8rem;
-            font-weight: 600;
-            color: #2d3748;
-            margin-bottom: 15px;
-            padding-top: 20px;
-        }
+    .danger-card {
+      border-color: #fed7d7;
+      background: linear-gradient(180deg, var(--surface), #fffafa);
+    }
 
-        .section h2:first-child {
-            padding-top: 0;
-        }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--danger-soft);
+      color: var(--danger-dark);
+      font-size: 0.82rem;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
 
-        .section p {
-            margin-bottom: 15px;
-            color: #4a5568;
-        }
+    h2, h3 { line-height: 1.25; }
+    h2 { margin: 14px 0 8px; font-size: clamp(1.45rem, 3vw, 2rem); }
+    h3 { margin: 0 0 8px; font-size: 1.12rem; }
+    p { color: var(--muted); }
 
-        .section ul {
-            margin: 15px 0;
-            padding-left: 20px;
-        }
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin: 22px 0;
+    }
 
-        .section li {
-            margin-bottom: 8px;
-            color: #4a5568;
-        }
+    .step {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #fbfcfe;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
 
-        .highlight {
-            background-color: #f0fff4;
-            padding: 15px;
-            border-left: 4px solid #38a169;
-            margin: 20px 0;
-        }
+    .step strong { display: block; color: var(--text); margin-bottom: 2px; }
 
-        .button {
-            display: inline-block;
-            background-color: #38a169;
-            color: #ffffff;
-            padding: 12px 24px;
-            text-decoration: none;
-            border-radius: 6px;
-            font-weight: 600;
-            margin-top: 10px;
-            transition: background-color 0.2s;
-        }
+    .panel[hidden], .notice[hidden], button[hidden] { display: none !important; }
 
-        .button:hover {
-            background-color: #2f855a;
-        }
+    .field { margin: 16px 0; }
+    label { display: block; font-weight: 750; margin-bottom: 7px; }
+    input[type="email"], input[type="password"], input[type="text"] {
+      width: 100%;
+      min-height: 48px;
+      border: 1px solid #cbd5e0;
+      border-radius: 12px;
+      padding: 11px 13px;
+      font: inherit;
+      color: var(--text);
+      background: #fff;
+    }
 
-        .button-row {
-            display: flex;
-            gap: 12px;
-            flex-wrap: wrap;
-            margin-top: 10px;
-        }
+    input:focus {
+      outline: 3px solid rgba(47, 133, 90, 0.16);
+      border-color: var(--primary);
+    }
 
-        .button-secondary {
-            background-color: #ffffff;
-            color: #2f855a;
-            border: 2px solid #38a169;
-        }
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
 
-        .button-secondary:hover {
-            background-color: #f0fff4;
-        }
+    button, .link-button {
+      min-height: 46px;
+      border: 0;
+      border-radius: 12px;
+      padding: 10px 17px;
+      font: inherit;
+      font-weight: 800;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
 
-        footer {
-            background-color: #2d3748;
-            color: #ffffff;
-            padding: 30px 0;
-            text-align: center;
-            margin-top: 60px;
-        }
+    button:disabled { cursor: not-allowed; opacity: 0.52; }
+    .primary { background: var(--primary); color: #fff; }
+    .primary:hover:not(:disabled) { background: var(--primary-dark); }
+    .secondary { background: #fff; color: var(--primary-dark); border: 1px solid #9ae6b4; }
+    .danger { background: var(--danger); color: #fff; }
+    .danger:hover:not(:disabled) { background: var(--danger-dark); }
+    .ghost { background: #edf2f7; color: #2d3748; }
 
-        footer p {
-            margin-bottom: 10px;
-        }
+    .divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 18px 0;
+      color: #718096;
+      font-size: 0.88rem;
+    }
+    .divider::before, .divider::after { content: ""; height: 1px; background: var(--border); flex: 1; }
 
-        footer a {
-            color: #38a169;
-            text-decoration: none;
-        }
+    .verified {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 14px;
+      border-radius: 12px;
+      background: var(--success-soft);
+      border: 1px solid #c6f6d5;
+      margin: 14px 0 20px;
+    }
 
-        footer a:hover {
-            text-decoration: underline;
-        }
+    .verified strong { color: #22543d; }
 
-        @media (max-width: 768px) {
-            header h1 {
-                font-size: 2rem;
-            }
+    .check-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 18px 0;
+      padding: 14px;
+      border-radius: 12px;
+      background: var(--warning-soft);
+      border: 1px solid #fbd38d;
+    }
 
-            .section h2 {
-                font-size: 1.5rem;
-            }
-        }
+    .check-row input { margin-top: 5px; transform: scale(1.15); }
+    .check-row label { margin: 0; font-weight: 650; }
 
-        @media (max-width: 480px) {
-            .container {
-                padding: 15px;
-            }
+    .error-box, .notice {
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin: 14px 0;
+    }
 
-            header {
-                padding: 30px 0;
-            }
+    .error-box {
+      background: var(--danger-soft);
+      border: 1px solid #feb2b2;
+      color: var(--danger-dark);
+      font-weight: 650;
+    }
 
-            header h1 {
-                font-size: 1.8rem;
-            }
+    .notice {
+      background: #ebf8ff;
+      border: 1px solid #bee3f8;
+      color: #2a4365;
+    }
 
-            .section h2 {
-                font-size: 1.3rem;
-            }
-        }
-    </style>
+    .status-list { list-style: none; padding: 0; margin: 20px 0; display: grid; gap: 10px; }
+    .status-list li {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+    }
+
+    .status-badge { padding: 4px 9px; border-radius: 999px; font-size: 0.8rem; white-space: nowrap; }
+    .status-complete { background: #c6f6d5; color: #22543d; }
+    .status-pending { background: #e2e8f0; color: #2d3748; }
+    .status-warning { background: #feebc8; color: #7b341e; }
+    .error-text { color: var(--danger-dark); }
+
+    .info-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+    .info-block { border-top: 1px solid var(--border); padding-top: 16px; }
+    ul { padding-left: 22px; color: var(--muted); }
+
+    dialog {
+      width: min(520px, calc(100% - 28px));
+      border: 0;
+      border-radius: 18px;
+      padding: 0;
+      box-shadow: 0 28px 80px rgba(0,0,0,.24);
+    }
+
+    dialog::backdrop { background: rgba(15, 23, 42, 0.6); }
+    .dialog-content { padding: 26px; }
+    .dialog-content h2 { color: var(--danger-dark); margin-top: 0; }
+
+    footer {
+      padding: 28px 20px;
+      text-align: center;
+      background: #1a202c;
+      color: #edf2f7;
+    }
+    footer a { color: #9ae6b4; }
+
+    @media (max-width: 700px) {
+      .steps, .info-grid { grid-template-columns: 1fr; }
+      .button-row > * { width: 100%; }
+      .verified, .status-list li { align-items: flex-start; flex-direction: column; }
+    }
+  </style>
+  <script src="./account-deletion-config.js"></script>
+  <script type="module" src="./account-deletion.js"></script>
 </head>
-
 <body>
-    <header>
-        <div class="container">
-            <h1>Fundoralit Account Deletion</h1>
-            <p>Learn how to delete your Fundoralit account and request data removal.</p>
+  <header>
+    <h1>Fundoralit Account Deletion</h1>
+    <p>Authenticate securely, confirm the permanent action, and use the same protected deletion workflow as the Fundoralit mobile app.</p>
+  </header>
+
+  <main>
+    <section class="card danger-card" aria-labelledby="secure-delete-title">
+      <span class="eyebrow">Permanent action</span>
+      <h2 id="secure-delete-title">Delete your account securely</h2>
+      <p>The web flow requires a fresh Firebase sign-in and a separate final confirmation before the deletion API is called.</p>
+
+      <div class="steps" aria-label="Deletion steps">
+        <div class="step"><strong>1. Authenticate</strong>Verify your registered Fundoralit account.</div>
+        <div class="step"><strong>2. Confirm</strong>Re-enter your email and type DELETE.</div>
+        <div class="step"><strong>3. Process</strong>Track Core, Collaboration, storage, and Firebase cleanup.</div>
+      </div>
+
+      <div id="config-error" class="error-box" hidden role="alert"></div>
+
+      <div id="auth-panel" class="panel" hidden>
+        <h3>Verify your identity</h3>
+        <p>This page uses in-memory Firebase authentication. Your sign-in session is not persisted by this page.</p>
+
+        <div class="field">
+          <label for="email">Registered email</label>
+          <input id="email" type="email" autocomplete="username" inputmode="email" required>
         </div>
-    </header>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" autocomplete="current-password" required>
+        </div>
+        <div id="auth-error" class="error-box" hidden role="alert"></div>
+        <div class="button-row">
+          <button id="sign-in-button" class="primary" type="button">Verify with password</button>
+        </div>
 
-    <div class="container">
-        <section class="section">
-            <h2>Delete your account in the app</h2>
-            <p>The fastest way to delete your Fundoralit account is directly in the app:</p>
-            <ol>
-                <li>Open the Fundoralit app</li>
-                <li>Go to Profile → Security → Delete Account</li>
-                <li>Follow the prompts to confirm deletion</li>
-            </ol>
-            <p>This method allows for immediate verification and faster processing.</p>
-        </section>
+        <div class="divider">or</div>
+        <button id="google-sign-in-button" class="secondary" type="button">Verify with Google</button>
+      </div>
 
-        <section class="section">
-            <h2>Request deletion without app access</h2>
-            <p>If you can no longer access the Fundoralit app, you can request account deletion by emailing us from your
-                registered email address.</p>
-            <p>We may need to verify your account ownership before processing the request.</p>
-            <div class="button-row">
-                <a href="mailto:fundoraapp.support@gmail.com?subject=Fundoralit%20Account%20Deletion%20Request&body=Hello%20Fundoralit%20Support%2C%0A%0AI%20would%20like%20to%20request%20deletion%20of%20my%20Fundoralit%20account%20and%20associated%20personal%20data.%0A%0ARegistered%20email%3A%0A%0AReason%2C%20optional%3A"
-                    class="button">
-                    Request by Email App
-                </a>
+      <div id="confirmation-panel" class="panel" hidden>
+        <h3>Confirm permanent deletion</h3>
+        <div class="verified">
+          <span>Identity verified</span>
+          <strong id="verified-account"></strong>
+        </div>
 
-                <a href="https://mail.google.com/mail/?view=cm&fs=1&to=fundoraapp.support@gmail.com&su=Fundoralit%20Account%20Deletion%20Request&body=Hello%20Fundoralit%20Support%2C%0A%0AI%20would%20like%20to%20request%20deletion%20of%20my%20Fundoralit%20account%20and%20associated%20personal%20data.%0A%0ARegistered%20email%3A%0A%0AReason%2C%20optional%3A"
-                    class="button button-secondary" target="_blank" rel="noopener noreferrer">
-                    Request with Gmail
-                </a>
-            </div>
-            <p class="fallback-text">
-                If the button does not open your email app, email us directly at
-                <a href="mailto:fundoraapp.support@gmail.com">fundoraapp.support@gmail.com</a>
-                with the subject “Fundoralit Account Deletion Request”.
-            </p>
-        </section>
+        <div class="field">
+          <label for="confirm-email">Re-enter the verified email</label>
+          <input id="confirm-email" type="email" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="confirm-phrase">Type DELETE</label>
+          <input id="confirm-phrase" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false">
+        </div>
 
-        <section class="section">
-            <h2>What will be deleted</h2>
-            <p>When your account is deleted, the following personal data will be removed:</p>
-            <ul>
-                <li>Account credentials and authentication information</li>
-                <li>Personal profile information</li>
-                <li>Financial records (expenses, income, budgets)</li>
-                <li>Personal saving goals and progress</li>
-                <li>Wallet and bucket allocations</li>
-                <li>Bill reminders and payment tracking</li>
-                <li>Cloud backup data</li>
-                <li>Biometric login records</li>
-                <li>Local app session data</li>
-            </ul>
-        </section>
+        <div class="check-row">
+          <input id="understand-checkbox" type="checkbox">
+          <label for="understand-checkbox">I understand that personal financial data, cloud backups, authentication access, and other account-linked personal data will be permanently removed. Shared group history may remain anonymized for other active members.</label>
+        </div>
 
-        <section class="section">
-            <h2>Shared group records</h2>
-            <p>Some shared Group Event or Group Goal records may remain because they are part of other members' shared
-                financial history. Where retained, your identity will be anonymized as "Deleted user", and personal
-                identifiers such as email and login credentials will be removed.</p>
-            <p>If you are the owner of a shared Group Event or Group Goal, ownership may be transferred to another
-                active member where possible. If no other active members remain, the shared record may be archived or
-                closed.</p>
-        </section>
+        <div id="confirmation-error" class="error-box" hidden role="alert"></div>
+        <button id="review-delete-button" class="danger" type="button" disabled>Review final deletion</button>
+      </div>
 
-        <section class="section">
-            <h2>Data we may retain</h2>
-            <p>For legal, security, or operational reasons, some limited data may be retained temporarily:</p>
-            <ul>
-                <li>Anonymized usage statistics</li>
-                <li>Records needed for dispute resolution or legal compliance</li>
-                <li>Data required for fraud prevention</li>
-            </ul>
-            <p>Where possible, retained data will be minimized, anonymized, or separated from personal identifiers.
-                Retention periods may vary depending on legal, security, operational, or dispute-resolution
-                requirements.</p>
-        </section>
+      <div id="status-panel" class="panel" hidden aria-live="polite">
+        <h3 id="status-title">Secure cleanup in progress</h3>
+        <p id="status-message"></p>
+        <ul id="status-list" class="status-list"></ul>
+        <button id="status-retry-button" class="secondary" type="button" hidden>Check again</button>
+      </div>
+    </section>
 
-        <section class="section">
-            <h2>Processing time</h2>
-            <p>Account deletion requests submitted through the app are usually processed immediately after successful
-                verification. In some cases, completion may take additional time due to security checks, network issues,
-                or service processing. Email requests may take up to 30 days to process, depending on verification
-                requirements.</p>
-        </section>
+    <section class="card">
+      <h2>What happens to your data</h2>
+      <div class="info-grid">
+        <div class="info-block">
+          <h3>Personal account data</h3>
+          <ul>
+            <li>Account credentials and personal profile information</li>
+            <li>Expenses, income, wallets, buckets, bills, and personal goals</li>
+            <li>Cloud backups, backup keys, biometric credentials, and app-linked personal learning data</li>
+            <li>Firebase Authentication access</li>
+          </ul>
+        </div>
+        <div class="info-block">
+          <h3>Shared Group Event and Group Goal records</h3>
+          <p>When another linked active member remains, shared history is preserved and your identity becomes <strong>Deleted user</strong>. Ownership is transferred where required.</p>
+          <p>When no other linked active member remains, the shared Event or Goal and its dependent records can be hard deleted, including associated Supabase receipt objects where applicable.</p>
+        </div>
+        <div class="info-block">
+          <h3>Processing and recovery</h3>
+          <p>The page stores only a high-entropy deletion status token in browser session storage so a response-loss or page refresh can recover the deletion status. It does not store your Firebase ID token.</p>
+        </div>
+        <div class="info-block">
+          <h3>Unable to authenticate?</h3>
+          <p>Email us from your registered address. Identity verification may be required before a support-assisted request can be approved.</p>
+          <a class="link-button secondary" href="mailto:fundoraapp.support@gmail.com?subject=Fundoralit%20Account%20Deletion%20Request">Contact support</a>
+        </div>
+      </div>
+    </section>
+  </main>
 
-        <section class="section">
-            <h2>Contact</h2>
-            <p>If you have questions about account deletion, contact us at:</p>
-            <p>Email: <a href="mailto:fundoraapp.support@gmail.com">fundoraapp.support@gmail.com</a></p>
-        </section>
-
-        <section class="section">
-            <h2>Last updated</h2>
-            <p>May 13, 2026</p>
-        </section>
+  <dialog id="final-confirmation-dialog" aria-labelledby="final-dialog-title">
+    <div class="dialog-content">
+      <h2 id="final-dialog-title">Permanently delete this account?</h2>
+      <p>Your identity has already been verified. This is the final confirmation. After you continue, the same Core account-deletion API used by the mobile app will start the irreversible cleanup workflow.</p>
+      <div class="button-row">
+        <button id="final-cancel-button" class="ghost" type="button">Cancel</button>
+        <button id="final-delete-button" class="danger" type="button">Permanently delete account</button>
+      </div>
     </div>
+  </dialog>
 
-    <footer>
-        <div class="container">
-            <p>&copy; 2026 Fundoralit. All rights reserved.</p>
-            <p>Contact: <a href="mailto:fundoraapp.support@gmail.com">fundoraapp.support@gmail.com</a></p>
-        </div>
-    </footer>
+  <footer>
+    <p>&copy; 2026 Fundoralit. All rights reserved.</p>
+    <p>Support: <a href="mailto:fundoraapp.support@gmail.com">fundoraapp.support@gmail.com</a></p>
+  </footer>
 </body>
-
 </html>
