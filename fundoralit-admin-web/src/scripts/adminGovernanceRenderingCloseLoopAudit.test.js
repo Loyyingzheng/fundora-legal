@@ -4,6 +4,7 @@ const assert = require('assert');
 const root = path.resolve(__dirname, '..', '..');
 const app = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
+const indexHtml = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
 const loaderStart = app.indexOf('async function loadAdminControlData');
 const loaderEnd = app.indexOf('async function loadData', loaderStart);
@@ -19,6 +20,12 @@ assert(renderer.includes('renderAdminAccountsGovernancePage()'), 'Admin Accounts
 assert(renderer.includes('renderSystemOwnershipPage()'), 'System Ownership must be attached to the page renderer.');
 assert(app.includes('const navigationVisible = state.navOpen;'), 'Sidebar visibility must follow the explicit open state at every viewport width.');
 assert(!app.includes('desktopNavigation || state.navOpen'), 'Desktop width must not force the drawer open after Close is pressed.');
+assert(app.includes('function syncNavigationPresentation()'), 'Navigation state must be synchronized directly to the live DOM.');
+assert(app.includes('function setNavigationOpen(open)'), 'Navigation open/close must use one authoritative setter.');
+assert(!app.includes('if (!state.navOpen) return;'), 'Close must not no-op when stale DOM remains visible but state is already false.');
+assert(app.includes('syncNavigationPresentation();\n}'), 'A full render must re-synchronize drawer presentation.');
+assert(indexHtml.includes('20260710-admin-governance-v2-sidebar-close-v3'), 'Sidebar close fix must use a new asset cache key.');
+assert(css.includes('.admin-sidebar[aria-hidden="true"]'), 'CSS must force a hidden drawer off-screen even if a stale open class survives.');
 assert(!app.includes('desktop-persistent'), 'The drawer must not have a non-closable desktop-only mode.');
 assert(app.includes("onclick: closeNavigation"), 'Sidebar Close and backdrop actions must call closeNavigation.');
 assert(app.includes("tabindex: state.navOpen ? '0' : '-1'"), 'Backdrop keyboard focus must follow the drawer open state.');

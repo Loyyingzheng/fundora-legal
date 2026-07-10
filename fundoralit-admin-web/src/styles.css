@@ -5020,3 +5020,19 @@ body {
   font-weight: 800;
   color: var(--heading);
 }
+
+/* Drawer close-state authority ------------------------------------------------
+   Keep the rendered accessibility state and visual state aligned. This is a
+   final cascade guard against an obsolete `.open` class surviving a failed
+   page render or a previously cached desktop-persistent drawer runtime. */
+.admin-sidebar[aria-hidden="true"] {
+  transform: translateX(-100%) !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.admin-sidebar[aria-hidden="false"].open {
+  transform: translateX(0) !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}

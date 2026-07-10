@@ -1481,20 +1481,50 @@ function getActiveNavGroup(tab = state.activeTab) {
   return NAV_GROUPS.find((group) => group.items.some((item) => item.id === tab)) || NAV_GROUPS[0];
 }
 
+function syncNavigationPresentation() {
+  const navigationOpen = state.navOpen === true;
+
+  document.querySelectorAll('.admin-layout').forEach((layout) => {
+    layout.classList.toggle('nav-open', navigationOpen);
+  });
+
+  document.querySelectorAll('.admin-sidebar').forEach((sidebar) => {
+    sidebar.classList.toggle('open', navigationOpen);
+    sidebar.setAttribute('aria-hidden', navigationOpen ? 'false' : 'true');
+    if (navigationOpen) sidebar.removeAttribute('inert');
+    else sidebar.setAttribute('inert', '');
+  });
+
+  document.querySelectorAll('.nav-backdrop').forEach((backdrop) => {
+    backdrop.tabIndex = navigationOpen ? 0 : -1;
+    backdrop.setAttribute('aria-hidden', navigationOpen ? 'false' : 'true');
+  });
+
+  document.querySelectorAll('.nav-menu-button, .header-menu-button').forEach((button) => {
+    button.setAttribute('aria-expanded', navigationOpen ? 'true' : 'false');
+    button.setAttribute('aria-label', navigationOpen ? 'Close admin navigation' : 'Open admin navigation');
+    button.classList.toggle('active', navigationOpen);
+  });
+}
+
+function setNavigationOpen(open) {
+  state.navOpen = open === true;
+  syncNavigationPresentation();
+}
+
 function openNavigation() {
-  state.navOpen = true;
-  render();
+  setNavigationOpen(true);
 }
 
 function closeNavigation() {
-  if (!state.navOpen) return;
-  state.navOpen = false;
-  render();
+  // Always force the DOM closed, even when state and the rendered drawer became
+  // out of sync because an older cached runtime or an unrelated render failure
+  // left the previous sidebar node visible.
+  setNavigationOpen(false);
 }
 
 function toggleNavigation() {
-  state.navOpen = !state.navOpen;
-  render();
+  setNavigationOpen(!state.navOpen);
 }
 
 function normalizeAdminTab(tabId) {
@@ -1506,7 +1536,7 @@ function setActiveTab(tabId) {
   if (state.adminSession?.mfaRequired && !state.adminSession?.mfaSatisfied && nextTab !== 'myAccount') {
     setMessage('Complete required MFA enrollment and sign-in verification before opening other Admin pages.', true);
     state.activeTab = 'myAccount';
-    state.navOpen = false;
+    setNavigationOpen(false);
     render();
     return;
   }
@@ -1516,7 +1546,7 @@ function setActiveTab(tabId) {
     return;
   }
   const changed = state.activeTab !== nextTab;
-  state.navOpen = false;
+  setNavigationOpen(false);
   if (!changed) {
     render();
     return;
@@ -10534,6 +10564,7 @@ function renderAdminShell(children) {
       class: 'nav-backdrop',
       type: 'button',
       tabindex: state.navOpen ? '0' : '-1',
+      'aria-hidden': state.navOpen ? 'false' : 'true',
       'aria-label': 'Close admin navigation',
       onclick: closeNavigation,
     }),
@@ -10569,6 +10600,7 @@ function render() {
   mainContent.appendChild(state.user ? renderSignedIn() : renderSignedOut());
   const modal = renderAdminModal();
   if (modal) mainContent.appendChild(modal);
+  syncNavigationPresentation();
 }
 
 function validateConfig() {
