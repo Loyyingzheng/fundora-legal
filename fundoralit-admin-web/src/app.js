@@ -15,6 +15,7 @@ const ADMIN_ABSOLUTE_TIMEOUT_MS = 8 * 60 * 60 * 1000;
 const ADMIN_SESSION_MONITOR_INTERVAL_MS = 15 * 1000;
 const ADMIN_ACTIVITY_THROTTLE_MS = 5 * 1000;
 const FIREBASE_IDENTITY_TOOLKIT_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
+const FIREBASE_IDENTITY_TOOLKIT_V2_BASE_URL = 'https://identitytoolkit.googleapis.com/v2';
 const FIREBASE_SECURE_TOKEN_BASE_URL = 'https://securetoken.googleapis.com/v1';
 let memoryAuthSession = null;
 let lastAdminActivityAt = Date.now();
@@ -27,6 +28,31 @@ let sessionExpiryHandling = false;
 const API_PATHS = {
   admin: {
     session: '/api/admin/me',
+    accounts: '/api/admin/accounts',
+    account: (id) => `/api/admin/accounts/${encodeURIComponent(id)}`,
+    changeRole: (id) => `/api/admin/accounts/${encodeURIComponent(id)}/role`,
+    suspend: (id) => `/api/admin/accounts/${encodeURIComponent(id)}/suspend`,
+    reactivate: (id) => `/api/admin/accounts/${encodeURIComponent(id)}/reactivate`,
+    revokeAccess: (id) => `/api/admin/accounts/${encodeURIComponent(id)}/revoke-access`,
+    revokeSessions: (id) => `/api/admin/accounts/${encodeURIComponent(id)}/revoke-sessions`,
+    sendPasswordReset: (id) => `/api/admin/accounts/${encodeURIComponent(id)}/send-password-reset`,
+    invitations: '/api/admin/invitations',
+    resendInvitation: (id) => `/api/admin/invitations/${encodeURIComponent(id)}/resend`,
+    revokeInvitation: (id) => `/api/admin/invitations/${encodeURIComponent(id)}/revoke`,
+    invitationPreview: (token) => `/api/admin/invitations/public/${encodeURIComponent(token)}/preview`,
+    acceptInvitation: (token) => `/api/admin/invitations/public/${encodeURIComponent(token)}/accept`,
+    passwordChanged: '/api/admin/account/security/password-changed',
+    requestPasswordReset: '/api/admin/account/security/password-reset/request',
+    revokeOwnSessions: '/api/admin/account/security/revoke-sessions',
+    reauthenticated: '/api/admin/account/security/reauthenticated',
+    securityActivity: '/api/admin/security-activity',
+    ownerReadiness: '/api/admin/system-owner/transfer/readiness',
+    ownerPrepare: '/api/admin/system-owner/transfer/prepare',
+    ownerPreview: (token) => `/api/admin/system-owner/transfer/public/${encodeURIComponent(token)}/preview`,
+    ownerAcceptTarget: (id) => `/api/admin/system-owner/transfer/${encodeURIComponent(id)}/accept-target`,
+    ownerVerifyCurrent: (id) => `/api/admin/system-owner/transfer/${encodeURIComponent(id)}/verify-current-owner`,
+    ownerCommit: (id) => `/api/admin/system-owner/transfer/${encodeURIComponent(id)}/commit`,
+    ownerCancel: (id) => `/api/admin/system-owner/transfer/${encodeURIComponent(id)}/cancel`,
   },
   feedback: {
     list: '/api/feedback/admin',
@@ -387,6 +413,12 @@ const state = {
   auth: null,
   user: null,
   adminSession: null,
+  pendingMfa: null,
+  totpEnrollment: null,
+  governanceLink: null,
+  governancePreview: null,
+  governanceMfaRequired: false,
+  governance: { accounts: [], invitations: [], securityActivity: [], ownerReadiness: null },
   loading: false,
   activeTab: 'feedback',
   page: 0,
@@ -1420,6 +1452,14 @@ const NAV_GROUPS = [
     ],
   },
   {
+    title: 'Security',
+    items: [
+      { id: 'myAccount', label: 'My Account', helper: 'Password & MFA', description: 'Manage your own password, recent re-authentication, MFA status, and session security.', info: 'Passwords stay inside Firebase Authentication and are never sent to Core Backend.' },
+      { id: 'adminAccounts', label: 'Admin Accounts', helper: 'Owner-only governance', description: 'Invite, suspend, reactivate, revoke, and review every Fundoralit admin account.', info: 'Only the unique System Owner can open this page. SUPER_ADMIN cannot be granted through normal invitations.' },
+      { id: 'systemOwnership', label: 'System Ownership', helper: 'Protected transfer', description: 'Prepare and complete the unique System Owner transfer through the dedicated ENV-gated workflow.', info: 'This flow requires recent re-authentication, MFA, target verification, backend ENV matching, and an atomic database commit.' },
+    ],
+  },
+  {
     title: 'Operations',
     items: [
       { id: 'announcements', label: 'Announcements', helper: 'Remote notices', description: 'Create user-facing app notices without shipping a new app version.', info: 'Use announcements for maintenance, updates, or important messages. Keep copy short; details are hidden in the app until users choose to read or act.' },
@@ -1463,6 +1503,18 @@ function normalizeAdminTab(tabId) {
 
 function setActiveTab(tabId) {
   const nextTab = normalizeAdminTab(tabId);
+  if (state.adminSession?.mfaRequired && !state.adminSession?.mfaSatisfied && nextTab !== 'myAccount') {
+    setMessage('Complete required MFA enrollment and sign-in verification before opening other Admin pages.', true);
+    state.activeTab = 'myAccount';
+    state.navOpen = false;
+    render();
+    return;
+  }
+  if (['adminAccounts', 'systemOwnership'].includes(nextTab) && !state.adminSession?.systemOwner) {
+    setMessage('Only the unique System Owner can open this security page.', true);
+    render();
+    return;
+  }
   const changed = state.activeTab !== nextTab;
   state.navOpen = false;
   if (!changed) {
@@ -1577,7 +1629,12 @@ async function firebaseJsonRequest(baseUrl, endpoint, body) {
   const text = await response.text();
   let json = null;
   try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
-  if (!response.ok) throw new Error(normalizeFirebaseAuthError(json));
+  if (!response.ok) {
+    const error = new Error(normalizeFirebaseAuthError(json));
+    error.firebasePayload = json;
+    error.firebaseCode = normalizedTrim(json?.error?.message).split(' : ')[0];
+    throw error;
+  }
   return json || {};
 }
 
@@ -1693,6 +1750,9 @@ function recordAdminActivity({ force = false } = {}) {
 
 function resetSignedInRuntimeState() {
   invalidateLoadRequests();
+  state.pendingMfa = null;
+  state.totpEnrollment = null;
+  state.governanceMfaRequired = false;
   state.adminSession = null;
   state.modal = null;
   state.navOpen = false;
@@ -1840,10 +1900,150 @@ async function signInAdminWithPassword(email, password, { persist = true } = {})
     password: cleanPassword,
     returnSecureToken: true,
   });
+  if (response.mfaPendingCredential) {
+    const enrollments = Array.isArray(response.mfaInfo) ? response.mfaInfo : [];
+    const totp = enrollments.find((item) => item.totpInfo || String(item.displayName || '').toLowerCase().includes('totp'));
+    const error = new Error(totp
+      ? 'Multi-factor verification is required.'
+      : 'This account requires an MFA method that this admin web cannot complete. Use a TOTP authenticator enrollment.');
+    error.code = 'MFA_REQUIRED';
+    error.pendingCredential = response.mfaPendingCredential;
+    error.enrollment = totp || enrollments[0] || null;
+    error.email = cleanEmail;
+    throw error;
+  }
   const session = normalizeSignInSession(response, { email: cleanEmail });
   if (!session.idToken || !session.refreshToken) throw new Error('Firebase did not return a valid admin token.');
   if (persist) applyAuthSession(session);
   return session;
+}
+
+async function finalizeAdminMfaSignIn(pending, verificationCode, { persist = true } = {}) {
+  if (!pending?.pendingCredential || !pending?.enrollment?.mfaEnrollmentId) throw new Error('MFA sign-in session is missing. Start sign-in again.');
+  const code = normalizedTrim(verificationCode);
+  if (!/^\d{6,8}$/.test(code)) throw new Error('Enter the current authenticator code.');
+  if (!pending.enrollment.totpInfo && !String(pending.enrollment.displayName || '').toLowerCase().includes('totp')) {
+    throw new Error('Only TOTP authenticator verification is supported by this secure admin login.');
+  }
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_BASE_URL, 'accounts/mfaSignIn:finalize', {
+    mfaPendingCredential: pending.pendingCredential,
+    mfaEnrollmentId: pending.enrollment.mfaEnrollmentId,
+    totpVerificationInfo: { verificationCode: code },
+  });
+  const session = normalizeSignInSession(response, { email: pending.email });
+  if (!session.idToken || !session.refreshToken) throw new Error('Firebase did not return a valid MFA admin token.');
+  if (persist) applyAuthSession(session);
+  return session;
+}
+
+function buildTotpAuthenticatorUri(secret, email, issuer = 'Fundoralit Admin') {
+  const account = normalizedTrim(email) || 'admin';
+  const label = `${issuer}:${account}`;
+  const params = new URLSearchParams({
+    secret: normalizedTrim(secret),
+    issuer,
+    algorithm: 'SHA1',
+    digits: '6',
+    period: '30',
+  });
+  return `otpauth://totp/${encodeURIComponent(label)}?${params.toString()}`;
+}
+
+async function startAdminTotpEnrollment(currentPassword, existingMfaCode = '') {
+  let session;
+  try {
+    session = await signInAdminWithPassword(state.user?.email, currentPassword, { persist: false });
+  } catch (error) {
+    if (error.code !== 'MFA_REQUIRED') throw error;
+    session = await finalizeAdminMfaSignIn({
+      pendingCredential: error.pendingCredential,
+      enrollment: error.enrollment,
+      email: error.email,
+    }, existingMfaCode, { persist: false });
+  }
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_V2_BASE_URL, 'accounts/mfaEnrollment:start', {
+    idToken: session.idToken,
+    totpEnrollmentInfo: {},
+  });
+  const info = response.totpSessionInfo;
+  if (!info?.sharedSecretKey || !info?.sessionInfo) throw new Error('Firebase did not return a valid TOTP enrollment session. Confirm TOTP MFA is enabled in Identity Platform.');
+  applyAuthSession(session);
+  state.totpEnrollment = {
+    sharedSecretKey: info.sharedSecretKey,
+    sessionInfo: info.sessionInfo,
+    verificationCodeLength: Number(info.verificationCodeLength || 6),
+    periodSec: Number(info.periodSec || 30),
+    hashingAlgorithm: info.hashingAlgorithm || 'SHA1',
+    finalizeEnrollmentTime: info.finalizeEnrollmentTime || null,
+    authenticatorUri: buildTotpAuthenticatorUri(info.sharedSecretKey, state.user?.email),
+  };
+  return state.totpEnrollment;
+}
+
+async function finalizeAdminTotpEnrollment(verificationCode, displayName = 'Fundoralit Admin', { loadBackendSession = true } = {}) {
+  const enrollment = state.totpEnrollment;
+  if (!enrollment?.sessionInfo || !memoryAuthSession?.idToken) throw new Error('Start TOTP enrollment again.');
+  const code = normalizedTrim(verificationCode);
+  const expectedLength = Math.max(6, Math.min(8, Number(enrollment.verificationCodeLength || 6)));
+  if (!new RegExp(`^\\d{${expectedLength}}$`).test(code)) throw new Error(`Enter the ${expectedLength}-digit code from your authenticator.`);
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_V2_BASE_URL, 'accounts/mfaEnrollment:finalize', {
+    idToken: memoryAuthSession.idToken,
+    displayName: normalizedTrim(displayName) || 'Fundoralit Admin',
+    totpVerificationInfo: {
+      sessionInfo: enrollment.sessionInfo,
+      verificationCode: code,
+    },
+  });
+  const session = normalizeSignInSession(response, memoryAuthSession);
+  applyAuthSession(session);
+  state.totpEnrollment = null;
+  if (loadBackendSession) await loadAdminSession();
+  return session;
+}
+
+async function requestAdminPasswordReset(email) {
+  const cleanEmail = normalizedTrim(email);
+  if (!cleanEmail) throw new Error('Email is required.');
+  try {
+    await publicApi(API_PATHS.admin.requestPasswordReset, {
+      method: 'POST',
+      body: { email: cleanEmail },
+    });
+  } catch (_) {
+    // Deliberately suppress account existence, delivery, and provider details.
+  }
+  return 'If an eligible admin account exists, reset instructions have been sent.';
+}
+
+async function updateAdminFirebasePassword(currentPassword, newPassword) {
+  const cleanPassword = String(newPassword || '');
+  if (cleanPassword.length < 8) throw new Error('New password must contain at least 8 characters.');
+  const reauthSession = await signInAdminWithPassword(state.user?.email, currentPassword, { persist: false });
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_BASE_URL, 'accounts:update', {
+    idToken: reauthSession.idToken,
+    password: cleanPassword,
+    returnSecureToken: true,
+  });
+  const changedSession = normalizeSignInSession(response, { email: state.user?.email });
+  applyAuthSession(changedSession);
+  await api(API_PATHS.admin.passwordChanged, { method: 'POST', body: {} });
+  signOutAdmin({ notice: 'Password changed successfully. All admin sessions were revoked; sign in again with the new password.' });
+}
+
+async function recordCurrentAdminReauthentication(password, context = 'ADMIN_SECURITY', mfaCode = '') {
+  let session;
+  try {
+    session = await signInAdminWithPassword(state.user?.email, password, { persist: false });
+  } catch (error) {
+    if (error.code !== 'MFA_REQUIRED') throw error;
+    session = await finalizeAdminMfaSignIn({
+      pendingCredential: error.pendingCredential,
+      enrollment: error.enrollment,
+      email: error.email,
+    }, mfaCode, { persist: false });
+  }
+  applyAuthSession(session);
+  return api(API_PATHS.admin.reauthenticated, { method: 'POST', body: { context } });
 }
 
 function assertSessionActive(session = memoryAuthSession) {
@@ -2013,6 +2213,20 @@ function buildApiError(status, payload, service, url) {
   error.fieldErrors = normalized.fieldErrors;
   error.requestId = normalized.requestId;
   return error;
+}
+
+async function publicApi(path, options = {}) {
+  if (!coreApiBaseUrl) throw new Error('Core API base URL is not configured in config.js.');
+  const response = await fetch(`${coreApiBaseUrl}${path}`, {
+    method: options.method || 'GET',
+    headers: { Accept: 'application/json', ...(options.headers || {}), ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+    body: options.body === undefined ? undefined : JSON.stringify(options.body),
+  });
+  const text = await response.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
+  if (!response.ok || json?.success === false) throw buildApiError(response.status || 400, json, 'core', `${coreApiBaseUrl}${path}`);
+  return json && Object.prototype.hasOwnProperty.call(json, 'data') ? json.data : json;
 }
 
 async function api(path, options = {}) {
@@ -2286,6 +2500,10 @@ async function loadAdminSession({ renderAfter = false } = {}) {
   try {
     const session = await api(API_PATHS.admin.session);
     state.adminSession = session || null;
+    if (state.adminSession?.mfaRequired && !state.adminSession?.mfaSatisfied) {
+      state.activeTab = 'myAccount';
+      state.page = 0;
+    }
     if (renderAfter) render();
     return state.adminSession;
   } catch (error) {
@@ -2441,7 +2659,45 @@ async function loadAnalyticsData(loadRequest = null) {
 async function loadAdminControlData(loadRequest) {
   const filters = state.adminFilters;
   let response;
-  if (state.activeTab === 'emergencyConsole') {
+  if (state.activeTab === 'myAccount') {
+    await loadAdminSession();
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    setScopedData({ content: state.adminSession ? [state.adminSession] : [] }, loadRequest);
+    return;
+  }
+  if (state.activeTab === 'adminAccounts') {
+    if (!state.adminSession?.systemOwner) throw new Error('System Owner access is required.');
+    const [accounts, invitations, securityActivity] = await Promise.all([
+      api(API_PATHS.admin.accounts),
+      api(API_PATHS.admin.invitations),
+      api(API_PATHS.admin.securityActivity),
+    ]);
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    state.governance.accounts = normalizeAdminListResponse(accounts);
+    state.governance.invitations = normalizeAdminListResponse(invitations);
+    state.governance.securityActivity = normalizeAdminListResponse(securityActivity);
+    setScopedData({
+      content: state.governance.accounts,
+      invitations: state.governance.invitations,
+      securityActivity: state.governance.securityActivity,
+    }, loadRequest);
+    return;
+  }
+  if (state.activeTab === 'systemOwnership') {
+    if (!state.adminSession?.systemOwner) throw new Error('System Owner access is required.');
+    const readiness = await api(API_PATHS.admin.ownerReadiness);
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    state.governance.ownerReadiness = readiness || null;
+    setScopedData({ content: normalizeAdminListResponse(readiness?.recentTransfers || []), readiness }, loadRequest);
+    return;
+  }
+  if (state.activeTab === 'myAccount') {
+    children.push(renderMyAccountSecurityPage());
+  } else if (state.activeTab === 'adminAccounts') {
+    children.push(renderAdminAccountsGovernancePage());
+  } else if (state.activeTab === 'systemOwnership') {
+    children.push(renderSystemOwnershipPage());
+  } else if (state.activeTab === 'emergencyConsole') {
     await loadEmergencyConsoleData(loadRequest);
     return;
   }
@@ -2992,32 +3248,130 @@ function renderHeader() {
   }
 }
 
+function readGovernanceLinkFromLocation() {
+  const params = new URLSearchParams(window.location.search || '');
+  const inviteToken = normalizedTrim(params.get('adminInvite'));
+  const ownerToken = normalizedTrim(params.get('ownerTransfer'));
+  if (inviteToken) return { type: 'invite', token: inviteToken };
+  if (ownerToken) return { type: 'ownerTransfer', token: ownerToken };
+  return null;
+}
+
+function clearGovernanceLinkFromLocation() {
+  const url = new URL(window.location.href);
+  url.searchParams.delete('adminInvite');
+  url.searchParams.delete('ownerTransfer');
+  window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+  state.governanceLink = null;
+  state.governancePreview = null;
+  state.governanceMfaRequired = false;
+}
+
+async function loadGovernanceLinkPreview() {
+  const link = state.governanceLink;
+  if (!link) { state.governancePreview = null; return null; }
+  try {
+    state.governancePreview = link.type === 'invite'
+      ? await publicApi(API_PATHS.admin.invitationPreview(link.token))
+      : await publicApi(API_PATHS.admin.ownerPreview(link.token));
+  } catch (error) {
+    state.governancePreview = { error: toFriendlyErrorMessage(error, 'This security link is invalid or expired.') };
+  }
+  return state.governancePreview;
+}
+
+async function handlePendingGovernanceLink() {
+  const link = state.governanceLink;
+  if (!link || !state.user) return false;
+  if (link.type === 'invite') {
+    await api(API_PATHS.admin.acceptInvitation(link.token), { method: 'POST', body: {} });
+    clearGovernanceLinkFromLocation();
+    signOutAdmin({ notice: 'Admin invitation accepted. Firebase claims and sessions were refreshed securely; sign in again to enter the admin portal.' });
+    return true;
+  }
+  const preview = state.governancePreview || await loadGovernanceLinkPreview();
+  if (!preview?.transferId) throw new Error('Ownership transfer link is invalid or expired.');
+  try {
+    await api(API_PATHS.admin.ownerAcceptTarget(preview.transferId), { method: 'POST', body: { token: link.token } });
+  } catch (error) {
+    if (extractBackendCode(error) === 'ADMIN_MFA_REQUIRED') {
+      state.governanceMfaRequired = true;
+      state.loading = false;
+      render();
+      return true;
+    }
+    throw error;
+  }
+  clearGovernanceLinkFromLocation();
+  signOutAdmin({ notice: 'Ownership target verification completed. The current System Owner must perform the final protected commit.' });
+  return true;
+}
+
+async function completeAdminSignIn() {
+  state.page = 0;
+  state.modal = null;
+  state.navOpen = false;
+  clearScopedData(state.activeTab);
+  clearAdminTabDataCache({ preserveMutationVersion: true });
+  state.message = '';
+  state.error = '';
+  if (await handlePendingGovernanceLink()) return;
+  await loadAdminSession();
+  render();
+  loadData();
+}
+
 function createAdminLoginForm({ className = 'login-grid', compact = false } = {}) {
-  const email = el('input', { type: 'email', placeholder: 'Admin email', autocomplete: 'email' });
+  const email = el('input', { type: 'email', placeholder: 'Admin email', autocomplete: 'email', value: state.pendingMfa?.email || '' });
   const password = el('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
-  const form = el('form', { class: className }, [
+  const mfaCode = el('input', { type: 'text', inputmode: 'numeric', placeholder: 'Authenticator code', autocomplete: 'one-time-code', maxlength: '8' });
+  const submit = el('button', { class: 'btn', type: 'submit', text: state.pendingMfa ? 'Verify MFA' : 'Sign in' });
+  const forgot = el('button', { class: 'btn ghost small', type: 'button', text: 'Forgot password' });
+  const children = [
+    state.governanceLink ? el('div', { class: 'governance-link-notice' }, [
+      el('strong', { text: state.governanceLink.type === 'invite' ? 'Admin invitation' : 'System Ownership verification' }),
+      el('span', { text: state.governancePreview?.error || (state.governancePreview?.emailMask || state.governancePreview?.targetEmailMask || 'Sign in with the exact target email to continue.') }),
+    ]) : null,
     el('div', { class: 'field' }, [el('label', { text: compact ? 'Email' : 'Firebase Admin Login' }), email]),
-    el('div', { class: 'field' }, [el('label', { text: 'Password' }), password]),
-    el('button', { class: 'btn', type: 'submit', text: 'Sign in' }),
-  ]);
+    state.pendingMfa ? null : el('div', { class: 'field' }, [el('label', { text: 'Password' }), password]),
+    state.pendingMfa ? el('div', { class: 'field' }, [el('label', { text: 'TOTP authenticator code' }), mfaCode]) : null,
+    el('div', { class: 'login-action-row' }, [submit, forgot]),
+  ].filter(Boolean);
+  const form = el('form', { class: className }, children);
+  forgot.addEventListener('click', async () => {
+    state.error = '';
+    try {
+      state.message = await requestAdminPasswordReset(email.value);
+    } catch (_) {
+      state.message = 'If an eligible admin account exists, reset instructions have been sent.';
+    }
+    render();
+  });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     state.error = '';
     render();
     try {
-      await signInAdminWithPassword(email.value, password.value);
-      state.page = 0;
-      state.modal = null;
-      state.navOpen = false;
-      clearScopedData(state.activeTab);
-      clearAdminTabDataCache({ preserveMutationVersion: true });
-      state.message = '';
-      state.error = '';
-      await loadAdminSession();
-      render();
-      loadData();
+      if (state.pendingMfa) {
+        await finalizeAdminMfaSignIn(state.pendingMfa, mfaCode.value);
+        state.pendingMfa = null;
+      } else {
+        await signInAdminWithPassword(email.value, password.value);
+      }
+      await completeAdminSignIn();
     } catch (error) {
-      setMessage(toFriendlyErrorMessage(error, 'Login failed.'), true);
+      if (error.code === 'MFA_REQUIRED') {
+        state.pendingMfa = {
+          pendingCredential: error.pendingCredential,
+          enrollment: error.enrollment,
+          email: error.email || email.value,
+        };
+        state.message = 'Enter the current code from the enrolled TOTP authenticator.';
+        state.error = '';
+      } else {
+        state.pendingMfa = null;
+        setMessage(toFriendlyErrorMessage(error, 'Login failed.'), true);
+      }
       render();
     }
   });
@@ -3058,6 +3412,19 @@ function renderAuth() {
   ]));
 }
 
+function visibleNavGroups() {
+  if (state.adminSession?.mfaRequired && !state.adminSession?.mfaSatisfied) {
+    return NAV_GROUPS.map((group) => ({
+      ...group,
+      items: group.items.filter((item) => item.id === 'myAccount'),
+    })).filter((group) => group.items.length > 0);
+  }
+  return NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !['adminAccounts', 'systemOwnership'].includes(item.id) || state.adminSession?.systemOwner),
+  })).filter((group) => group.items.length > 0);
+}
+
 function renderSidebar() {
   return el('aside', {
     class: `admin-sidebar ${state.navOpen ? 'open' : ''}`,
@@ -3079,7 +3446,7 @@ function renderSidebar() {
         onclick: closeNavigation,
       }),
     ]),
-    el('nav', { class: 'sidebar-nav' }, NAV_GROUPS.map((group) => el('section', { class: 'sidebar-group' }, [
+    el('nav', { class: 'sidebar-nav' }, visibleNavGroups().map((group) => el('section', { class: 'sidebar-group' }, [
       el('p', { class: 'sidebar-group-title', text: group.title }),
       ...group.items.map((item) => el('button', {
         class: `sidebar-link ${state.activeTab === item.id ? 'active' : ''}`,
@@ -3197,7 +3564,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -9378,6 +9745,385 @@ function renderLearningConsolePage() {
   return el('div', { class: 'learning-console-page' }, children);
 }
 
+async function runGovernanceAction(successMessage, action) {
+  if (state.loading) return;
+  state.loading = true;
+  state.error = '';
+  state.message = '';
+  render();
+  try {
+    await action();
+    state.message = successMessage;
+    state.error = '';
+    if (!state.user) {
+      state.loading = false;
+      render();
+      return;
+    }
+    await loadAdminSession().catch(() => null);
+    await loadData({ force: true });
+  } catch (error) {
+    state.loading = false;
+    setMessage(toFriendlyErrorMessage(error, 'Security action failed.'), true);
+    render();
+  }
+}
+
+function governanceReason(actionLabel) {
+  const reason = window.prompt(`Reason required for ${actionLabel}:`, 'Security administration');
+  return normalizedTrim(reason);
+}
+
+function renderMyAccountSecurityPage() {
+  const session = state.adminSession || {};
+  const currentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
+  const newPassword = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'New password (8+ characters)' });
+  const confirmPassword = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Confirm new password' });
+  const changeForm = el('form', { class: 'governance-form' }, [
+    el('div', { class: 'form-grid three' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), currentPassword]),
+      el('div', { class: 'field' }, [el('label', { text: 'New password' }), newPassword]),
+      el('div', { class: 'field' }, [el('label', { text: 'Confirm password' }), confirmPassword]),
+    ]),
+    el('button', { class: 'btn', type: 'submit', text: 'Change password & revoke sessions' }),
+  ]);
+  changeForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (newPassword.value !== confirmPassword.value) {
+      setMessage('New password confirmation does not match.', true);
+      render();
+      return;
+    }
+    state.loading = true;
+    render();
+    try {
+      await updateAdminFirebasePassword(currentPassword.value, newPassword.value);
+    } catch (error) {
+      state.loading = false;
+      setMessage(toFriendlyErrorMessage(error, 'Password change failed.'), true);
+      render();
+    }
+  });
+
+  const reauthPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
+  const reauthMfa = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'TOTP code when required' });
+  const reauthForm = el('form', { class: 'governance-form compact' }, [
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), reauthPassword]),
+      el('div', { class: 'field' }, [el('label', { text: 'Authenticator code' }), reauthMfa]),
+    ]),
+    el('button', { class: 'btn secondary', type: 'submit', text: 'Record recent re-authentication' }),
+  ]);
+  reauthForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await runGovernanceAction('Recent authentication verified.', () => recordCurrentAdminReauthentication(reauthPassword.value, 'MY_ACCOUNT', reauthMfa.value));
+  });
+
+  const enrollmentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
+  const existingMfaCode = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Existing TOTP code only when already enrolled' });
+  const startEnrollmentForm = el('form', { class: 'governance-form compact' }, [
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), enrollmentPassword]),
+      el('div', { class: 'field' }, [el('label', { text: 'Existing authenticator code' }), existingMfaCode]),
+    ]),
+    el('button', { class: 'btn secondary', type: 'submit', text: 'Start TOTP enrollment' }),
+  ]);
+  startEnrollmentForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    state.loading = true;
+    state.error = '';
+    render();
+    try {
+      await startAdminTotpEnrollment(enrollmentPassword.value, existingMfaCode.value);
+      state.loading = false;
+      state.message = 'TOTP secret created. Add it to your authenticator, then verify one current code.';
+      render();
+    } catch (error) {
+      state.loading = false;
+      setMessage(toFriendlyErrorMessage(error, 'TOTP enrollment could not start.'), true);
+      render();
+    }
+  });
+
+  let enrollmentPanel = null;
+  if (state.totpEnrollment) {
+    const enrollment = state.totpEnrollment;
+    const code = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: `${enrollment.verificationCodeLength || 6}-digit authenticator code` });
+    const displayName = el('input', { value: 'Fundoralit Admin', maxlength: '80', placeholder: 'Authenticator display name' });
+    const secret = el('input', { value: enrollment.sharedSecretKey, readonly: 'readonly', autocomplete: 'off' });
+    const uri = el('textarea', { rows: '3', readonly: 'readonly', spellcheck: 'false' });
+    uri.value = enrollment.authenticatorUri;
+    const finalizeForm = el('form', { class: 'governance-form compact' }, [
+      el('div', { class: 'sensitive-secret-box' }, [
+        el('strong', { text: 'One-time enrollment secret' }),
+        el('p', { class: 'muted', text: 'This value exists only in browser memory. Do not paste it into tickets, logs, or audit reasons.' }),
+        el('div', { class: 'field' }, [el('label', { text: 'Secret key' }), secret]),
+        el('div', { class: 'field' }, [el('label', { text: 'Authenticator URI (optional manual import)' }), uri]),
+      ]),
+      el('div', { class: 'form-grid two' }, [
+        el('div', { class: 'field' }, [el('label', { text: 'Display name' }), displayName]),
+        el('div', { class: 'field' }, [el('label', { text: 'Current TOTP code' }), code]),
+      ]),
+      el('div', { class: 'governance-actions' }, [
+        el('button', { class: 'btn', type: 'submit', text: 'Verify and enable TOTP' }),
+        el('button', { class: 'btn ghost', type: 'button', text: 'Cancel enrollment', onclick: () => { state.totpEnrollment = null; render(); } }),
+      ]),
+    ]);
+    finalizeForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      state.loading = true;
+      render();
+      try {
+        await finalizeAdminTotpEnrollment(code.value, displayName.value);
+        state.loading = false;
+        if (state.adminSession?.mfaRequired && !state.adminSession?.mfaSatisfied) {
+          signOutAdmin({ notice: 'TOTP MFA enrollment completed. Sign in again and complete the authenticator challenge to unlock Admin access.' });
+          return;
+        }
+        state.message = 'TOTP MFA enrollment completed. Future sign-ins will require the authenticator code.';
+        render();
+      } catch (error) {
+        state.loading = false;
+        setMessage(toFriendlyErrorMessage(error, 'TOTP enrollment verification failed.'), true);
+        render();
+      }
+    });
+    enrollmentPanel = finalizeForm;
+  }
+
+  const revokeOwnSessionsButton = el('button', { class: 'btn danger', type: 'button', text: 'Revoke all my admin sessions' });
+  revokeOwnSessionsButton.addEventListener('click', async () => {
+    const reason = governanceReason('revoke all of your admin sessions');
+    if (!reason) return;
+    await runGovernanceAction('All admin sessions were revoked.', async () => {
+      await api(API_PATHS.admin.revokeOwnSessions, { method: 'POST', body: { reason } });
+      signOutAdmin({ notice: 'All admin sessions were revoked. Sign in again to continue.' });
+    });
+  });
+
+  return el('div', { class: 'governance-page' }, [
+    renderAdminControlHero('My Account', 'Firebase password security, MFA context, and the current Backend authorization session.', 'The password is submitted only to Firebase Authentication. Core Backend receives only a password-changed signal after Firebase succeeds.'),
+    session.mfaRequired && !session.mfaSatisfied ? el('div', { class: 'notice warning' }, [
+      el('strong', { text: 'MFA setup required' }),
+      el('span', { text: 'All other Admin pages are locked until a Firebase TOTP factor is enrolled and the current sign-in token proves MFA.' }),
+    ]) : null,
+    el('section', { class: 'card governance-summary-card' }, [
+      el('div', { class: 'section-title-row' }, [el('div', {}, [el('p', { class: 'eyebrow', text: 'Current session' }), el('h3', { text: session.email || state.user?.email || '-' })])]),
+      renderMetaGrid([
+        ['Role', adminRoleLabel(session.role)],
+        ['Status', session.status || '-'],
+        ['System Owner', session.systemOwner ? 'Yes' : 'No'],
+        ['Access version', session.accessVersion ?? '-'],
+        ['MFA required', session.mfaRequired ? 'Yes' : 'No'],
+        ['MFA enrolled', session.mfaEnrolled ? 'Yes' : 'Not confirmed'],
+        ['MFA satisfied in current token', session.mfaSatisfied ? 'Yes' : 'No'],
+        ['Last re-authentication', formatDate(session.lastReauthenticatedAt)],
+      ]),
+    ]),
+    el('section', { class: 'card' }, [el('h3', { text: 'Change password' }), el('p', { class: 'muted', text: 'Changing the password increments accessVersion and revokes all Firebase refresh tokens and admin sessions.' }), changeForm]),
+    el('section', { class: 'card' }, [
+      el('h3', { text: 'Multi-factor authentication' }),
+      el('p', { class: 'muted', text: 'System Owner and critical operations require a Firebase TOTP factor. Re-authenticate before starting enrollment.' }),
+      state.totpEnrollment ? enrollmentPanel : startEnrollmentForm,
+    ]),
+    el('section', { class: 'card' }, [
+      el('h3', { text: 'Active sessions' }),
+      el('p', { class: 'muted', text: 'Firebase does not expose a browser-readable session list. This control invalidates the Backend access version immediately and queues Firebase refresh-token revocation.' }),
+      revokeOwnSessionsButton,
+    ]),
+    el('section', { class: 'card' }, [el('h3', { text: 'Sensitive action verification' }), el('p', { class: 'muted', text: 'Use this immediately before an ownership transfer or another protected security action. The Backend verifies auth_time and MFA claims.' }), reauthForm]),
+  ]);
+}
+
+function renderAdminInvitationForm() {
+  const email = el('input', { type: 'email', autocomplete: 'off', placeholder: 'admin@example.com' });
+  const role = el('select', {}, [
+    el('option', { value: 'ADMIN_READ', text: 'Admin Read' }),
+    el('option', { value: 'ADMIN_WRITE', text: 'Admin Write' }),
+    el('option', { value: 'ADMIN_CRITICAL', text: 'Critical Admin' }),
+    el('option', { value: 'SUPPORT_ADMIN', text: 'Support Admin' }),
+    el('option', { value: 'SUBSCRIPTION_APPROVER', text: 'Subscription Approver' }),
+  ]);
+  const expiry = el('select', {}, [
+    el('option', { value: '24', text: '24 hours' }),
+    el('option', { value: '48', text: '48 hours', selected: 'selected' }),
+    el('option', { value: '72', text: '72 hours' }),
+  ]);
+  const cidrs = el('input', { placeholder: 'Optional IP/CIDR, comma-separated' });
+  const reason = el('textarea', { rows: '2', placeholder: 'Required reason for granting admin access' });
+  const form = el('form', { class: 'governance-form' }, [
+    el('div', { class: 'form-grid three' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Email' }), email]),
+      el('div', { class: 'field' }, [el('label', { text: 'Role' }), role]),
+      el('div', { class: 'field' }, [el('label', { text: 'Expiry' }), expiry]),
+    ]),
+    el('div', { class: 'field' }, [el('label', { text: 'Allowed IP / CIDR' }), cidrs]),
+    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+    el('button', { class: 'btn', type: 'submit', text: 'Invite admin' }),
+  ]);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await runGovernanceAction('Admin invitation created.', () => api(API_PATHS.admin.invitations, {
+      method: 'POST',
+      body: { email: email.value, role: role.value, expiryHours: Number(expiry.value), allowedIpCidrs: cidrs.value, reason: reason.value },
+    }));
+  });
+  return form;
+}
+
+function renderAdminAccountGovernanceCard(account) {
+  const inviter = (state.data?.content || []).find((candidate) => candidate.id === account.invitedByAdminId);
+  const invitedBy = inviter?.email || account.invitedByAdminId || (account.systemOwner ? 'System provisioning / ownership transfer' : '-');
+  const roleSelect = el('select', { disabled: account.systemOwner || account.status === 'REVOKED' }, [
+    ...['ADMIN_READ', 'ADMIN_WRITE', 'ADMIN_CRITICAL', 'SUPPORT_ADMIN', 'SUBSCRIPTION_APPROVER'].map((value) => el('option', { value, text: adminRoleLabel(value), selected: value === account.role ? 'selected' : null })),
+  ]);
+  const action = async (label, path, method = 'POST', extra = {}) => {
+    const reason = governanceReason(label);
+    if (!reason) return;
+    if (!window.confirm(`${label} for ${account.email}?`)) return;
+    await runGovernanceAction(`${label} completed.`, () => api(path, { method, body: { ...extra, reason } }));
+  };
+  const buttons = [];
+  if (!account.systemOwner && account.status !== 'REVOKED') {
+    buttons.push(el('button', { class: 'btn small ghost', text: 'Change role', onclick: () => action('Change role', API_PATHS.admin.changeRole(account.id), 'PATCH', { role: roleSelect.value }) }));
+  }
+  if (!account.systemOwner && account.status === 'ACTIVE') buttons.push(el('button', { class: 'btn small ghost', text: 'Suspend', onclick: () => action('Suspend admin', API_PATHS.admin.suspend(account.id)) }));
+  if (!account.systemOwner && ['SUSPENDED', 'LOCKED'].includes(account.status)) buttons.push(el('button', { class: 'btn small ghost', text: 'Reactivate', onclick: () => action('Reactivate admin', API_PATHS.admin.reactivate(account.id)) }));
+  if (account.status !== 'REVOKED') buttons.push(el('button', { class: 'btn small ghost', text: 'Revoke sessions', onclick: () => action('Revoke all sessions', API_PATHS.admin.revokeSessions(account.id)) }));
+  if (!account.systemOwner && account.status !== 'REVOKED') buttons.push(el('button', { class: 'btn small danger', text: 'Remove access', onclick: () => action('Remove admin access', API_PATHS.admin.revokeAccess(account.id)) }));
+  if (account.status === 'ACTIVE') buttons.push(el('button', { class: 'btn small ghost', text: 'Send password reset', onclick: () => action('Send password reset', API_PATHS.admin.sendPasswordReset(account.id)) }));
+  return el('article', { class: 'card governance-account-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('h3', { text: account.email }), el('p', { class: 'muted', text: `${adminRoleLabel(account.role)} · ${account.status}` })]),
+      el('span', { class: getStatusClass(account.status), text: account.systemOwner ? 'SYSTEM OWNER' : account.status }),
+    ]),
+    renderMetaGrid([
+      ['Created', formatDate(account.createdAt)], ['Activated', formatDate(account.activatedAt)], ['Last login', formatDate(account.lastLoginAt)],
+      ['Invited by', invitedBy], ['MFA required', account.mfaRequired ? 'Yes' : 'No'], ['MFA enrolled', account.mfaEnrolled ? 'Yes' : 'Not confirmed'],
+      ['Allowed IP', account.allowedIpCidrs || 'Any'], ['Access version', account.accessVersion ?? 0],
+      ['Credentials changed', formatDate(account.credentialsChangedAt)], ['Sessions revoked', formatDate(account.sessionsRevokedAt)],
+      ['Last re-authentication', formatDate(account.lastReauthenticatedAt)],
+    ]),
+    account.systemOwner ? el('div', { class: 'notice warning inline-notice', text: 'This account can only be changed through Transfer System Ownership.' }) : el('div', { class: 'governance-inline-control' }, [roleSelect]),
+    el('div', { class: 'governance-actions' }, buttons),
+  ]);
+}
+
+function renderInvitationCard(invitation) {
+  const action = async (label, path) => {
+    const reason = governanceReason(label);
+    if (!reason) return;
+    await runGovernanceAction(`${label} completed.`, () => api(path, { method: 'POST', body: { reason } }));
+  };
+  return el('article', { class: 'card governance-account-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [el('h3', { text: invitation.email }), el('p', { class: 'muted', text: adminRoleLabel(invitation.role) })]),
+      el('span', { class: getStatusClass(invitation.status), text: invitation.status }),
+    ]),
+    renderMetaGrid([['Expires', formatDate(invitation.expiresAt)], ['Created', formatDate(invitation.createdAt)], ['Delivery', invitation.deliveryStatus || 'Previously sent'], ['Allowed IP', invitation.allowedIpCidrs || 'Any']]),
+    invitation.status === 'INVITED' ? el('div', { class: 'governance-actions' }, [
+      el('button', { class: 'btn small ghost', text: 'Resend', onclick: () => action('Resend invitation', API_PATHS.admin.resendInvitation(invitation.id)) }),
+      el('button', { class: 'btn small danger', text: 'Revoke', onclick: () => action('Revoke invitation', API_PATHS.admin.revokeInvitation(invitation.id)) }),
+    ]) : null,
+  ]);
+}
+
+function renderSecurityActivityList(items = []) {
+  if (!items.length) return renderEmptyState('No security activity found.', 'Security actions and ownership stages will appear here.');
+  return el('div', { class: 'list governance-security-list' }, items.slice(0, 50).map((item) => el('article', { class: 'card compact-card' }, [
+    el('div', { class: 'section-title-row' }, [el('strong', { text: item.action }), el('span', { class: 'badge neutral', text: item.reasonCode || '-' })]),
+    renderMetaGrid([['Phase', item.phase || '-'], ['Correlation', item.correlationId || '-'], ['Actor hash', item.actorHash || '-'], ['Target hash', item.targetHash || '-'], ['Time', formatDate(item.createdAt)]]),
+  ])));
+}
+
+function renderAdminAccountsGovernancePage() {
+  const accounts = state.data?.content || [];
+  const invitations = state.data?.invitations || [];
+  const activity = state.data?.securityActivity || [];
+  const byStatus = (status) => accounts.filter((item) => item.status === status);
+  const section = (title, rows) => el('section', { class: 'governance-section' }, [
+    el('div', { class: 'section-title-row' }, [el('h2', { text: title }), el('span', { class: 'badge neutral', text: String(rows.length) })]),
+    rows.length ? el('div', { class: 'governance-card-grid' }, rows.map(renderAdminAccountGovernanceCard)) : renderEmptyState(`No ${title.toLowerCase()}.`),
+  ]);
+  return el('div', { class: 'governance-page' }, [
+    renderAdminControlHero('Admin Accounts', 'Owner-only lifecycle management for every Fundoralit administrator.', 'Firebase owns credentials. Core Backend owns invitation, role, status, accessVersion, IP policy, audit, and session revocation.'),
+    el('section', { class: 'card' }, [el('h3', { text: 'Invite admin' }), el('p', { class: 'muted', text: 'Normal invitations can never grant SUPER_ADMIN. A new token invalidates the previous token and is stored only as a hash.' }), renderAdminInvitationForm()]),
+    section('Active Admins', byStatus('ACTIVE')),
+    el('section', { class: 'governance-section' }, [el('div', { class: 'section-title-row' }, [el('h2', { text: 'Pending Invitations' }), el('span', { class: 'badge neutral', text: String(invitations.filter((item) => item.status === 'INVITED').length) })]), invitations.some((item) => item.status === 'INVITED') ? el('div', { class: 'governance-card-grid' }, invitations.filter((item) => item.status === 'INVITED').map(renderInvitationCard)) : renderEmptyState('No pending invitations.')]),
+    section('Suspended Admins', byStatus('SUSPENDED')),
+    section('Locked Admins', byStatus('LOCKED')),
+    section('Revoked Admins', byStatus('REVOKED')),
+    el('section', { class: 'governance-section' }, [el('h2', { text: 'Security Activity' }), renderSecurityActivityList(activity)]),
+  ]);
+}
+
+async function protectedOwnerTransferAction(transfer, actionName, path) {
+  const password = window.prompt(`Current Firebase password required to ${actionName}:`);
+  if (!password) return;
+  const mfaCode = window.prompt('Current TOTP authenticator code (leave blank only when the account has no MFA requirement):') || '';
+  const reason = governanceReason(actionName);
+  if (!reason) return;
+  await runGovernanceAction(`${actionName} completed.`, async () => {
+    await recordCurrentAdminReauthentication(password, `OWNER_TRANSFER_${actionName.toUpperCase().replaceAll(' ', '_')}`, mfaCode);
+    await api(path, { method: 'POST', body: { reason } });
+  });
+}
+
+function renderOwnerTransferCard(transfer) {
+  const actions = [];
+  if (transfer.status === 'TARGET_VERIFIED') actions.push(el('button', { class: 'btn small', text: 'Verify current owner', onclick: () => protectedOwnerTransferAction(transfer, 'verify current owner', API_PATHS.admin.ownerVerifyCurrent(transfer.id)) }));
+  if (transfer.status === 'READY_TO_COMMIT') actions.push(el('button', { class: 'btn small danger', text: 'Final atomic commit', onclick: () => protectedOwnerTransferAction(transfer, 'commit ownership transfer', API_PATHS.admin.ownerCommit(transfer.id)) }));
+  if (['PREPARED', 'TARGET_VERIFIED', 'READY_TO_COMMIT'].includes(transfer.status)) actions.push(el('button', { class: 'btn small ghost', text: 'Cancel', onclick: async () => {
+    const reason = governanceReason('cancel ownership transfer');
+    if (!reason) return;
+    await runGovernanceAction('Ownership transfer cancelled.', () => api(API_PATHS.admin.ownerCancel(transfer.id), { method: 'POST', body: { reason } }));
+  } }));
+  return el('article', { class: 'card governance-account-card' }, [
+    el('div', { class: 'section-title-row' }, [el('div', {}, [el('h3', { text: transfer.targetEmailMask || 'Protected target' }), el('p', { class: 'muted', text: transfer.correlationId || '-' })]), el('span', { class: getStatusClass(transfer.status), text: transfer.status })]),
+    renderMetaGrid([['Requested', formatDate(transfer.requestedAt)], ['Expires', formatDate(transfer.expiresAt)], ['Target verified', formatDate(transfer.targetVerifiedAt)], ['Completed', formatDate(transfer.completedAt)]]),
+    el('div', { class: 'governance-actions' }, actions),
+  ]);
+}
+
+function renderSystemOwnershipPage() {
+  const readiness = state.data?.readiness || state.governance.ownerReadiness || {};
+  const transfers = state.data?.content || [];
+  const targetEmail = el('input', { type: 'email', autocomplete: 'off', placeholder: 'Target owner email' });
+  const requestId = el('input', { autocomplete: 'off', placeholder: 'One-time request ID from secure ops' });
+  const approvalCode = el('input', { type: 'password', autocomplete: 'off', placeholder: 'Offline approval code' });
+  const reason = el('textarea', { rows: '2', placeholder: 'Required ownership transfer reason' });
+  const password = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current Firebase password' });
+  const mfaCode = el('input', { inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Current TOTP code' });
+  const form = el('form', { class: 'governance-form' }, [
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Target email' }), targetEmail]),
+      el('div', { class: 'field' }, [el('label', { text: 'One-time request ID' }), requestId]),
+      el('div', { class: 'field' }, [el('label', { text: 'Offline approval code' }), approvalCode]),
+      el('div', { class: 'field' }, [el('label', { text: 'Reason' }), reason]),
+      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), password]),
+      el('div', { class: 'field' }, [el('label', { text: 'TOTP authenticator code' }), mfaCode]),
+    ]),
+    el('button', { class: 'btn danger', type: 'submit', disabled: !readiness.ready, text: readiness.ready ? 'Prepare protected transfer' : 'Transfer is not ready' }),
+  ]);
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await runGovernanceAction('Ownership transfer prepared and target verification email sent.', async () => {
+      await recordCurrentAdminReauthentication(password.value, 'OWNER_TRANSFER_PREPARE', mfaCode.value);
+      await api(API_PATHS.admin.ownerPrepare, { method: 'POST', body: { targetEmail: targetEmail.value, requestId: requestId.value, approvalCode: approvalCode.value, reason: reason.value } });
+    });
+  });
+  return el('div', { class: 'governance-page' }, [
+    renderAdminControlHero('System Ownership', 'The only supported way to move the unique System Owner and SUPER_ADMIN identity.', 'The Backend intentionally returns only a generic readiness result. It never tells the browser which ENV value, approval secret, or verification stage is missing.'),
+    el('section', { class: 'card governance-summary-card' }, [
+      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Transfer Readiness' }), el('span', { class: readiness.ready ? 'badge success' : 'badge warn', text: readiness.ready ? 'READY' : 'NOT READY' })]),
+      renderMetaGrid([['Current owner', readiness.currentOwnerEmail || '-'], ['ENV gate enabled', readiness.transferEnabled ? 'Yes' : 'No'], ['Active transfer exists', readiness.activeTransferExists ? 'Yes' : 'No']]),
+      el('p', { class: 'muted', text: 'For security, the UI does not expose which backend verification input is missing.' }),
+    ]),
+    el('section', { class: 'card' }, [el('h3', { text: 'Prepare Transfer' }), form]),
+    el('section', { class: 'governance-section' }, [el('h2', { text: 'Transfer History' }), transfers.length ? el('div', { class: 'governance-card-grid' }, transfers.map(renderOwnerTransferCard)) : renderEmptyState('No ownership transfers found.')]),
+  ]);
+}
+
 function renderAdminControlPage() {
   const items = state.data?.content || [];
   const children = [];
@@ -9626,7 +10372,74 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
   ]);
 }
 
+function renderOwnerTransferMfaOnboarding() {
+  const currentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
+  const startForm = el('form', { class: 'governance-form' }, [
+    el('p', { class: 'muted', text: 'The target System Owner must enroll Firebase TOTP MFA before Backend target verification can complete. The shared secret remains only in this browser memory.' }),
+    el('div', { class: 'field' }, [el('label', { text: 'Current password' }), currentPassword]),
+    el('button', { class: 'btn', type: 'submit', text: 'Start TOTP enrollment' }),
+  ]);
+  startForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    state.loading = true;
+    render();
+    try {
+      await startAdminTotpEnrollment(currentPassword.value);
+      state.loading = false;
+      render();
+    } catch (error) {
+      state.loading = false;
+      setMessage(toFriendlyErrorMessage(error, 'Unable to start target MFA enrollment.'), true);
+      render();
+    }
+  });
+
+  let enrollmentForm = null;
+  if (state.totpEnrollment) {
+    const enrollment = state.totpEnrollment;
+    const displayName = el('input', { type: 'text', value: 'Fundoralit System Owner', maxlength: '64' });
+    const code = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: `${enrollment.verificationCodeLength || 6}-digit code`, maxlength: '8' });
+    enrollmentForm = el('form', { class: 'governance-form' }, [
+      el('div', { class: 'sensitive-secret-box' }, [
+        el('strong', { text: 'Store this TOTP secret securely' }),
+        el('input', { value: enrollment.sharedSecretKey, readonly: 'readonly', autocomplete: 'off', 'aria-label': 'TOTP shared secret' }),
+      ]),
+      el('p', { class: 'muted', text: 'Add the secret to an authenticator app, then enter the current code. Do not copy this secret into logs or support tickets.' }),
+      el('div', { class: 'form-grid two' }, [
+        el('div', { class: 'field' }, [el('label', { text: 'Display name' }), displayName]),
+        el('div', { class: 'field' }, [el('label', { text: 'Authenticator code' }), code]),
+      ]),
+      el('button', { class: 'btn', type: 'submit', text: 'Enable MFA and verify target' }),
+    ]);
+    enrollmentForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      state.loading = true;
+      render();
+      try {
+        await finalizeAdminTotpEnrollment(code.value, displayName.value, { loadBackendSession: false });
+        state.governanceMfaRequired = false;
+        signOutAdmin({ notice: 'TOTP MFA was enrolled. Sign in again and complete the authenticator challenge to finish ownership target verification.' });
+      } catch (error) {
+        state.loading = false;
+        setMessage(toFriendlyErrorMessage(error, 'Target MFA enrollment or verification failed.'), true);
+        render();
+      }
+    });
+  }
+
+  return el('section', { class: 'card governance-target-mfa-card' }, [
+    el('p', { class: 'eyebrow', text: 'System Ownership' }),
+    el('h2', { text: 'Secure the target account with MFA' }),
+    ...renderNotice(),
+    state.totpEnrollment ? enrollmentForm : startForm,
+    el('button', { class: 'btn ghost', type: 'button', text: 'Cancel and sign out', onclick: () => signOutAdmin() }),
+  ].filter(Boolean));
+}
+
 function renderSignedIn() {
+  if (state.governanceLink?.type === 'ownerTransfer' && state.governanceMfaRequired) {
+    return renderOwnerTransferMfaOnboarding();
+  }
   ensureActiveDataScope();
   const scopedData = getScopedData();
   const items = scopedData?.content || [];
@@ -9700,7 +10513,7 @@ function renderSignedOut() {
   const children = [
     el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }),
     el('h2', { text: 'Sign in required' }),
-    el('p', { class: 'muted', text: 'Use a Firebase account that is allowed by the Core Backend admin allowlist. This frontend does not decide who is admin.' }),
+    el('p', { class: 'muted', text: 'Use the exact Firebase identity activated through a Core Backend admin invitation. This frontend never grants admin access by itself.' }),
   ];
   if (state.auth) {
     children.push(el('div', { class: 'signed-out-login-panel' }, [
@@ -9739,6 +10552,8 @@ async function boot() {
   }
 
   state.auth = { mode: 'firebase-rest', apiKeyPresent: Boolean(getFirebaseApiKey()) };
+  state.governanceLink = readGovernanceLinkFromLocation();
+  if (state.governanceLink) await loadGovernanceLinkPreview();
   render();
 
   try {

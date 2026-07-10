@@ -4897,3 +4897,104 @@ body {
     font-size: 0.72rem;
   }
 }
+
+/* Admin Account Governance */
+.governance-page,
+.governance-section {
+  display: grid;
+  gap: 16px;
+}
+
+.governance-section > h2 {
+  font-size: clamp(20px, 2.4vw, 28px);
+}
+
+.governance-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.governance-form.compact {
+  gap: 10px;
+}
+
+.governance-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 14px;
+}
+
+.governance-account-card {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.governance-summary-card {
+  border-color: rgba(15, 118, 110, 0.25);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(240, 253, 250, 0.92));
+}
+
+.governance-actions,
+.login-action-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.governance-inline-control {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.governance-link-notice {
+  display: grid;
+  gap: 5px;
+  padding: 12px 13px;
+  border: 1px solid var(--primary-soft);
+  border-radius: 14px;
+  color: var(--primary-dark);
+  background: var(--primary-soft-2);
+  overflow-wrap: anywhere;
+}
+
+.governance-security-list {
+  display: grid;
+  gap: 10px;
+}
+
+.sensitive-secret-box {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #fbbf24;
+  border-radius: 16px;
+  background: #fffbeb;
+}
+
+.sensitive-secret-box input,
+.sensitive-secret-box textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  word-break: break-all;
+}
+
+@media (max-width: 760px) {
+  .governance-inline-control {
+    grid-template-columns: 1fr;
+  }
+
+  .governance-actions,
+  .login-action-row {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .governance-actions .btn,
+  .login-action-row .btn {
+    width: 100%;
+  }
+}
