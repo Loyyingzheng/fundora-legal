@@ -4998,4 +4998,25 @@ body {
     width: 100%;
   }
 }
-\n\n/* Admin governance close-loop fix: persistent desktop navigation and explicit TOTP setup. */\n.totp-enrollment-steps {\n  margin: 10px 0 12px 20px;\n  padding: 0;\n  display: grid;\n  gap: 7px;\n  color: var(--muted-strong);\n  line-height: 1.45;\n}\n\n.totp-advanced-setup {\n  margin-top: 10px;\n  padding-top: 10px;\n  border-top: 1px solid var(--border);\n}\n\n.totp-advanced-setup summary {\n  cursor: pointer;\n  font-weight: 800;\n  color: var(--heading);\n}\n\n@media (min-width: 1100px) {\n  .header-menu-button {\n    display: none !important;\n  }\n\n  .admin-layout {\n    display: grid !important;\n    grid-template-columns: 300px minmax(0, 1fr) !important;\n    align-items: start !important;\n    gap: 18px !important;\n  }\n\n  .admin-sidebar,\n  .admin-sidebar.desktop-persistent {\n    position: sticky !important;\n    inset: auto !important;\n    top: 76px !important;\n    width: 300px !important;\n    max-width: 300px !important;\n    height: calc(100vh - 92px) !important;\n    max-height: calc(100vh - 92px) !important;\n    transform: none !important;\n    opacity: 1 !important;\n    pointer-events: auto !important;\n    border: 1px solid rgba(221, 229, 226, 0.94) !important;\n    border-radius: 24px !important;\n    box-shadow: var(--shadow-sm) !important;\n  }\n\n  .sidebar-close,\n  .nav-backdrop {\n    display: none !important;\n  }\n\n  .admin-main {\n    min-width: 0 !important;\n    padding-left: 0 !important;\n  }\n}\n
+
+/* Admin governance MFA setup */
+.totp-enrollment-steps {
+  margin: 10px 0 12px 20px;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+  color: var(--muted-strong);
+  line-height: 1.45;
+}
+
+.totp-advanced-setup {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.totp-advanced-setup summary {
+  cursor: pointer;
+  font-weight: 800;
+  color: var(--heading);
+}

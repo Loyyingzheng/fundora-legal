@@ -1481,10 +1481,6 @@ function getActiveNavGroup(tab = state.activeTab) {
   return NAV_GROUPS.find((group) => group.items.some((item) => item.id === tab)) || NAV_GROUPS[0];
 }
 
-function isDesktopNavigation() {
-  return typeof window !== 'undefined' && window.matchMedia('(min-width: 1100px)').matches;
-}
-
 function openNavigation() {
   state.navOpen = true;
   render();
@@ -3441,10 +3437,9 @@ function visibleNavGroups() {
 }
 
 function renderSidebar() {
-  const desktopNavigation = isDesktopNavigation();
-  const navigationVisible = desktopNavigation || state.navOpen;
+  const navigationVisible = state.navOpen;
   return el('aside', {
-    class: `admin-sidebar ${navigationVisible ? 'open' : ''} ${desktopNavigation ? 'desktop-persistent' : ''}`.trim(),
+    class: `admin-sidebar ${navigationVisible ? 'open' : ''}`.trim(),
     'aria-label': 'Admin navigation',
     'aria-hidden': navigationVisible ? 'false' : 'true',
     inert: navigationVisible ? null : '',
@@ -10534,12 +10529,11 @@ function renderSignedIn() {
 }
 
 function renderAdminShell(children) {
-  const desktopNavigation = isDesktopNavigation();
-  return el('section', { class: `admin-layout ${state.navOpen ? 'nav-open' : ''} ${desktopNavigation ? 'desktop-navigation' : ''}`.trim() }, [
+  return el('section', { class: `admin-layout ${state.navOpen ? 'nav-open' : ''}`.trim() }, [
     el('button', {
       class: 'nav-backdrop',
       type: 'button',
-      tabindex: !desktopNavigation && state.navOpen ? '0' : '-1',
+      tabindex: state.navOpen ? '0' : '-1',
       'aria-label': 'Close admin navigation',
       onclick: closeNavigation,
     }),
@@ -10647,15 +10641,7 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('scroll', () => positionOpenInfoPopovers(), true);
-let lastDesktopNavigationMode = isDesktopNavigation();
-window.addEventListener('resize', () => {
-  positionOpenInfoPopovers();
-  const nextDesktopNavigationMode = isDesktopNavigation();
-  if (nextDesktopNavigationMode !== lastDesktopNavigationMode) {
-    lastDesktopNavigationMode = nextDesktopNavigationMode;
-    render();
-  }
-});
+window.addEventListener('resize', () => positionOpenInfoPopovers());
 
 if (headerMenuButton) {
   headerMenuButton.addEventListener('click', toggleNavigation);

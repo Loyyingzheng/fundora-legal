@@ -17,8 +17,11 @@ assert(renderer.includes("state.activeTab === 'myAccount'"), 'My Account must re
 assert(renderer.includes('renderMyAccountSecurityPage()'), 'My Account security UI must be attached to the page renderer.');
 assert(renderer.includes('renderAdminAccountsGovernancePage()'), 'Admin Accounts must be attached to the page renderer.');
 assert(renderer.includes('renderSystemOwnershipPage()'), 'System Ownership must be attached to the page renderer.');
-assert(app.includes('function isDesktopNavigation()'), 'Desktop navigation mode must be explicit.');
-assert(app.includes('desktop-persistent'), 'Desktop sidebar must remain interactive and visible.');
-assert(css.includes('@media (min-width: 1100px)'), 'Desktop sidebar must have a persistent layout breakpoint.');
-assert(css.includes('grid-template-columns: 300px minmax(0, 1fr)'), 'Desktop layout must reserve space for the sidebar.');
+assert(app.includes('const navigationVisible = state.navOpen;'), 'Sidebar visibility must follow the explicit open state at every viewport width.');
+assert(!app.includes('desktopNavigation || state.navOpen'), 'Desktop width must not force the drawer open after Close is pressed.');
+assert(!app.includes('desktop-persistent'), 'The drawer must not have a non-closable desktop-only mode.');
+assert(app.includes("onclick: closeNavigation"), 'Sidebar Close and backdrop actions must call closeNavigation.');
+assert(app.includes("tabindex: state.navOpen ? '0' : '-1'"), 'Backdrop keyboard focus must follow the drawer open state.');
+assert(!css.includes('display: none !important;\n  }\n\n  .admin-layout'), 'Desktop CSS must not hide the menu trigger and force a persistent sidebar.');
+assert(!css.includes('\\n\\n/* Admin governance'), 'Stylesheet must not contain escaped newline text that invalidates appended CSS.');
 console.log('PASS admin governance rendering close-loop audit');
