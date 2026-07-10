@@ -24,7 +24,7 @@ assert(app.includes('function syncNavigationPresentation()'), 'Navigation state 
 assert(app.includes('function setNavigationOpen(open)'), 'Navigation open/close must use one authoritative setter.');
 assert(!app.includes('if (!state.navOpen) return;'), 'Close must not no-op when stale DOM remains visible but state is already false.');
 assert(app.includes('syncNavigationPresentation();\n}'), 'A full render must re-synchronize drawer presentation.');
-assert(indexHtml.includes('20260710-admin-governance-v2-sidebar-close-v3'), 'Sidebar close fix must use a new asset cache key.');
+assert(indexHtml.includes('20260710-admin-trusted-device-recovery-v1'), 'Sidebar close fix must use a new asset cache key.');
 assert(css.includes('.admin-sidebar[aria-hidden="true"]'), 'CSS must force a hidden drawer off-screen even if a stale open class survives.');
 assert(!app.includes('desktop-persistent'), 'The drawer must not have a non-closable desktop-only mode.');
 assert(app.includes("onclick: closeNavigation"), 'Sidebar Close and backdrop actions must call closeNavigation.');

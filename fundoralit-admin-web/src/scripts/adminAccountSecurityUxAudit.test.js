@@ -6,7 +6,7 @@ const app = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
-assert(app.includes('Finish your Super Admin setup'), 'My Account must explain the setup state clearly.');
+assert(app.includes('`Finish your ${setupOwnerLabel} setup`'), 'My Account setup title must be role-aware instead of hardcoded to Super Admin.');
 assert(app.includes('Your password is already working because you are signed in.'), 'Password must not look like an unfinished mandatory setup step.');
 assert(app.includes('Sign out and verify MFA now'), 'MFA enrollment must provide an explicit final login action.');
 assert(app.includes('Changed your password? Sign in here with the new password.'), 'Signed-out login must explain the post-password-change flow.');
@@ -16,5 +16,9 @@ assert(app.includes('updateAdminFirebasePassword(currentPassword, newPassword, m
 assert(app.includes('loginEmail: email'), 'Password change must preserve the correct email for the next login.');
 assert(css.includes('.account-security-progress'), 'Account setup progress needs dedicated responsive styling.');
 assert(css.includes('.admin-login-page'), 'Full-page Admin login needs dedicated styling.');
-assert(html.includes('20260710-admin-governance-v2-sidebar-close-v3-account-security-ux-v5-nonce-retry'), 'Updated login/account UX must be cache-busted.');
+assert(app.includes('Trust this browser'), 'My Account must expose the single trusted-browser onboarding step.');
+assert(app.includes('Lost authenticator?'), 'The login UI must expose recovery without requiring Cloud Shell.');
+assert(app.includes('Generate ten one-time codes'), 'My Account must explain recovery-code rotation.');
+assert(css.includes('.account-recovery-code-grid'), 'Recovery codes need mobile-safe dedicated styling.');
+assert(html.includes('20260710-admin-trusted-device-recovery-v1'), 'Updated login/account UX must be cache-busted.');
 console.log('PASS admin account security UX audit');

@@ -10,8 +10,13 @@ const collaborationApiBaseUrl = normalizeBaseUrl(config.collaborationApiBaseUrl 
 const firebaseConfig = config.firebase || {};
 const brandLogoSrc = config.brandLogoSrc || './src/assets/fundora-logo.png';
 const FIREBASE_TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
-const ADMIN_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
-const ADMIN_ABSOLUTE_TIMEOUT_MS = 8 * 60 * 60 * 1000;
+const ADMIN_IDLE_TIMEOUT_MS = Number(config.adminIdleTimeoutMs || 12 * 60 * 60 * 1000);
+const ADMIN_ABSOLUTE_TIMEOUT_MS = Number(config.adminAbsoluteTimeoutMs || 7 * 24 * 60 * 60 * 1000);
+const ADMIN_SECURITY_DB_NAME = 'fundoralit-admin-security-v1';
+const ADMIN_SECURITY_DB_VERSION = 1;
+const ADMIN_AUTH_RECORD_KEY = `firebase-auth:${firebaseConfig.projectId || 'unknown'}`;
+const ADMIN_DEVICE_RECORD_KEY = `trusted-device:${firebaseConfig.projectId || 'unknown'}`;
+const ADMIN_STORAGE_KEY_NAME = `storage-key:${firebaseConfig.projectId || 'unknown'}`;
 const ADMIN_SESSION_MONITOR_INTERVAL_MS = 15 * 1000;
 const ADMIN_ACTIVITY_THROTTLE_MS = 5 * 1000;
 const FIREBASE_IDENTITY_TOOLKIT_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
@@ -22,6 +27,7 @@ let lastAdminActivityAt = Date.now();
 let lastAdminActivityWriteAt = 0;
 let adminSessionMonitorId = null;
 let sessionExpiryHandling = false;
+let adminAuthStorageQueue = Promise.resolve();
 
 // Centralized admin API path presets.
 // Keep all backend route links here so future backend changes only need one small update.
@@ -46,6 +52,11 @@ const API_PATHS = {
     revokeOwnSessions: '/api/admin/account/security/revoke-sessions',
     reauthenticated: '/api/admin/account/security/reauthenticated',
     securityActivity: '/api/admin/security-activity',
+    trustedDevice: '/api/admin/account/security/trusted-device',
+    enrollTrustedDevice: '/api/admin/account/security/trusted-device/enroll',
+    revokeTrustedDevice: '/api/admin/account/security/trusted-device/revoke',
+    generateRecoveryCodes: '/api/admin/account/security/recovery-codes/generate',
+    consumeRecoveryCode: '/api/admin/account/security/recovery/consume',
     ownerReadiness: '/api/admin/system-owner/transfer/readiness',
     ownerPrepare: '/api/admin/system-owner/transfer/prepare',
     ownerPreview: (token) => `/api/admin/system-owner/transfer/public/${encodeURIComponent(token)}/preview`,
@@ -416,6 +427,10 @@ const state = {
   pendingMfa: null,
   loginEmail: '',
   totpEnrollment: null,
+  trustedDevice: null,
+  recoveryCodes: null,
+  deviceSecurityBusy: false,
+  showRecoveryForm: false,
   governanceLink: null,
   governancePreview: null,
   governanceMfaRequired: false,
@@ -1691,8 +1706,170 @@ async function firebaseFormRequest(baseUrl, endpoint, formBody) {
   return json || {};
 }
 
-function getStoredAuthSession() {
-  return null;
+function openAdminSecurityDb() {
+  if (!globalThis.indexedDB || !globalThis.crypto?.subtle) {
+    return Promise.reject(new Error('Secure browser storage is unavailable.'));
+  }
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(ADMIN_SECURITY_DB_NAME, ADMIN_SECURITY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('records')) db.createObjectStore('records', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('keys')) db.createObjectStore('keys', { keyPath: 'id' });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Unable to open secure browser storage.'));
+  });
+}
+
+async function adminSecurityDbGet(storeName, id) {
+  const db = await openAdminSecurityDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction(storeName, 'readonly').objectStore(storeName).get(id);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error('Secure browser storage read failed.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function adminSecurityDbPut(storeName, value) {
+  const db = await openAdminSecurityDb();
+  try {
+    await new Promise((resolve, reject) => {
+      const request = db.transaction(storeName, 'readwrite').objectStore(storeName).put(value);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error || new Error('Secure browser storage write failed.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function adminSecurityDbDelete(storeName, id) {
+  const db = await openAdminSecurityDb();
+  try {
+    await new Promise((resolve, reject) => {
+      const request = db.transaction(storeName, 'readwrite').objectStore(storeName).delete(id);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error || new Error('Secure browser storage delete failed.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function bytesToBase64Url(bytes) {
+  let binary = '';
+  for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function base64UrlToBytes(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  const binary = atob(padded);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function adminStorageAad() {
+  return new TextEncoder().encode(`${location.origin}|${firebaseConfig.projectId || ''}|fundoralit-admin-v1`);
+}
+
+async function getOrCreateAdminStorageKey() {
+  const existing = await adminSecurityDbGet('keys', ADMIN_STORAGE_KEY_NAME);
+  if (existing?.key) return existing.key;
+  const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  await adminSecurityDbPut('keys', { id: ADMIN_STORAGE_KEY_NAME, key, createdAt: Date.now() });
+  return key;
+}
+
+function queueAdminAuthStorage(task) {
+  const operation = adminAuthStorageQueue.then(task, task);
+  adminAuthStorageQueue = operation.catch(() => {});
+  return operation;
+}
+
+async function persistAuthSession(session) {
+  if (!session?.refreshToken || !session?.email) return;
+  const key = await getOrCreateAdminStorageKey();
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const payload = new TextEncoder().encode(JSON.stringify({
+    ...session,
+    lastActivityAt: Number(lastAdminActivityAt || Date.now()),
+    storageVersion: 1,
+  }));
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: adminStorageAad() }, key, payload);
+  await adminSecurityDbPut('records', {
+    id: ADMIN_AUTH_RECORD_KEY,
+    iv: bytesToBase64Url(iv),
+    ciphertext: bytesToBase64Url(ciphertext),
+    updatedAt: Date.now(),
+  });
+}
+
+async function getStoredAuthSession() {
+  try {
+    const record = await adminSecurityDbGet('records', ADMIN_AUTH_RECORD_KEY);
+    if (!record?.iv || !record?.ciphertext) return null;
+    const key = await getOrCreateAdminStorageKey();
+    const plaintext = await crypto.subtle.decrypt({
+      name: 'AES-GCM',
+      iv: base64UrlToBytes(record.iv),
+      additionalData: adminStorageAad(),
+    }, key, base64UrlToBytes(record.ciphertext));
+    const session = JSON.parse(new TextDecoder().decode(plaintext));
+    if (!session?.refreshToken || !session?.email || Number(session.storageVersion || 0) !== 1) return null;
+    return session;
+  } catch (error) {
+    await adminSecurityDbDelete('records', ADMIN_AUTH_RECORD_KEY).catch(() => {});
+    return null;
+  }
+}
+
+async function clearStoredAuthSession() {
+  await adminSecurityDbDelete('records', ADMIN_AUTH_RECORD_KEY).catch(() => {});
+}
+
+function defaultAdminDeviceName() {
+  const platform = normalizedTrim(navigator.userAgentData?.platform || navigator.platform || 'Browser');
+  const mobile = navigator.userAgentData?.mobile || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
+  return `${mobile ? 'Mobile' : 'Computer'} · ${platform}`.slice(0, 160);
+}
+
+async function getAdminDeviceIdentity({ create = false } = {}) {
+  const existing = await adminSecurityDbGet('keys', ADMIN_DEVICE_RECORD_KEY);
+  if (existing?.privateKey && existing?.deviceKeyId && existing?.publicKeySpki) return existing;
+  if (!create) return null;
+  const keyPair = await crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    false,
+    ['sign', 'verify'],
+  );
+  const publicKeySpki = bytesToBase64Url(await crypto.subtle.exportKey('spki', keyPair.publicKey));
+  const identity = {
+    id: ADMIN_DEVICE_RECORD_KEY,
+    deviceKeyId: crypto.randomUUID ? crypto.randomUUID() : `device-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    deviceName: defaultAdminDeviceName(),
+    publicKeySpki,
+    privateKey: keyPair.privateKey,
+    createdAt: Date.now(),
+  };
+  await adminSecurityDbPut('keys', identity);
+  return identity;
+}
+
+async function signAdminDevicePayload(canonical) {
+  const identity = await getAdminDeviceIdentity({ create: false });
+  if (!identity?.privateKey) return null;
+  const signature = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    identity.privateKey,
+    new TextEncoder().encode(canonical),
+  );
+  return { identity, signature: bytesToBase64Url(signature) };
 }
 
 function resetAdminActivityClock(now = Date.now()) {
@@ -1784,12 +1961,17 @@ function recordAdminActivity({ force = false } = {}) {
   if (!force && now - lastAdminActivityWriteAt < ADMIN_ACTIVITY_THROTTLE_MS) return;
   lastAdminActivityAt = now;
   lastAdminActivityWriteAt = now;
+  queueAdminAuthStorage(() => persistAuthSession(memoryAuthSession)).catch(() => {});
 }
 
 function resetSignedInRuntimeState() {
   invalidateLoadRequests();
   state.pendingMfa = null;
   state.totpEnrollment = null;
+  state.trustedDevice = null;
+  state.recoveryCodes = null;
+  state.deviceSecurityBusy = false;
+  state.showRecoveryForm = false;
   state.governanceMfaRequired = false;
   state.adminSession = null;
   state.modal = null;
@@ -1886,10 +2068,12 @@ function saveAuthSession(session) {
     ...(session || {}),
     signedInAt: Number(session?.signedInAt || 0) || Date.now(),
   };
+  queueAdminAuthStorage(() => persistAuthSession(memoryAuthSession)).catch(() => {});
 }
 
 function clearAuthSession() {
   memoryAuthSession = null;
+  queueAdminAuthStorage(() => clearStoredAuthSession()).catch(() => {});
 }
 
 function normalizeSignInSession(response, existing = {}) {
@@ -2056,6 +2240,46 @@ async function finalizeAdminTotpEnrollment(verificationCode, displayName = 'Fund
   return session;
 }
 
+async function lookupFirebaseAccount(idToken) {
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_BASE_URL, 'accounts:lookup', { idToken });
+  return Array.isArray(response.users) ? response.users[0] || null : null;
+}
+
+async function replaceAdminTotpAuthenticator(currentPassword, currentCode) {
+  const email = normalizedTrim(state.user?.email || state.loginEmail);
+  if (!email) throw new Error('Admin email is unavailable.');
+  let freshSession;
+  try {
+    freshSession = await signInAdminWithPassword(email, currentPassword, { persist: false });
+  } catch (error) {
+    if (error.code !== 'MFA_REQUIRED') throw error;
+    freshSession = await finalizeAdminMfaSignIn({
+      pendingCredential: error.pendingCredential,
+      enrollment: error.enrollment,
+      email: error.email,
+    }, currentCode, { persist: false });
+  }
+  const account = await lookupFirebaseAccount(freshSession.idToken);
+  const factors = Array.isArray(account?.mfaInfo) ? account.mfaInfo : [];
+  const totp = factors.find((item) => item.totpInfo || String(item.displayName || '').toLowerCase().includes('totp'));
+  if (!totp?.mfaEnrollmentId) throw new Error('No TOTP authenticator enrollment was found.');
+  const withdrawn = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_V2_BASE_URL, 'accounts/mfaEnrollment:withdraw', {
+    idToken: freshSession.idToken,
+    mfaEnrollmentId: totp.mfaEnrollmentId,
+  });
+  let postWithdrawSession = normalizeSignInSession(withdrawn, { email });
+  if (!postWithdrawSession.idToken || !postWithdrawSession.refreshToken) {
+    postWithdrawSession = await signInAdminWithPassword(email, currentPassword, { persist: false });
+  }
+  applyAuthSession(postWithdrawSession);
+  state.totpEnrollment = null;
+  await startAdminTotpEnrollment(currentPassword);
+  state.message = 'The old authenticator was removed. Add the new setup key now and verify one current code.';
+  state.error = '';
+  render();
+  return state.totpEnrollment;
+}
+
 async function requestAdminPasswordReset(email) {
   const cleanEmail = normalizedTrim(email);
   if (!cleanEmail) throw new Error('Email is required.');
@@ -2115,6 +2339,181 @@ async function recordCurrentAdminReauthentication(password, context = 'ADMIN_SEC
   return api(API_PATHS.admin.reauthenticated, { method: 'POST', body: { context } });
 }
 
+function decodeFirebaseIdTokenPayload(idToken) {
+  try {
+    const part = String(idToken || '').split('.')[1];
+    if (!part) return {};
+    return JSON.parse(new TextDecoder().decode(base64UrlToBytes(part)));
+  } catch (_) {
+    return {};
+  }
+}
+
+function firebaseIdTokenHasMfa(idToken) {
+  const payload = decodeFirebaseIdTokenPayload(idToken);
+  const firebase = payload?.firebase || {};
+  const amr = Array.isArray(payload?.amr) ? payload.amr.map((value) => String(value).toLowerCase()) : [];
+  return Boolean(
+    payload?.mfa === true
+    || amr.some((value) => ['mfa', 'otp', 'totp'].includes(value))
+    || firebase?.sign_in_second_factor
+    || firebase?.signInSecondFactor
+    || payload?.['firebase.sign_in_second_factor']
+  );
+}
+
+function adminTrustedDeviceReady() {
+  if (!state.adminSession?.mfaRequired) return true;
+  if (!state.adminSession?.mfaSatisfied) return false;
+  return Boolean(state.trustedDevice?.currentDevice);
+}
+
+async function loadTrustedDeviceState({ renderAfter = false } = {}) {
+  if (!state.user || !state.adminSession?.mfaSatisfied) {
+    state.trustedDevice = null;
+    if (renderAfter) render();
+    return null;
+  }
+  try {
+    const identity = await getAdminDeviceIdentity({ create: false }).catch(() => null);
+    const headers = identity?.deviceKeyId ? { 'X-Fundora-Admin-Device-Key-Id': identity.deviceKeyId } : {};
+    state.trustedDevice = await api(API_PATHS.admin.trustedDevice, { headers });
+    if (renderAfter) render();
+    return state.trustedDevice;
+  } catch (error) {
+    state.trustedDevice = null;
+    if (renderAfter) render();
+    throw error;
+  }
+}
+
+async function ensureFreshAdminReauthentication(context = 'TRUSTED_DEVICE_LOGIN') {
+  if (!state.adminSession?.mfaSatisfied) return null;
+  try {
+    return await api(API_PATHS.admin.reauthenticated, { method: 'POST', body: { context } });
+  } catch (error) {
+    if (extractBackendCode(error) === 'ADMIN_REAUTHENTICATION_REQUIRED') return null;
+    throw error;
+  }
+}
+
+async function enrollCurrentAdminDevice({ replaceExisting = false, reauthAttempted = false } = {}) {
+  if (!state.adminSession?.mfaSatisfied) throw new Error('Verify MFA before trusting this browser.');
+  state.deviceSecurityBusy = true;
+  state.error = '';
+  render();
+  try {
+    const identity = await getAdminDeviceIdentity({ create: true });
+    const response = await api(API_PATHS.admin.enrollTrustedDevice, {
+      method: 'POST',
+      body: {
+        deviceKeyId: identity.deviceKeyId,
+        deviceName: identity.deviceName,
+        publicKeySpki: identity.publicKeySpki,
+        replaceExisting,
+      },
+    });
+    state.trustedDevice = response;
+    state.message = replaceExisting
+      ? 'This browser is now the only active trusted Admin device. The previous device was revoked.'
+      : 'This browser is now the trusted Admin device.';
+    state.error = '';
+    await loadTrustedDeviceState();
+    render();
+    if (adminTrustedDeviceReady()) loadData({ force: true });
+    return response;
+  } catch (error) {
+    const code = extractBackendCode(error);
+    if (code === 'ADMIN_TRUSTED_DEVICE_REPLACEMENT_REQUIRED' && !replaceExisting) {
+      const confirmed = window.confirm('Another trusted Admin device is active. Replace it with this browser? The old device will lose access immediately.');
+      if (confirmed) return enrollCurrentAdminDevice({ replaceExisting: true, reauthAttempted });
+    }
+    if (code === 'ADMIN_REAUTHENTICATION_REQUIRED' && !reauthAttempted) {
+      const password = window.prompt('For security, enter your current password before trusting this browser:');
+      if (!password) throw error;
+      const mfaCode = window.prompt('Enter the current authenticator code:') || '';
+      await recordCurrentAdminReauthentication(password, 'TRUSTED_DEVICE_ENROLLMENT', mfaCode);
+      return enrollCurrentAdminDevice({ replaceExisting, reauthAttempted: true });
+    }
+    throw error;
+  } finally {
+    state.deviceSecurityBusy = false;
+    render();
+  }
+}
+
+async function generateAdminRecoveryCodes(currentPassword, mfaCode) {
+  await recordCurrentAdminReauthentication(currentPassword, 'GENERATE_RECOVERY_CODES', mfaCode);
+  const response = await api(API_PATHS.admin.generateRecoveryCodes, {
+    method: 'POST',
+    body: { context: 'USER_REQUESTED_RECOVERY_CODE_ROTATION' },
+  });
+  state.recoveryCodes = response;
+  state.message = 'New one-time recovery codes generated. Save them now; they will not be shown again.';
+  state.error = '';
+  render();
+  return response;
+}
+
+function recoveryCodesText(view = state.recoveryCodes) {
+  if (!Array.isArray(view?.recoveryCodes)) return '';
+  return [
+    'Fundoralit Admin recovery codes',
+    `Generated: ${new Date().toISOString()}`,
+    `Expires: ${view.expiresAt || '-'}`,
+    '',
+    ...view.recoveryCodes,
+    '',
+    'Each code can be used once. Keep these codes offline and private.',
+  ].join('\n');
+}
+
+async function copyRecoveryCodes() {
+  const text = recoveryCodesText();
+  if (!text) throw new Error('Generate recovery codes first.');
+  await navigator.clipboard.writeText(text);
+  state.message = 'Recovery codes copied.';
+  render();
+}
+
+function downloadRecoveryCodes() {
+  const text = recoveryCodesText();
+  if (!text) throw new Error('Generate recovery codes first.');
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }));
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = `fundoralit-admin-recovery-codes-${new Date().toISOString().slice(0, 10)}.txt`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function signInAdminWithCustomToken(customToken, email = '') {
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_BASE_URL, 'accounts:signInWithCustomToken', {
+    token: normalizedTrim(customToken),
+    returnSecureToken: true,
+  });
+  const session = normalizeSignInSession(response, { email: normalizedTrim(email) });
+  if (!session.idToken || !session.refreshToken) throw new Error('Firebase did not return a valid recovery session.');
+  applyAuthSession(session);
+  return session;
+}
+
+async function recoverAdminWithRecoveryCode(email, recoveryCode, confirmation) {
+  const result = await publicApi(API_PATHS.admin.consumeRecoveryCode, {
+    method: 'POST',
+    body: { email: normalizedTrim(email), recoveryCode: normalizedTrim(recoveryCode), confirmation: normalizedTrim(confirmation) },
+  });
+  await signInAdminWithCustomToken(result.customToken, result.email || email);
+  state.loginEmail = result.email || email;
+  state.pendingMfa = null;
+  state.showRecoveryForm = false;
+  state.message = 'Recovery succeeded. Connect a new authenticator, trust this browser, and generate new recovery codes.';
+  state.error = '';
+  await completeAdminSignIn();
+}
+
 function assertSessionActive(session = memoryAuthSession) {
   const reason = getAdminSessionExpiryReason(session);
   if (reason) {
@@ -2148,11 +2547,33 @@ async function refreshFirebaseAuthSession(existing = memoryAuthSession) {
 
 async function restoreAuthSession() {
   stopAdminSessionMonitor();
-  clearAuthSession();
-  resetAdminActivityClock();
+  memoryAuthSession = null;
   state.user = null;
   state.adminSession = null;
-  return null;
+  await adminAuthStorageQueue.catch(() => {});
+  const stored = await getStoredAuthSession();
+  if (!stored) {
+    resetAdminActivityClock();
+    return null;
+  }
+  lastAdminActivityAt = Number(stored.lastActivityAt || stored.signedInAt || Date.now());
+  if (getAdminSessionExpiryReason(stored)) {
+    await clearStoredAuthSession();
+    resetAdminActivityClock();
+    return null;
+  }
+  applyAuthSession(stored);
+  lastAdminActivityAt = Number(stored.lastActivityAt || stored.signedInAt || Date.now());
+  try {
+    await refreshFirebaseAuthSession(memoryAuthSession);
+    await loadAdminSession();
+    return state.user;
+  } catch (error) {
+    clearAuthSession();
+    state.user = null;
+    state.adminSession = null;
+    throw error;
+  }
 }
 
 async function getFirebaseRestIdToken(forceRefresh = false) {
@@ -2271,6 +2692,35 @@ async function applyAdminRequestIntegrityHeaders(headers, path, method, body) {
   };
 }
 
+function isAdminDeviceRoute(path) {
+  const normalizedPath = String(path || '').split('?')[0];
+  return normalizedPath.startsWith('/api/admin/')
+    || normalizedPath.startsWith('/api/feedback/admin')
+    || normalizedPath.startsWith('/api/subscription/feedback-trial/admin')
+    || normalizedPath.startsWith('/api/review-prompts/admin')
+    || normalizedPath.startsWith('/api/analytics/admin');
+}
+
+async function applyTrustedDeviceHeaders(headers, path, method, body) {
+  if (!isAdminDeviceRoute(path)) return headers;
+  const identity = await getAdminDeviceIdentity({ create: false }).catch(() => null);
+  if (!identity?.privateKey || !identity?.deviceKeyId) return headers;
+  const timestamp = new Date().toISOString();
+  const nonce = createAdminIdempotencyKey('admin_device_nonce');
+  const bodyHash = await sha256Hex(typeof body === 'string' ? body : '');
+  const canonical = `${String(method || 'GET').toUpperCase()}\n${String(path || '/')}\n${timestamp}\n${nonce}\n${bodyHash}`;
+  const signed = await signAdminDevicePayload(canonical);
+  if (!signed?.signature) return headers;
+  return {
+    ...headers,
+    'X-Fundora-Admin-Device-Key-Id': identity.deviceKeyId,
+    'X-Fundora-Device-Timestamp': timestamp,
+    'X-Fundora-Device-Nonce': nonce,
+    'X-Fundora-Device-Body-SHA256': bodyHash,
+    'X-Fundora-Device-Signature': signed.signature,
+  };
+}
+
 async function readApiResponsePayload(response) {
   const text = await response.text();
   let json = null;
@@ -2291,7 +2741,7 @@ function isRetryableFirebaseTokenFailure(status, payload) {
 
 async function createAuthenticatedApiHeaders(path, options, body, forceTokenRefresh = false) {
   const token = await getToken(forceTokenRefresh);
-  const headers = {
+  let headers = {
     Authorization: `Bearer ${token}`,
     Accept: options.accept || 'application/json',
     ...(options.headers || {}),
@@ -2301,7 +2751,8 @@ async function createAuthenticatedApiHeaders(path, options, body, forceTokenRefr
   } else if (options.body !== undefined) {
     headers['Content-Type'] = 'application/json';
   }
-  return applyAdminRequestIntegrityHeaders(headers, path, options.method || 'GET', body);
+  headers = await applyAdminRequestIntegrityHeaders(headers, path, options.method || 'GET', body);
+  return applyTrustedDeviceHeaders(headers, path, options.method || 'GET', body);
 }
 
 function buildApiError(status, payload, service, url) {
@@ -2355,7 +2806,7 @@ async function api(path, options = {}) {
   }
 
   const method = options.method || 'GET';
-  let headers = await createAuthenticatedApiHeaders(path, options, body, options.forceTokenRefresh === true);
+  let headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, options, body, options.forceTokenRefresh === true);
   let response = await fetch(url.toString(), { method, headers, body });
   let parsed = await readApiResponsePayload(response);
 
@@ -2363,7 +2814,7 @@ async function api(path, options = {}) {
   // such as ADMIN_MFA_REQUIRED must be surfaced as-is and must never be replayed.
   if (options.forceTokenRefresh !== true && isRetryableFirebaseTokenFailure(response.status, parsed.json)) {
     try {
-      headers = await createAuthenticatedApiHeaders(path, options, body, true);
+      headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, options, body, true);
       response = await fetch(url.toString(), { method, headers, body });
       parsed = await readApiResponsePayload(response);
     } catch (error) {
@@ -2406,14 +2857,14 @@ async function apiRaw(path, options = {}) {
   });
 
   const method = options.method || 'GET';
-  let headers = await createAuthenticatedApiHeaders(path, options, undefined, options.forceTokenRefresh === true);
+  let headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, options, undefined, options.forceTokenRefresh === true);
   let response = await fetch(url.toString(), { method, headers });
 
   if (options.forceTokenRefresh !== true && response.status === 401) {
     const preview = await readApiResponsePayload(response.clone());
     if (isRetryableFirebaseTokenFailure(response.status, preview.json)) {
       try {
-        headers = await createAuthenticatedApiHeaders(path, options, undefined, true);
+        headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, options, undefined, true);
         response = await fetch(url.toString(), { method, headers });
       } catch (error) {
         if (isAdminAuthFailure(error)) handleAdminSessionExpired('refresh', { source: 'api-raw-token-refresh' });
@@ -2575,19 +3026,28 @@ function setMessage(message, isError = false) {
 async function loadAdminSession({ renderAfter = false } = {}) {
   if (!state.user) {
     state.adminSession = null;
+    state.trustedDevice = null;
     return null;
   }
   try {
     const session = await api(API_PATHS.admin.session);
     state.adminSession = session || null;
     if (state.adminSession?.mfaRequired && !state.adminSession?.mfaSatisfied) {
+      state.trustedDevice = null;
       state.activeTab = 'myAccount';
       state.page = 0;
+    } else if (state.adminSession?.mfaSatisfied) {
+      await loadTrustedDeviceState();
+      if (state.adminSession?.mfaRequired && !state.trustedDevice?.currentDevice) {
+        state.activeTab = 'myAccount';
+        state.page = 0;
+      }
     }
     if (renderAfter) render();
     return state.adminSession;
   } catch (error) {
     state.adminSession = null;
+    state.trustedDevice = null;
     if (renderAfter) render();
     throw error;
   }
@@ -2596,6 +3056,12 @@ async function loadAdminSession({ renderAfter = false } = {}) {
 async function loadData(options = {}) {
   const force = options?.force === true;
   if (!state.user) return;
+  if (!adminTrustedDeviceReady() && state.activeTab !== 'myAccount') {
+    state.activeTab = 'myAccount';
+    state.page = 0;
+    render();
+    return;
+  }
   let shouldAutoLoadFeedbackScreenshots = false;
   if (!force && restoreAdminTabCache(state.activeTab)) {
     state.loading = false;
@@ -3391,8 +3857,16 @@ async function completeAdminSignIn() {
   state.error = '';
   if (await handlePendingGovernanceLink()) return;
   await loadAdminSession();
+  if (state.adminSession?.mfaSatisfied) {
+    await ensureFreshAdminReauthentication('ADMIN_LOGIN').catch(() => null);
+    await loadTrustedDeviceState().catch(() => null);
+  }
+  if (!adminTrustedDeviceReady()) {
+    state.activeTab = 'myAccount';
+    state.page = 0;
+  }
   render();
-  loadData();
+  if (adminTrustedDeviceReady()) loadData();
 }
 
 function createAdminLoginForm({ className = 'login-grid', compact = false, showIntro = false } = {}) {
@@ -3408,17 +3882,24 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
   const mfaCode = el('input', { type: 'text', inputmode: 'numeric', placeholder: '6-digit authenticator code', autocomplete: 'one-time-code', maxlength: '8' });
   const submit = el('button', { class: 'btn login-primary-button', type: 'submit', text: state.pendingMfa ? 'Verify and enter Admin' : 'Continue securely' });
   const forgot = el('button', { class: 'btn ghost small login-forgot-button', type: 'button', text: 'Forgot password?' });
+  const recoverAccess = el('button', {
+    class: 'btn ghost small login-recovery-button',
+    type: 'button',
+    text: state.showRecoveryForm ? 'Hide recovery' : 'Lost authenticator?',
+  });
   const cancelMfa = state.pendingMfa ? el('button', {
     class: 'btn ghost small',
     type: 'button',
     text: 'Use another account',
     onclick: () => {
       state.pendingMfa = null;
+      state.showRecoveryForm = false;
       state.message = '';
       state.error = '';
       render();
     },
   }) : null;
+
   const children = [
     showIntro ? el('div', { class: 'login-form-heading' }, [
       el('p', { class: 'eyebrow', text: state.pendingMfa ? 'Step 2 of 2' : 'Secure sign in' }),
@@ -3435,9 +3916,11 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
     state.pendingMfa ? null : el('div', { class: 'field' }, [el('label', { text: 'Password' }), password]),
     state.pendingMfa ? el('div', { class: 'field' }, [el('label', { text: 'Authenticator code' }), mfaCode]) : null,
     el('div', { class: 'login-action-row' }, [submit, state.pendingMfa ? cancelMfa : forgot].filter(Boolean)),
+    el('div', { class: 'login-help-actions' }, [recoverAccess]),
     !state.pendingMfa ? el('p', { class: 'login-after-password-help', text: 'Changed your password? Sign in here with the new password. You do not need another invitation.' }) : null,
   ].filter(Boolean);
   const form = el('form', { class: className }, children);
+
   forgot.addEventListener('click', async () => {
     state.error = '';
     state.loginEmail = normalizedTrim(email.value);
@@ -3448,6 +3931,17 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
     }
     render();
   });
+
+  recoverAccess.addEventListener('click', () => {
+    state.loginEmail = normalizedTrim(email.value || state.loginEmail);
+    state.showRecoveryForm = !state.showRecoveryForm;
+    state.error = '';
+    state.message = state.showRecoveryForm
+      ? 'Use one unused recovery code only when the authenticator phone is unavailable.'
+      : '';
+    render();
+  });
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     const submittedEmail = normalizedTrim(email.value);
@@ -3464,6 +3958,7 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
       } else {
         await signInAdminWithPassword(submittedEmail, submittedPassword);
       }
+      state.showRecoveryForm = false;
       await completeAdminSignIn();
     } catch (error) {
       if (error.code === 'MFA_REQUIRED') {
@@ -3482,7 +3977,61 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
       render();
     }
   });
-  return form;
+
+  if (!state.showRecoveryForm) return form;
+
+  const recoveryEmail = el('input', {
+    type: 'email',
+    autocomplete: 'email',
+    placeholder: 'admin@example.com',
+    value: state.pendingMfa?.email || state.loginEmail || email.value || '',
+  });
+  const recoveryCode = el('input', {
+    type: 'text',
+    autocomplete: 'off',
+    autocapitalize: 'characters',
+    spellcheck: 'false',
+    placeholder: 'FUND-XXXXX-XXXXX-XXXXX-XXXXX',
+    maxlength: '80',
+  });
+  const acknowledgement = el('input', { type: 'checkbox' });
+  const recoverySubmit = el('button', { class: 'btn danger', type: 'submit', text: 'Recover and reset security' });
+  const recoveryForm = el('form', { class: 'login-grid admin-recovery-login-form' }, [
+    el('div', { class: 'login-form-heading' }, [
+      el('p', { class: 'eyebrow', text: 'Emergency recovery' }),
+      el('h3', { text: 'Use a one-time recovery code' }),
+      el('p', { class: 'muted', text: 'This removes the old authenticator, revokes every trusted browser and session, and requires a new security setup.' }),
+    ]),
+    el('div', { class: 'field' }, [el('label', { text: 'Admin email' }), recoveryEmail]),
+    el('div', { class: 'field' }, [el('label', { text: 'Unused recovery code' }), recoveryCode]),
+    el('label', { class: 'recovery-confirmation-check' }, [
+      acknowledgement,
+      el('span', { text: 'I understand that all current Admin sessions and trusted browsers will be revoked.' }),
+    ]),
+    recoverySubmit,
+    el('p', { class: 'muted small-copy', text: 'No recovery code? Use the ENV-gated System Owner emergency procedure. Do not create a second Super Admin account.' }),
+  ]);
+  recoveryForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!acknowledgement.checked) {
+      setMessage('Confirm that you understand the recovery action.', true);
+      render();
+      return;
+    }
+    recoverySubmit.disabled = true;
+    recoverySubmit.textContent = 'Recovering…';
+    state.error = '';
+    try {
+      await recoverAdminWithRecoveryCode(recoveryEmail.value, recoveryCode.value, 'RECOVER ADMIN');
+    } catch (error) {
+      recoverySubmit.disabled = false;
+      recoverySubmit.textContent = 'Recover and reset security';
+      setMessage(toFriendlyErrorMessage(error, 'Recovery could not be verified.'), true);
+      render();
+    }
+  });
+
+  return el('div', { class: `admin-login-stack${compact ? ' compact' : ''}` }, [form, recoveryForm]);
 }
 
 function renderAuth() {
@@ -9894,7 +10443,11 @@ function renderMyAccountSecurityPage() {
   const mfaRequired = Boolean(session.mfaRequired);
   const mfaEnrolled = Boolean(session.mfaEnrolled);
   const mfaSatisfied = Boolean(session.mfaSatisfied);
-  const setupComplete = !mfaRequired || (mfaEnrolled && mfaSatisfied);
+  const trustedDevice = state.trustedDevice || {};
+  const trustedDeviceReady = !mfaRequired || Boolean(trustedDevice.currentDevice);
+  const setupComplete = !mfaRequired || (mfaEnrolled && mfaSatisfied && trustedDeviceReady);
+  const roleLabel = adminRoleLabel(session.role);
+  const setupOwnerLabel = normalizeAdminRole(session.role) === 'SUPER_ADMIN' ? 'Super Admin' : roleLabel;
 
   const currentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
   const newPassword = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'At least 8 characters' });
@@ -10022,8 +10575,9 @@ function renderMyAccountSecurityPage() {
             try { await copyTotpEnrollmentValue(enrollment.sharedSecretKey, 'Authenticator secret copied.'); }
             catch (error) { setMessage(toFriendlyErrorMessage(error, 'Unable to copy the authenticator secret.'), true); render(); }
           } }),
-          el('a', { class: 'btn secondary small', href: enrollment.authenticatorUri, text: 'Open authenticator app' }),
+          el('a', { class: 'btn secondary small', href: enrollment.authenticatorUri, text: 'Try opening authenticator app', onclick: () => { window.setTimeout(() => { state.message = 'If the app did not open, use Copy secret key and add it manually as a time-based account.'; render(); }, 700); } }),
         ]),
+        el('p', { class: 'muted totp-manual-fallback', text: 'Automatic opening is not supported by every phone. Copying the secret key and adding it manually is the reliable method.' }),
         el('details', { class: 'totp-advanced-setup' }, [
           el('summary', { text: 'Advanced setup URI' }),
           el('div', { class: 'field' }, [el('label', { text: 'Authenticator URI' }), uri]),
@@ -10089,6 +10643,112 @@ function renderMyAccountSecurityPage() {
     }),
   });
 
+  const trustThisBrowserButton = el('button', {
+    class: 'btn account-primary-action',
+    type: 'button',
+    text: state.deviceSecurityBusy ? 'Securing this browser…' : (trustedDevice.configured ? 'Replace trusted device with this browser' : 'Trust this browser'),
+    disabled: state.deviceSecurityBusy,
+    onclick: async () => {
+      try {
+        await enrollCurrentAdminDevice({ replaceExisting: Boolean(trustedDevice.configured && !trustedDevice.currentDevice) });
+      } catch (error) {
+        setMessage(toFriendlyErrorMessage(error, 'Unable to trust this browser.'), true);
+        render();
+      }
+    },
+  });
+
+  const recoveryPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
+  const recoveryMfaCode = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Current authenticator code' });
+  const generateRecoveryButton = el('button', { class: 'btn secondary', type: 'submit', text: 'Generate new recovery codes' });
+  const recoveryForm = el('form', { class: 'governance-form compact' }, [
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), recoveryPassword]),
+      el('div', { class: 'field' }, [el('label', { text: 'Authenticator code' }), recoveryMfaCode]),
+    ]),
+    generateRecoveryButton,
+  ]);
+  recoveryForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    generateRecoveryButton.disabled = true;
+    generateRecoveryButton.textContent = 'Generating…';
+    try {
+      await generateAdminRecoveryCodes(recoveryPassword.value, recoveryMfaCode.value);
+    } catch (error) {
+      setMessage(toFriendlyErrorMessage(error, 'Recovery codes could not be generated.'), true);
+      render();
+    }
+  });
+
+  const replacePassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
+  const replaceMfaCode = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Current authenticator code' });
+  const replaceAuthenticatorButton = el('button', { class: 'btn secondary', type: 'submit', text: 'Replace authenticator app' });
+  const replaceAuthenticatorForm = el('form', { class: 'governance-form compact' }, [
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), replacePassword]),
+      el('div', { class: 'field' }, [el('label', { text: 'Current authenticator code' }), replaceMfaCode]),
+    ]),
+    replaceAuthenticatorButton,
+  ]);
+  replaceAuthenticatorForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!window.confirm('Replace the current authenticator? The old app will stop generating valid codes after the new setup is completed.')) return;
+    replaceAuthenticatorButton.disabled = true;
+    replaceAuthenticatorButton.textContent = 'Preparing replacement…';
+    try {
+      await replaceAdminTotpAuthenticator(replacePassword.value, replaceMfaCode.value);
+    } catch (error) {
+      setMessage(toFriendlyErrorMessage(error, 'Authenticator replacement could not start.'), true);
+      render();
+    }
+  });
+
+  const recoveryCodesPanel = state.recoveryCodes?.recoveryCodes?.length
+    ? el('div', { class: 'account-recovery-codes-panel' }, [
+      el('div', { class: 'notice warning inline-notice' }, [
+        el('strong', { text: 'Save these codes now' }),
+        el('span', { text: 'They are shown only in this browser view. Each code works once.' }),
+      ]),
+      el('div', { class: 'account-recovery-code-grid' }, state.recoveryCodes.recoveryCodes.map((code) => el('code', { text: code }))),
+      el('div', { class: 'governance-actions' }, [
+        el('button', { class: 'btn ghost small', type: 'button', text: 'Copy all codes', onclick: async () => {
+          try { await copyRecoveryCodes(); } catch (error) { setMessage(toFriendlyErrorMessage(error), true); render(); }
+        } }),
+        el('button', { class: 'btn secondary small', type: 'button', text: 'Download text file', onclick: () => {
+          try { downloadRecoveryCodes(); } catch (error) { setMessage(toFriendlyErrorMessage(error), true); render(); }
+        } }),
+        el('button', { class: 'btn ghost small', type: 'button', text: 'I saved them', onclick: () => { state.recoveryCodes = null; render(); } }),
+      ]),
+    ])
+    : null;
+
+  const revokeTrustedDeviceButton = el('button', {
+    class: 'btn danger',
+    type: 'button',
+    text: 'Remove this trusted browser',
+    disabled: !trustedDevice.currentDevice,
+    onclick: async () => {
+      const password = window.prompt('Enter your current password to remove this trusted browser:');
+      if (!password) return;
+      const code = window.prompt('Enter the current authenticator code:') || '';
+      if (!window.confirm('Remove trusted access from this browser? Protected Admin pages will lock until a browser is trusted again.')) return;
+      try {
+        await recordCurrentAdminReauthentication(password, 'REVOKE_TRUSTED_DEVICE', code);
+        await api(API_PATHS.admin.revokeTrustedDevice, {
+          method: 'POST',
+          body: { reason: 'USER_REMOVED_CURRENT_TRUSTED_BROWSER' },
+        });
+        state.trustedDevice = null;
+        state.message = 'Trusted browser access was removed. Trust a browser again before using protected Admin pages.';
+        await loadAdminSession();
+        render();
+      } catch (error) {
+        setMessage(toFriendlyErrorMessage(error, 'Unable to remove the trusted browser.'), true);
+        render();
+      }
+    },
+  });
+
   let primarySetupContent;
   if (!mfaRequired) {
     primarySetupContent = el('div', { class: 'account-complete-panel' }, [
@@ -10111,13 +10771,22 @@ function renderMyAccountSecurityPage() {
       el('p', { class: 'account-primary-copy', text: 'The authenticator is connected. Your current browser token was created before MFA, so sign in again and enter the code to unlock all Admin pages.' }),
       signInAgainButton,
     ]);
+  } else if (!trustedDeviceReady) {
+    primarySetupContent = el('div', { class: 'account-primary-panel trusted-device-onboarding' }, [
+      el('p', { class: 'eyebrow', text: 'Final security step' }),
+      el('h2', { text: trustedDevice.configured ? 'Move trusted access to this browser' : 'Trust this browser' }),
+      el('p', { class: 'account-primary-copy', text: trustedDevice.configured
+        ? `Another browser is currently trusted${trustedDevice.deviceName ? ` (${trustedDevice.deviceName})` : ''}. Replacing it immediately blocks the old browser.`
+        : 'This creates a non-exportable browser key. Only this browser can sign protected Admin requests, even if a Firebase token is copied elsewhere.' }),
+      trustThisBrowserButton,
+    ]);
   } else {
     primarySetupContent = el('div', { class: 'account-complete-panel' }, [
       el('span', { class: 'account-complete-icon', 'aria-hidden': 'true', text: '✓' }),
       el('div', {}, [
         el('p', { class: 'eyebrow', text: 'Security setup complete' }),
-        el('h2', { text: 'Super Admin access is ready' }),
-        el('p', { class: 'muted', text: 'Password and authenticator verification are both active in this session.' }),
+        el('h2', { text: `${setupOwnerLabel} access is ready` }),
+        el('p', { class: 'muted', text: 'Password, authenticator verification, and the single trusted browser are active.' }),
       ]),
     ]);
   }
@@ -10126,7 +10795,7 @@ function renderMyAccountSecurityPage() {
     el('section', { class: `card account-security-overview ${setupComplete ? 'complete' : 'attention'}` }, [
       el('div', { class: 'account-security-overview-copy' }, [
         el('p', { class: 'eyebrow', text: 'My Account' }),
-        el('h1', { text: setupComplete ? 'Security setup complete' : 'Finish your Super Admin setup' }),
+        el('h1', { text: setupComplete ? 'Security setup complete' : `Finish your ${setupOwnerLabel} setup` }),
         el('p', { class: 'subtitle', text: setupComplete
           ? 'Your password and MFA are ready. Use the optional controls below only when needed.'
           : 'You do not need to set the password again. Follow the highlighted next step, then sign in once more.' }),
@@ -10142,15 +10811,16 @@ function renderMyAccountSecurityPage() {
       ]),
       el('div', { class: 'account-security-progress' }, [
         renderAccountSecurityStep(1, 'Password', 'Your password is working because this session is signed in.', 'Complete', 'complete'),
-        renderAccountSecurityStep(2, 'Authenticator app', mfaRequired ? 'Connect a TOTP authenticator for Super Admin security.' : 'Not required by the current policy.', mfaRequired ? (mfaEnrolled ? 'Complete' : 'Required') : 'Optional', mfaRequired ? (mfaEnrolled ? 'complete' : 'active') : 'complete'),
+        renderAccountSecurityStep(2, 'Authenticator app', mfaRequired ? `Connect a TOTP authenticator for ${setupOwnerLabel} security.` : 'Not required by the current policy.', mfaRequired ? (mfaEnrolled ? 'Complete' : 'Required') : 'Optional', mfaRequired ? (mfaEnrolled ? 'complete' : 'active') : 'complete'),
         renderAccountSecurityStep(3, 'Verified login', mfaRequired ? 'Sign in with password, then verify the authenticator code.' : 'Password sign-in is sufficient.', mfaRequired ? (mfaSatisfied ? 'Complete' : 'Waiting') : 'Complete', mfaRequired && !mfaSatisfied ? 'pending' : 'complete'),
+        renderAccountSecurityStep(4, 'Trusted browser', mfaRequired ? 'Only one browser device can hold active Admin access at a time.' : 'Not required by the current policy.', mfaRequired ? (trustedDeviceReady ? 'Complete' : 'Required') : 'Optional', mfaRequired && !trustedDeviceReady ? 'active' : 'complete'),
       ]),
     ]),
     el('div', { class: 'account-security-main-grid' }, [
       primarySetupContent,
       el('aside', { class: 'card account-login-guide' }, [
         el('p', { class: 'eyebrow', text: 'How to sign in' }),
-        el('h3', { text: 'Super Admin login has two short steps' }),
+        el('h3', { text: `${setupOwnerLabel} login has two short steps` }),
         el('ol', { class: 'account-login-steps' }, [
           el('li', {}, [el('strong', { text: 'Enter email and password' }), el('span', { text: 'Use this exact admin email.' })]),
           el('li', {}, [el('strong', { text: 'Enter authenticator code' }), el('span', { text: 'This appears only after MFA is connected.' })]),
@@ -10169,6 +10839,8 @@ function renderMyAccountSecurityPage() {
         ['MFA required', mfaRequired ? 'Yes' : 'No'],
         ['MFA enrolled', mfaEnrolled ? 'Yes' : 'No'],
         ['MFA verified now', mfaSatisfied ? 'Yes' : 'No'],
+        ['Trusted browser', trustedDeviceReady ? (trustedDevice.deviceName || 'This browser') : (trustedDevice.configured ? 'Another browser' : 'Not configured')],
+        ['Recovery codes available', String(trustedDevice.activeRecoveryCodes ?? 0)],
         ['Last re-authentication', formatDate(session.lastReauthenticatedAt)],
       ]),
     ]),
@@ -10179,10 +10851,34 @@ function renderMyAccountSecurityPage() {
         el('p', { class: 'muted', text: 'These actions are not part of normal login. Open one only when you need it.' }),
       ]),
       el('details', { class: 'card account-security-disclosure' }, [
-        el('summary', {}, [el('span', {}, [el('strong', { text: 'Change password' }), el('small', { text: 'Optional · signs out all sessions after success' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
+        el('summary', {}, [el('span', {}, [el('strong', { text: 'Change password' }), el('small', { text: 'Optional · signs out sessions and resets browser trust' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
         el('div', { class: 'account-security-disclosure-body' }, [
-          el('p', { class: 'muted', text: 'You do not need to change the password to finish setup. Use this only when you intentionally want a new password.' }),
+          el('p', { class: 'muted', text: 'You do not need to change the password to finish setup. Use this only when you intentionally want a new password. Success also revokes the trusted browser and old recovery codes, so you will trust a browser and generate a fresh code set again.' }),
           changeForm,
+        ]),
+      ]),
+      el('details', { class: 'card account-security-disclosure' }, [
+        el('summary', {}, [el('span', {}, [el('strong', { text: 'Authenticator app' }), el('small', { text: 'Replace the connected TOTP app safely' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
+        el('div', { class: 'account-security-disclosure-body' }, [
+          el('p', { class: 'muted', text: 'Use this before changing phones or moving from an ad-heavy authenticator. The old factor is withdrawn only after your current password and code are verified.' }),
+          mfaEnrolled && mfaSatisfied ? replaceAuthenticatorForm : el('div', { class: 'notice warning inline-notice', text: 'Complete the verified MFA login first.' }),
+        ]),
+      ]),
+      el('details', { class: 'card account-security-disclosure', open: Boolean(state.recoveryCodes) ? 'open' : null }, [
+        el('summary', {}, [el('span', {}, [el('strong', { text: 'Recovery codes' }), el('small', { text: 'Emergency access if the authenticator phone is lost' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
+        el('div', { class: 'account-security-disclosure-body' }, [
+          el('p', { class: 'muted', text: 'Generate ten one-time codes and keep them offline. Generating a new set immediately revokes every older recovery code.' }),
+          trustedDeviceReady && mfaSatisfied ? recoveryForm : el('div', { class: 'notice warning inline-notice', text: 'Verify MFA and trust this browser before generating recovery codes.' }),
+          recoveryCodesPanel,
+        ]),
+      ]),
+      el('details', { class: 'card account-security-disclosure' }, [
+        el('summary', {}, [el('span', {}, [el('strong', { text: 'Trusted browser' }), el('small', { text: 'Only one active browser is allowed' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
+        el('div', { class: 'account-security-disclosure-body' }, [
+          el('p', { class: 'muted', text: trustedDevice.currentDevice
+            ? `This browser is active${trustedDevice.deviceName ? ` as ${trustedDevice.deviceName}` : ''}. A new browser can replace it only after password and TOTP verification.`
+            : 'This browser is not the active trusted Admin device.' }),
+          trustedDevice.currentDevice ? revokeTrustedDeviceButton : trustThisBrowserButton,
         ]),
       ]),
       el('details', { class: 'card account-security-disclosure' }, [
