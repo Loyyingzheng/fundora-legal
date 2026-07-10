@@ -16,5 +16,5 @@ assert(indexHtml.includes("img-src 'self' data: blob:"), 'CSP should allow blob:
 assert(app.includes('function blobToDataUrl(blob)'), 'Feedback screenshots must be converted to data: URLs so previews still work if an older cached CSP only allows data:.');
 assert(app.includes('await blobToDataUrl(blob)'), 'Feedback screenshot fetch must avoid blob: preview URLs.');
 assert(!app.includes('URL.createObjectURL(blob)'), 'Feedback screenshot preview must not use blob: URLs; they can be blocked by a stale admin CSP.');
-assert(indexHtml.includes('src/app.js?v=20260710-admin-governance-v1'), 'Admin web must cache-bust app.js after feedback runtime fixes.');
+assert(indexHtml.includes('src/app.js?v=20260710-admin-governance-v2'), 'Admin web must cache-bust app.js after feedback runtime fixes.');
 console.log('PASS admin feedback screenshot proxy audit');

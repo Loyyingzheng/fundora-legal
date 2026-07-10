@@ -1481,6 +1481,10 @@ function getActiveNavGroup(tab = state.activeTab) {
   return NAV_GROUPS.find((group) => group.items.some((item) => item.id === tab)) || NAV_GROUPS[0];
 }
 
+function isDesktopNavigation() {
+  return typeof window !== 'undefined' && window.matchMedia('(min-width: 1100px)').matches;
+}
+
 function openNavigation() {
   state.navOpen = true;
   render();
@@ -1925,7 +1929,7 @@ async function finalizeAdminMfaSignIn(pending, verificationCode, { persist = tru
   if (!pending.enrollment.totpInfo && !String(pending.enrollment.displayName || '').toLowerCase().includes('totp')) {
     throw new Error('Only TOTP authenticator verification is supported by this secure admin login.');
   }
-  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_BASE_URL, 'accounts/mfaSignIn:finalize', {
+  const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_V2_BASE_URL, 'accounts/mfaSignIn:finalize', {
     mfaPendingCredential: pending.pendingCredential,
     mfaEnrollmentId: pending.enrollment.mfaEnrollmentId,
     totpVerificationInfo: { verificationCode: code },
@@ -1936,17 +1940,30 @@ async function finalizeAdminMfaSignIn(pending, verificationCode, { persist = tru
   return session;
 }
 
-function buildTotpAuthenticatorUri(secret, email, issuer = 'Fundoralit Admin') {
+function buildTotpAuthenticatorUri(secret, email, issuer = 'Fundoralit Admin', options = {}) {
   const account = normalizedTrim(email) || 'admin';
   const label = `${issuer}:${account}`;
+  const algorithm = normalizedTrim(options.algorithm || 'SHA1').toUpperCase();
+  const digits = String(Math.max(6, Math.min(8, Number(options.digits || 6))));
+  const period = String(Math.max(15, Number(options.period || 30)));
   const params = new URLSearchParams({
     secret: normalizedTrim(secret),
     issuer,
-    algorithm: 'SHA1',
-    digits: '6',
-    period: '30',
+    algorithm,
+    digits,
+    period,
   });
   return `otpauth://totp/${encodeURIComponent(label)}?${params.toString()}`;
+}
+
+async function copyTotpEnrollmentValue(value, successMessage) {
+  const cleanValue = String(value || '');
+  if (!cleanValue) throw new Error('There is no TOTP enrollment value to copy.');
+  if (!navigator.clipboard?.writeText) throw new Error('Clipboard access is unavailable. Copy the value manually.');
+  await navigator.clipboard.writeText(cleanValue);
+  state.message = successMessage;
+  state.error = '';
+  render();
 }
 
 async function startAdminTotpEnrollment(currentPassword, existingMfaCode = '') {
@@ -1975,7 +1992,11 @@ async function startAdminTotpEnrollment(currentPassword, existingMfaCode = '') {
     periodSec: Number(info.periodSec || 30),
     hashingAlgorithm: info.hashingAlgorithm || 'SHA1',
     finalizeEnrollmentTime: info.finalizeEnrollmentTime || null,
-    authenticatorUri: buildTotpAuthenticatorUri(info.sharedSecretKey, state.user?.email),
+    authenticatorUri: buildTotpAuthenticatorUri(info.sharedSecretKey, state.user?.email, 'Fundoralit Admin', {
+      algorithm: info.hashingAlgorithm || 'SHA1',
+      digits: Number(info.verificationCodeLength || 6),
+      period: Number(info.periodSec || 30),
+    }),
   };
   return state.totpEnrollment;
 }
@@ -2691,13 +2712,7 @@ async function loadAdminControlData(loadRequest) {
     setScopedData({ content: normalizeAdminListResponse(readiness?.recentTransfers || []), readiness }, loadRequest);
     return;
   }
-  if (state.activeTab === 'myAccount') {
-    children.push(renderMyAccountSecurityPage());
-  } else if (state.activeTab === 'adminAccounts') {
-    children.push(renderAdminAccountsGovernancePage());
-  } else if (state.activeTab === 'systemOwnership') {
-    children.push(renderSystemOwnershipPage());
-  } else if (state.activeTab === 'emergencyConsole') {
+  if (state.activeTab === 'emergencyConsole') {
     await loadEmergencyConsoleData(loadRequest);
     return;
   }
@@ -3426,11 +3441,13 @@ function visibleNavGroups() {
 }
 
 function renderSidebar() {
+  const desktopNavigation = isDesktopNavigation();
+  const navigationVisible = desktopNavigation || state.navOpen;
   return el('aside', {
-    class: `admin-sidebar ${state.navOpen ? 'open' : ''}`,
+    class: `admin-sidebar ${navigationVisible ? 'open' : ''} ${desktopNavigation ? 'desktop-persistent' : ''}`.trim(),
     'aria-label': 'Admin navigation',
-    'aria-hidden': state.navOpen ? 'false' : 'true',
-    inert: state.navOpen ? null : '',
+    'aria-hidden': navigationVisible ? 'false' : 'true',
+    inert: navigationVisible ? null : '',
   }, [
     el('div', { class: 'sidebar-brand' }, [
       el('img', { class: 'sidebar-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
@@ -9855,14 +9872,33 @@ function renderMyAccountSecurityPage() {
     uri.value = enrollment.authenticatorUri;
     const finalizeForm = el('form', { class: 'governance-form compact' }, [
       el('div', { class: 'sensitive-secret-box' }, [
-        el('strong', { text: 'One-time enrollment secret' }),
-        el('p', { class: 'muted', text: 'This value exists only in browser memory. Do not paste it into tickets, logs, or audit reasons.' }),
+        el('strong', { text: 'Connect an authenticator app' }),
+        el('ol', { class: 'totp-enrollment-steps' }, [
+          el('li', { text: 'Open Google Authenticator, Microsoft Authenticator, 1Password, Authy, or another TOTP app.' }),
+          el('li', { text: 'Add a setup key manually, or use Open authenticator app on a supported phone.' }),
+          el('li', { text: 'Enter the current code below. Firebase verifies the code before MFA is enabled.' }),
+        ]),
+        el('p', { class: 'muted', text: 'The secret and setup URI exist only in browser memory. Never paste them into tickets, logs, screenshots, or audit reasons.' }),
         el('div', { class: 'field' }, [el('label', { text: 'Secret key' }), secret]),
-        el('div', { class: 'field' }, [el('label', { text: 'Authenticator URI (optional manual import)' }), uri]),
+        el('div', { class: 'governance-actions compact-actions' }, [
+          el('button', { class: 'btn ghost small', type: 'button', text: 'Copy secret', onclick: async () => {
+            try { await copyTotpEnrollmentValue(enrollment.sharedSecretKey, 'Authenticator secret copied.'); }
+            catch (error) { setMessage(toFriendlyErrorMessage(error, 'Unable to copy the authenticator secret.'), true); render(); }
+          } }),
+          el('a', { class: 'btn secondary small', href: enrollment.authenticatorUri, text: 'Open authenticator app' }),
+        ]),
+        el('details', { class: 'totp-advanced-setup' }, [
+          el('summary', { text: 'Advanced manual setup URI' }),
+          el('div', { class: 'field' }, [el('label', { text: 'Authenticator URI' }), uri]),
+          el('button', { class: 'btn ghost small', type: 'button', text: 'Copy setup URI', onclick: async () => {
+            try { await copyTotpEnrollmentValue(enrollment.authenticatorUri, 'Authenticator setup URI copied.'); }
+            catch (error) { setMessage(toFriendlyErrorMessage(error, 'Unable to copy the authenticator setup URI.'), true); render(); }
+          } }),
+        ]),
       ]),
       el('div', { class: 'form-grid two' }, [
         el('div', { class: 'field' }, [el('label', { text: 'Display name' }), displayName]),
-        el('div', { class: 'field' }, [el('label', { text: 'Current TOTP code' }), code]),
+        el('div', { class: 'field' }, [el('label', { text: 'Current code from authenticator app' }), code]),
       ]),
       el('div', { class: 'governance-actions' }, [
         el('button', { class: 'btn', type: 'submit', text: 'Verify and enable TOTP' }),
@@ -10133,7 +10169,13 @@ function renderAdminControlPage() {
     ]));
   }
 
-  if (state.activeTab === 'emergencyConsole') {
+  if (state.activeTab === 'myAccount') {
+    children.push(renderMyAccountSecurityPage());
+  } else if (state.activeTab === 'adminAccounts') {
+    children.push(renderAdminAccountsGovernancePage());
+  } else if (state.activeTab === 'systemOwnership') {
+    children.push(renderSystemOwnershipPage());
+  } else if (state.activeTab === 'emergencyConsole') {
     children.push(renderAdminControlHero('Emergency Console', 'Pause risky modules, uploads, collaboration writes, and maintenance mode without a new app build.', 'Use this only for production safety actions. Each critical change requires an audit reason, exact confirmation phrase, and Firebase password verification.'));
     children.push(renderPolicySafetyNote('OCR global rules can be disabled without disabling local OCR. Group Event / Group Goal write switches are also enforced by the collaboration backend.'));
     children.push(renderEmergencyConsole());
@@ -10492,11 +10534,12 @@ function renderSignedIn() {
 }
 
 function renderAdminShell(children) {
-  return el('section', { class: `admin-layout ${state.navOpen ? 'nav-open' : ''}` }, [
+  const desktopNavigation = isDesktopNavigation();
+  return el('section', { class: `admin-layout ${state.navOpen ? 'nav-open' : ''} ${desktopNavigation ? 'desktop-navigation' : ''}`.trim() }, [
     el('button', {
       class: 'nav-backdrop',
       type: 'button',
-      tabindex: state.navOpen ? '0' : '-1',
+      tabindex: !desktopNavigation && state.navOpen ? '0' : '-1',
       'aria-label': 'Close admin navigation',
       onclick: closeNavigation,
     }),
@@ -10604,7 +10647,15 @@ document.addEventListener('click', (event) => {
 });
 
 document.addEventListener('scroll', () => positionOpenInfoPopovers(), true);
-window.addEventListener('resize', () => positionOpenInfoPopovers());
+let lastDesktopNavigationMode = isDesktopNavigation();
+window.addEventListener('resize', () => {
+  positionOpenInfoPopovers();
+  const nextDesktopNavigationMode = isDesktopNavigation();
+  if (nextDesktopNavigationMode !== lastDesktopNavigationMode) {
+    lastDesktopNavigationMode = nextDesktopNavigationMode;
+    render();
+  }
+});
 
 if (headerMenuButton) {
   headerMenuButton.addEventListener('click', toggleNavigation);
