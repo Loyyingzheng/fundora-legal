@@ -414,6 +414,7 @@ const state = {
   user: null,
   adminSession: null,
   pendingMfa: null,
+  loginEmail: '',
   totpEnrollment: null,
   governanceLink: null,
   governancePreview: null,
@@ -2062,19 +2063,33 @@ async function requestAdminPasswordReset(email) {
   return 'If an eligible admin account exists, reset instructions have been sent.';
 }
 
-async function updateAdminFirebasePassword(currentPassword, newPassword) {
+async function updateAdminFirebasePassword(currentPassword, newPassword, mfaCode = '') {
   const cleanPassword = String(newPassword || '');
+  const email = normalizedTrim(state.user?.email || state.loginEmail);
   if (cleanPassword.length < 8) throw new Error('New password must contain at least 8 characters.');
-  const reauthSession = await signInAdminWithPassword(state.user?.email, currentPassword, { persist: false });
+  let reauthSession;
+  try {
+    reauthSession = await signInAdminWithPassword(email, currentPassword, { persist: false });
+  } catch (error) {
+    if (error.code !== 'MFA_REQUIRED') throw error;
+    reauthSession = await finalizeAdminMfaSignIn({
+      pendingCredential: error.pendingCredential,
+      enrollment: error.enrollment,
+      email: error.email,
+    }, mfaCode, { persist: false });
+  }
   const response = await firebaseJsonRequest(FIREBASE_IDENTITY_TOOLKIT_BASE_URL, 'accounts:update', {
     idToken: reauthSession.idToken,
     password: cleanPassword,
     returnSecureToken: true,
   });
-  const changedSession = normalizeSignInSession(response, { email: state.user?.email });
+  const changedSession = normalizeSignInSession(response, { email });
   applyAuthSession(changedSession);
   await api(API_PATHS.admin.passwordChanged, { method: 'POST', body: {} });
-  signOutAdmin({ notice: 'Password changed successfully. All admin sessions were revoked; sign in again with the new password.' });
+  signOutAdmin({
+    loginEmail: email,
+    notice: 'Password changed successfully. Sign in below with your new password. If MFA is enabled, the authenticator code is requested on the next step.',
+  });
 }
 
 async function recordCurrentAdminReauthentication(password, context = 'ADMIN_SECURITY', mfaCode = '') {
@@ -2143,12 +2158,14 @@ async function getFirebaseRestIdToken(forceRefresh = false) {
   return refreshed.idToken;
 }
 
-function signOutAdmin({ notice = '', isError = false } = {}) {
+function signOutAdmin({ notice = '', isError = false, loginEmail = '' } = {}) {
+  const rememberedEmail = normalizedTrim(loginEmail || state.user?.email || state.loginEmail);
   stopAdminSessionMonitor();
   clearAuthSession();
   resetAdminActivityClock();
   state.user = null;
   resetSignedInRuntimeState();
+  state.loginEmail = rememberedEmail;
   clearScopedData(state.activeTab);
   clearAdminTabDataCache({ preserveMutationVersion: true });
   state.message = isError ? '' : normalizedTrim(notice);
@@ -3362,25 +3379,52 @@ async function completeAdminSignIn() {
   loadData();
 }
 
-function createAdminLoginForm({ className = 'login-grid', compact = false } = {}) {
-  const email = el('input', { type: 'email', placeholder: 'Admin email', autocomplete: 'email', value: state.pendingMfa?.email || '' });
-  const password = el('input', { type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
-  const mfaCode = el('input', { type: 'text', inputmode: 'numeric', placeholder: 'Authenticator code', autocomplete: 'one-time-code', maxlength: '8' });
-  const submit = el('button', { class: 'btn', type: 'submit', text: state.pendingMfa ? 'Verify MFA' : 'Sign in' });
-  const forgot = el('button', { class: 'btn ghost small', type: 'button', text: 'Forgot password' });
+function createAdminLoginForm({ className = 'login-grid', compact = false, showIntro = false } = {}) {
+  const initialEmail = state.pendingMfa?.email || state.loginEmail || '';
+  const email = el('input', {
+    type: 'email',
+    placeholder: 'admin@example.com',
+    autocomplete: 'email',
+    value: initialEmail,
+    readonly: state.pendingMfa ? 'readonly' : null,
+  });
+  const password = el('input', { type: 'password', placeholder: 'Enter your password', autocomplete: 'current-password' });
+  const mfaCode = el('input', { type: 'text', inputmode: 'numeric', placeholder: '6-digit authenticator code', autocomplete: 'one-time-code', maxlength: '8' });
+  const submit = el('button', { class: 'btn login-primary-button', type: 'submit', text: state.pendingMfa ? 'Verify and enter Admin' : 'Continue securely' });
+  const forgot = el('button', { class: 'btn ghost small login-forgot-button', type: 'button', text: 'Forgot password?' });
+  const cancelMfa = state.pendingMfa ? el('button', {
+    class: 'btn ghost small',
+    type: 'button',
+    text: 'Use another account',
+    onclick: () => {
+      state.pendingMfa = null;
+      state.message = '';
+      state.error = '';
+      render();
+    },
+  }) : null;
   const children = [
+    showIntro ? el('div', { class: 'login-form-heading' }, [
+      el('p', { class: 'eyebrow', text: state.pendingMfa ? 'Step 2 of 2' : 'Secure sign in' }),
+      el('h2', { text: state.pendingMfa ? 'Verify your authenticator' : 'Welcome back' }),
+      el('p', { class: 'muted', text: state.pendingMfa
+        ? 'Your password was accepted. Enter the current code from your authenticator app.'
+        : 'Use the same Firebase admin email and password. New admins must first accept their invitation.' }),
+    ]) : null,
     state.governanceLink ? el('div', { class: 'governance-link-notice' }, [
       el('strong', { text: state.governanceLink.type === 'invite' ? 'Admin invitation' : 'System Ownership verification' }),
       el('span', { text: state.governancePreview?.error || (state.governancePreview?.emailMask || state.governancePreview?.targetEmailMask || 'Sign in with the exact target email to continue.') }),
     ]) : null,
-    el('div', { class: 'field' }, [el('label', { text: compact ? 'Email' : 'Firebase Admin Login' }), email]),
+    el('div', { class: 'field' }, [el('label', { text: 'Admin email' }), email]),
     state.pendingMfa ? null : el('div', { class: 'field' }, [el('label', { text: 'Password' }), password]),
-    state.pendingMfa ? el('div', { class: 'field' }, [el('label', { text: 'TOTP authenticator code' }), mfaCode]) : null,
-    el('div', { class: 'login-action-row' }, [submit, forgot]),
+    state.pendingMfa ? el('div', { class: 'field' }, [el('label', { text: 'Authenticator code' }), mfaCode]) : null,
+    el('div', { class: 'login-action-row' }, [submit, state.pendingMfa ? cancelMfa : forgot].filter(Boolean)),
+    !state.pendingMfa ? el('p', { class: 'login-after-password-help', text: 'Changed your password? Sign in here with the new password. You do not need another invitation.' }) : null,
   ].filter(Boolean);
   const form = el('form', { class: className }, children);
   forgot.addEventListener('click', async () => {
     state.error = '';
+    state.loginEmail = normalizedTrim(email.value);
     try {
       state.message = await requestAdminPasswordReset(email.value);
     } catch (_) {
@@ -3390,14 +3434,19 @@ function createAdminLoginForm({ className = 'login-grid', compact = false } = {}
   });
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
+    const submittedEmail = normalizedTrim(email.value);
+    const submittedPassword = password.value;
+    const submittedMfaCode = mfaCode.value;
+    state.loginEmail = submittedEmail || state.loginEmail;
     state.error = '';
-    render();
+    submit.disabled = true;
+    submit.textContent = state.pendingMfa ? 'Verifying…' : 'Signing in…';
     try {
       if (state.pendingMfa) {
-        await finalizeAdminMfaSignIn(state.pendingMfa, mfaCode.value);
+        await finalizeAdminMfaSignIn(state.pendingMfa, submittedMfaCode);
         state.pendingMfa = null;
       } else {
-        await signInAdminWithPassword(email.value, password.value);
+        await signInAdminWithPassword(submittedEmail, submittedPassword);
       }
       await completeAdminSignIn();
     } catch (error) {
@@ -3405,12 +3454,13 @@ function createAdminLoginForm({ className = 'login-grid', compact = false } = {}
         state.pendingMfa = {
           pendingCredential: error.pendingCredential,
           enrollment: error.enrollment,
-          email: error.email || email.value,
+          email: error.email || submittedEmail,
         };
-        state.message = 'Enter the current code from the enrolled TOTP authenticator.';
+        state.loginEmail = error.email || submittedEmail;
+        state.message = 'Password accepted. Enter the current code from your authenticator app.';
         state.error = '';
       } else {
-        state.pendingMfa = null;
+        if (!state.pendingMfa) state.pendingMfa = null;
         setMessage(toFriendlyErrorMessage(error, 'Login failed.'), true);
       }
       render();
@@ -3421,16 +3471,12 @@ function createAdminLoginForm({ className = 'login-grid', compact = false } = {}
 
 function renderAuth() {
   clear(authBox);
-  if (!state.auth) {
-    authBox.appendChild(el('div', { class: 'error', text: 'Firebase is not configured. Check config.js.' }));
+  if (!state.auth || !state.user) {
+    authBox.hidden = true;
     return;
   }
 
-  if (!state.user) {
-    authBox.appendChild(createAdminLoginForm());
-    return;
-  }
-
+  authBox.hidden = false;
   authBox.appendChild(el('div', { class: 'header-auth-inline' }, [
     el('div', { class: 'header-user-copy' }, [
       el('strong', { text: state.user.email || 'Signed in' }),
@@ -9816,32 +9862,62 @@ function governanceReason(actionLabel) {
   return normalizedTrim(reason);
 }
 
+function renderAccountSecurityStep(number, title, copy, status, tone = 'pending') {
+  return el('div', { class: `account-security-step ${tone}` }, [
+    el('span', { class: 'account-security-step-number', text: String(number) }),
+    el('div', { class: 'account-security-step-copy' }, [
+      el('strong', { text: title }),
+      el('span', { text: copy }),
+    ]),
+    el('span', { class: `account-security-step-status ${tone}`, text: status }),
+  ]);
+}
+
 function renderMyAccountSecurityPage() {
   const session = state.adminSession || {};
+  const mfaRequired = Boolean(session.mfaRequired);
+  const mfaEnrolled = Boolean(session.mfaEnrolled);
+  const mfaSatisfied = Boolean(session.mfaSatisfied);
+  const setupComplete = !mfaRequired || (mfaEnrolled && mfaSatisfied);
+
   const currentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
-  const newPassword = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'New password (8+ characters)' });
-  const confirmPassword = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Confirm new password' });
-  const changeForm = el('form', { class: 'governance-form' }, [
-    el('div', { class: 'form-grid three' }, [
-      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), currentPassword]),
-      el('div', { class: 'field' }, [el('label', { text: 'New password' }), newPassword]),
-      el('div', { class: 'field' }, [el('label', { text: 'Confirm password' }), confirmPassword]),
-    ]),
-    el('button', { class: 'btn', type: 'submit', text: 'Change password & revoke sessions' }),
+  const newPassword = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'At least 8 characters' });
+  const confirmPassword = el('input', { type: 'password', autocomplete: 'new-password', placeholder: 'Repeat new password' });
+  const passwordMfaCode = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Current authenticator code' });
+  const changePasswordButton = el('button', { class: 'btn', type: 'submit', text: 'Change password and sign out' });
+  const passwordFields = [
+    el('div', { class: 'field' }, [el('label', { text: 'Current password' }), currentPassword]),
+    el('div', { class: 'field' }, [el('label', { text: 'New password' }), newPassword]),
+    el('div', { class: 'field' }, [el('label', { text: 'Confirm new password' }), confirmPassword]),
+  ];
+  if (mfaEnrolled) passwordFields.push(el('div', { class: 'field' }, [el('label', { text: 'Authenticator code' }), passwordMfaCode]));
+  const changeForm = el('form', { class: 'governance-form account-password-form' }, [
+    el('div', { class: `form-grid ${mfaEnrolled ? 'two' : 'three'}` }, passwordFields),
+    el('div', { class: 'governance-actions' }, [changePasswordButton]),
   ]);
   changeForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (newPassword.value !== confirmPassword.value) {
+    const submittedCurrentPassword = currentPassword.value;
+    const submittedNewPassword = newPassword.value;
+    const submittedConfirmPassword = confirmPassword.value;
+    const submittedMfaCode = passwordMfaCode.value;
+    if (!submittedCurrentPassword) {
+      setMessage('Enter your current password.', true);
+      render();
+      return;
+    }
+    if (submittedNewPassword !== submittedConfirmPassword) {
       setMessage('New password confirmation does not match.', true);
       render();
       return;
     }
-    state.loading = true;
-    render();
+    changePasswordButton.disabled = true;
+    changePasswordButton.textContent = 'Changing password…';
     try {
-      await updateAdminFirebasePassword(currentPassword.value, newPassword.value);
+      await updateAdminFirebasePassword(submittedCurrentPassword, submittedNewPassword, submittedMfaCode);
     } catch (error) {
-      state.loading = false;
+      changePasswordButton.disabled = false;
+      changePasswordButton.textContent = 'Change password and sign out';
       setMessage(toFriendlyErrorMessage(error, 'Password change failed.'), true);
       render();
     }
@@ -9854,35 +9930,42 @@ function renderMyAccountSecurityPage() {
       el('div', { class: 'field' }, [el('label', { text: 'Current password' }), reauthPassword]),
       el('div', { class: 'field' }, [el('label', { text: 'Authenticator code' }), reauthMfa]),
     ]),
-    el('button', { class: 'btn secondary', type: 'submit', text: 'Record recent re-authentication' }),
+    el('button', { class: 'btn secondary', type: 'submit', text: 'Verify for a protected action' }),
   ]);
   reauthForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     await runGovernanceAction('Recent authentication verified.', () => recordCurrentAdminReauthentication(reauthPassword.value, 'MY_ACCOUNT', reauthMfa.value));
   });
 
-  const enrollmentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Current password' });
-  const existingMfaCode = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Existing TOTP code only when already enrolled' });
-  const startEnrollmentForm = el('form', { class: 'governance-form compact' }, [
-    el('div', { class: 'form-grid two' }, [
-      el('div', { class: 'field' }, [el('label', { text: 'Current password' }), enrollmentPassword]),
-      el('div', { class: 'field' }, [el('label', { text: 'Existing authenticator code' }), existingMfaCode]),
-    ]),
-    el('button', { class: 'btn secondary', type: 'submit', text: 'Start TOTP enrollment' }),
+  const enrollmentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Enter the password you use to sign in' });
+  const existingMfaCode = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Current authenticator code' });
+  const startEnrollmentButton = el('button', { class: 'btn account-primary-action', type: 'submit', text: mfaEnrolled ? 'Add another authenticator' : 'Connect authenticator app' });
+  const enrollmentFields = [el('div', { class: 'field' }, [el('label', { text: 'Confirm your current password' }), enrollmentPassword])];
+  if (mfaEnrolled) enrollmentFields.push(el('div', { class: 'field' }, [el('label', { text: 'Existing authenticator code' }), existingMfaCode]));
+  const startEnrollmentForm = el('form', { class: 'governance-form compact account-enrollment-start' }, [
+    el('div', { class: mfaEnrolled ? 'form-grid two' : 'form-grid one' }, enrollmentFields),
+    startEnrollmentButton,
   ]);
   startEnrollmentForm.addEventListener('submit', async (event) => {
     event.preventDefault();
-    state.loading = true;
+    const submittedPassword = enrollmentPassword.value;
+    const submittedExistingMfaCode = existingMfaCode.value;
+    if (!submittedPassword) {
+      setMessage('Enter your current password to connect the authenticator app.', true);
+      render();
+      return;
+    }
     state.error = '';
-    render();
+    startEnrollmentButton.disabled = true;
+    startEnrollmentButton.textContent = 'Preparing secure setup…';
     try {
-      await startAdminTotpEnrollment(enrollmentPassword.value, existingMfaCode.value);
-      state.loading = false;
-      state.message = 'TOTP secret created. Add it to your authenticator, then verify one current code.';
+      await startAdminTotpEnrollment(submittedPassword, submittedExistingMfaCode);
+      state.message = 'Authenticator setup is ready. Add the secret to your app, then enter one current code below.';
       render();
     } catch (error) {
-      state.loading = false;
-      setMessage(toFriendlyErrorMessage(error, 'TOTP enrollment could not start.'), true);
+      startEnrollmentButton.disabled = false;
+      startEnrollmentButton.textContent = mfaEnrolled ? 'Add another authenticator' : 'Connect authenticator app';
+      setMessage(toFriendlyErrorMessage(error, 'Authenticator setup could not start.'), true);
       render();
     }
   });
@@ -9890,30 +9973,36 @@ function renderMyAccountSecurityPage() {
   let enrollmentPanel = null;
   if (state.totpEnrollment) {
     const enrollment = state.totpEnrollment;
-    const code = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: `${enrollment.verificationCodeLength || 6}-digit authenticator code` });
+    const code = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: `${enrollment.verificationCodeLength || 6}-digit code` });
     const displayName = el('input', { value: 'Fundoralit Admin', maxlength: '80', placeholder: 'Authenticator display name' });
     const secret = el('input', { value: enrollment.sharedSecretKey, readonly: 'readonly', autocomplete: 'off' });
     const uri = el('textarea', { rows: '3', readonly: 'readonly', spellcheck: 'false' });
     uri.value = enrollment.authenticatorUri;
+    const verifyButton = el('button', { class: 'btn account-primary-action', type: 'submit', text: 'Verify code and finish setup' });
     const finalizeForm = el('form', { class: 'governance-form compact' }, [
-      el('div', { class: 'sensitive-secret-box' }, [
-        el('strong', { text: 'Connect an authenticator app' }),
-        el('ol', { class: 'totp-enrollment-steps' }, [
-          el('li', { text: 'Open Google Authenticator, Microsoft Authenticator, 1Password, Authy, or another TOTP app.' }),
-          el('li', { text: 'Add a setup key manually, or use Open authenticator app on a supported phone.' }),
-          el('li', { text: 'Enter the current code below. Firebase verifies the code before MFA is enabled.' }),
+      el('div', { class: 'sensitive-secret-box account-authenticator-box' }, [
+        el('div', { class: 'account-setup-heading' }, [
+          el('span', { class: 'account-setup-icon', 'aria-hidden': 'true', text: '2' }),
+          el('div', {}, [
+            el('strong', { text: 'Add Fundoralit Admin to your authenticator' }),
+            el('span', { text: 'Use Google Authenticator, Microsoft Authenticator, 1Password, Authy, or another TOTP app.' }),
+          ]),
         ]),
-        el('p', { class: 'muted', text: 'The secret and setup URI exist only in browser memory. Never paste them into tickets, logs, screenshots, or audit reasons.' }),
+        el('ol', { class: 'totp-enrollment-steps' }, [
+          el('li', { text: 'Open your authenticator app and choose Add account or Enter setup key.' }),
+          el('li', { text: 'Copy the secret key below. Keep the account type as time-based.' }),
+          el('li', { text: 'Enter the current code generated by the app, then finish setup.' }),
+        ]),
         el('div', { class: 'field' }, [el('label', { text: 'Secret key' }), secret]),
         el('div', { class: 'governance-actions compact-actions' }, [
-          el('button', { class: 'btn ghost small', type: 'button', text: 'Copy secret', onclick: async () => {
+          el('button', { class: 'btn ghost small', type: 'button', text: 'Copy secret key', onclick: async () => {
             try { await copyTotpEnrollmentValue(enrollment.sharedSecretKey, 'Authenticator secret copied.'); }
             catch (error) { setMessage(toFriendlyErrorMessage(error, 'Unable to copy the authenticator secret.'), true); render(); }
           } }),
           el('a', { class: 'btn secondary small', href: enrollment.authenticatorUri, text: 'Open authenticator app' }),
         ]),
         el('details', { class: 'totp-advanced-setup' }, [
-          el('summary', { text: 'Advanced manual setup URI' }),
+          el('summary', { text: 'Advanced setup URI' }),
           el('div', { class: 'field' }, [el('label', { text: 'Authenticator URI' }), uri]),
           el('button', { class: 'btn ghost small', type: 'button', text: 'Copy setup URI', onclick: async () => {
             try { await copyTotpEnrollmentValue(enrollment.authenticatorUri, 'Authenticator setup URI copied.'); }
@@ -9922,77 +10011,172 @@ function renderMyAccountSecurityPage() {
         ]),
       ]),
       el('div', { class: 'form-grid two' }, [
-        el('div', { class: 'field' }, [el('label', { text: 'Display name' }), displayName]),
+        el('div', { class: 'field' }, [el('label', { text: 'Account name in authenticator' }), displayName]),
         el('div', { class: 'field' }, [el('label', { text: 'Current code from authenticator app' }), code]),
       ]),
       el('div', { class: 'governance-actions' }, [
-        el('button', { class: 'btn', type: 'submit', text: 'Verify and enable TOTP' }),
-        el('button', { class: 'btn ghost', type: 'button', text: 'Cancel enrollment', onclick: () => { state.totpEnrollment = null; render(); } }),
+        verifyButton,
+        el('button', { class: 'btn ghost', type: 'button', text: 'Cancel setup', onclick: () => { state.totpEnrollment = null; state.message = ''; render(); } }),
       ]),
     ]);
     finalizeForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      state.loading = true;
-      render();
+      const submittedCode = code.value;
+      const submittedDisplayName = displayName.value;
+      verifyButton.disabled = true;
+      verifyButton.textContent = 'Verifying code…';
       try {
-        await finalizeAdminTotpEnrollment(code.value, displayName.value);
-        state.loading = false;
+        await finalizeAdminTotpEnrollment(submittedCode, submittedDisplayName);
         if (state.adminSession?.mfaRequired && !state.adminSession?.mfaSatisfied) {
-          signOutAdmin({ notice: 'TOTP MFA enrollment completed. Sign in again and complete the authenticator challenge to unlock Admin access.' });
+          signOutAdmin({
+            loginEmail: state.user?.email,
+            notice: 'Authenticator setup completed. Sign in below once more with your password, then enter the code from your authenticator app.',
+          });
           return;
         }
-        state.message = 'TOTP MFA enrollment completed. Future sign-ins will require the authenticator code.';
+        state.message = 'Authenticator setup completed. Future sign-ins will request a code.';
         render();
       } catch (error) {
-        state.loading = false;
-        setMessage(toFriendlyErrorMessage(error, 'TOTP enrollment verification failed.'), true);
+        verifyButton.disabled = false;
+        verifyButton.textContent = 'Verify code and finish setup';
+        setMessage(toFriendlyErrorMessage(error, 'Authenticator code could not be verified.'), true);
         render();
       }
     });
     enrollmentPanel = finalizeForm;
   }
 
-  const revokeOwnSessionsButton = el('button', { class: 'btn danger', type: 'button', text: 'Revoke all my admin sessions' });
+  const revokeOwnSessionsButton = el('button', { class: 'btn danger', type: 'button', text: 'Revoke all other admin sessions' });
   revokeOwnSessionsButton.addEventListener('click', async () => {
     const reason = governanceReason('revoke all of your admin sessions');
     if (!reason) return;
     await runGovernanceAction('All admin sessions were revoked.', async () => {
       await api(API_PATHS.admin.revokeOwnSessions, { method: 'POST', body: { reason } });
-      signOutAdmin({ notice: 'All admin sessions were revoked. Sign in again to continue.' });
+      signOutAdmin({ loginEmail: state.user?.email, notice: 'All admin sessions were revoked. Sign in again to continue.' });
     });
   });
 
-  return el('div', { class: 'governance-page' }, [
-    renderAdminControlHero('My Account', 'Firebase password security, MFA context, and the current Backend authorization session.', 'The password is submitted only to Firebase Authentication. Core Backend receives only a password-changed signal after Firebase succeeds.'),
-    session.mfaRequired && !session.mfaSatisfied ? el('div', { class: 'notice warning' }, [
-      el('strong', { text: 'MFA setup required' }),
-      el('span', { text: 'All other Admin pages are locked until a Firebase TOTP factor is enrolled and the current sign-in token proves MFA.' }),
-    ]) : null,
-    el('section', { class: 'card governance-summary-card' }, [
-      el('div', { class: 'section-title-row' }, [el('div', {}, [el('p', { class: 'eyebrow', text: 'Current session' }), el('h3', { text: session.email || state.user?.email || '-' })])]),
+  const signInAgainButton = el('button', {
+    class: 'btn account-primary-action',
+    type: 'button',
+    text: 'Sign out and verify MFA now',
+    onclick: () => signOutAdmin({
+      loginEmail: state.user?.email,
+      notice: 'Sign in with your password. After it is accepted, enter the current code from your authenticator app.',
+    }),
+  });
+
+  let primarySetupContent;
+  if (!mfaRequired) {
+    primarySetupContent = el('div', { class: 'account-complete-panel' }, [
+      el('span', { class: 'account-complete-icon', 'aria-hidden': 'true', text: '✓' }),
+      el('div', {}, [el('h3', { text: 'Your account is ready' }), el('p', { class: 'muted', text: 'This account does not currently require MFA. You can use the Admin portal normally.' })]),
+    ]);
+  } else if (!mfaEnrolled || state.totpEnrollment) {
+    primarySetupContent = el('div', { class: 'account-primary-panel' }, [
+      el('p', { class: 'eyebrow', text: 'Required next step' }),
+      el('h2', { text: state.totpEnrollment ? 'Verify your authenticator code' : 'Connect an authenticator app' }),
+      el('p', { class: 'account-primary-copy', text: state.totpEnrollment
+        ? 'The password step is complete. Enter one current code to enable MFA.'
+        : 'Your password is already working because you are signed in. Super Admin access also requires a TOTP authenticator before the rest of the portal unlocks.' }),
+      state.totpEnrollment ? enrollmentPanel : startEnrollmentForm,
+    ]);
+  } else if (!mfaSatisfied) {
+    primarySetupContent = el('div', { class: 'account-primary-panel' }, [
+      el('p', { class: 'eyebrow', text: 'One final step' }),
+      el('h2', { text: 'Sign in once more to verify MFA' }),
+      el('p', { class: 'account-primary-copy', text: 'The authenticator is connected. Your current browser token was created before MFA, so sign in again and enter the code to unlock all Admin pages.' }),
+      signInAgainButton,
+    ]);
+  } else {
+    primarySetupContent = el('div', { class: 'account-complete-panel' }, [
+      el('span', { class: 'account-complete-icon', 'aria-hidden': 'true', text: '✓' }),
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Security setup complete' }),
+        el('h2', { text: 'Super Admin access is ready' }),
+        el('p', { class: 'muted', text: 'Password and authenticator verification are both active in this session.' }),
+      ]),
+    ]);
+  }
+
+  return el('div', { class: 'governance-page account-security-page' }, [
+    el('section', { class: `card account-security-overview ${setupComplete ? 'complete' : 'attention'}` }, [
+      el('div', { class: 'account-security-overview-copy' }, [
+        el('p', { class: 'eyebrow', text: 'My Account' }),
+        el('h1', { text: setupComplete ? 'Security setup complete' : 'Finish your Super Admin setup' }),
+        el('p', { class: 'subtitle', text: setupComplete
+          ? 'Your password and MFA are ready. Use the optional controls below only when needed.'
+          : 'You do not need to set the password again. Follow the highlighted next step, then sign in once more.' }),
+      ]),
+      el('div', { class: 'account-identity-chip' }, [
+        el('strong', { text: session.email || state.user?.email || '-' }),
+        el('span', { text: `${adminRoleLabel(session.role)} · ${session.status || 'ACTIVE'}` }),
+      ]),
+    ]),
+    el('section', { class: 'card account-security-progress-card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Setup progress' }), el('h3', { text: setupComplete ? 'All required steps are complete' : 'Complete these steps in order' })]),
+      ]),
+      el('div', { class: 'account-security-progress' }, [
+        renderAccountSecurityStep(1, 'Password', 'Your password is working because this session is signed in.', 'Complete', 'complete'),
+        renderAccountSecurityStep(2, 'Authenticator app', mfaRequired ? 'Connect a TOTP authenticator for Super Admin security.' : 'Not required by the current policy.', mfaRequired ? (mfaEnrolled ? 'Complete' : 'Required') : 'Optional', mfaRequired ? (mfaEnrolled ? 'complete' : 'active') : 'complete'),
+        renderAccountSecurityStep(3, 'Verified login', mfaRequired ? 'Sign in with password, then verify the authenticator code.' : 'Password sign-in is sufficient.', mfaRequired ? (mfaSatisfied ? 'Complete' : 'Waiting') : 'Complete', mfaRequired && !mfaSatisfied ? 'pending' : 'complete'),
+      ]),
+    ]),
+    el('div', { class: 'account-security-main-grid' }, [
+      primarySetupContent,
+      el('aside', { class: 'card account-login-guide' }, [
+        el('p', { class: 'eyebrow', text: 'How to sign in' }),
+        el('h3', { text: 'Super Admin login has two short steps' }),
+        el('ol', { class: 'account-login-steps' }, [
+          el('li', {}, [el('strong', { text: 'Enter email and password' }), el('span', { text: 'Use this exact admin email.' })]),
+          el('li', {}, [el('strong', { text: 'Enter authenticator code' }), el('span', { text: 'This appears only after MFA is connected.' })]),
+        ]),
+        el('div', { class: 'account-login-guide-note' }, [
+          el('strong', { text: 'After changing password' }),
+          el('span', { text: 'The portal signs you out on purpose. Use the new password on the large sign-in page; no new invitation is needed.' }),
+        ]),
+      ]),
+    ]),
+    el('section', { class: 'card account-session-summary' }, [
+      el('div', { class: 'section-title-row' }, [el('div', {}, [el('p', { class: 'eyebrow', text: 'Current session' }), el('h3', { text: 'Security status' })])]),
       renderMetaGrid([
         ['Role', adminRoleLabel(session.role)],
-        ['Status', session.status || '-'],
         ['System Owner', session.systemOwner ? 'Yes' : 'No'],
-        ['Access version', session.accessVersion ?? '-'],
-        ['MFA required', session.mfaRequired ? 'Yes' : 'No'],
-        ['MFA enrolled', session.mfaEnrolled ? 'Yes' : 'Not confirmed'],
-        ['MFA satisfied in current token', session.mfaSatisfied ? 'Yes' : 'No'],
+        ['MFA required', mfaRequired ? 'Yes' : 'No'],
+        ['MFA enrolled', mfaEnrolled ? 'Yes' : 'No'],
+        ['MFA verified now', mfaSatisfied ? 'Yes' : 'No'],
         ['Last re-authentication', formatDate(session.lastReauthenticatedAt)],
       ]),
     ]),
-    el('section', { class: 'card' }, [el('h3', { text: 'Change password' }), el('p', { class: 'muted', text: 'Changing the password increments accessVersion and revokes all Firebase refresh tokens and admin sessions.' }), changeForm]),
-    el('section', { class: 'card' }, [
-      el('h3', { text: 'Multi-factor authentication' }),
-      el('p', { class: 'muted', text: 'System Owner and critical operations require a Firebase TOTP factor. Re-authenticate before starting enrollment.' }),
-      state.totpEnrollment ? enrollmentPanel : startEnrollmentForm,
+    el('section', { class: 'account-advanced-section' }, [
+      el('div', { class: 'account-advanced-heading' }, [
+        el('p', { class: 'eyebrow', text: 'Optional controls' }),
+        el('h2', { text: 'Advanced account security' }),
+        el('p', { class: 'muted', text: 'These actions are not part of normal login. Open one only when you need it.' }),
+      ]),
+      el('details', { class: 'card account-security-disclosure' }, [
+        el('summary', {}, [el('span', {}, [el('strong', { text: 'Change password' }), el('small', { text: 'Optional · signs out all sessions after success' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
+        el('div', { class: 'account-security-disclosure-body' }, [
+          el('p', { class: 'muted', text: 'You do not need to change the password to finish setup. Use this only when you intentionally want a new password.' }),
+          changeForm,
+        ]),
+      ]),
+      el('details', { class: 'card account-security-disclosure' }, [
+        el('summary', {}, [el('span', {}, [el('strong', { text: 'Session management' }), el('small', { text: 'Emergency sign-out for every Admin session' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
+        el('div', { class: 'account-security-disclosure-body' }, [
+          el('p', { class: 'muted', text: 'Use this if you suspect another browser or device still has access. You will also need to sign in again.' }),
+          revokeOwnSessionsButton,
+        ]),
+      ]),
+      el('details', { class: 'card account-security-disclosure' }, [
+        el('summary', {}, [el('span', {}, [el('strong', { text: 'Verify a sensitive action' }), el('small', { text: 'Needed before ownership transfer and protected operations' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
+        el('div', { class: 'account-security-disclosure-body' }, [
+          el('p', { class: 'muted', text: 'This records a recent re-authentication for a protected action. It is not required for normal sign-in.' }),
+          reauthForm,
+        ]),
+      ]),
     ]),
-    el('section', { class: 'card' }, [
-      el('h3', { text: 'Active sessions' }),
-      el('p', { class: 'muted', text: 'Firebase does not expose a browser-readable session list. This control invalidates the Backend access version immediately and queues Firebase refresh-token revocation.' }),
-      revokeOwnSessionsButton,
-    ]),
-    el('section', { class: 'card' }, [el('h3', { text: 'Sensitive action verification' }), el('p', { class: 'muted', text: 'Use this immediately before an ownership transfer or another protected security action. The Backend verifies auth_time and MFA claims.' }), reauthForm]),
   ]);
 }
 
@@ -10578,19 +10762,28 @@ function renderAdminShell(children) {
 }
 
 function renderSignedOut() {
-  const children = [
-    el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }),
-    el('h2', { text: 'Sign in required' }),
-    el('p', { class: 'muted', text: 'Use the exact Firebase identity activated through a Core Backend admin invitation. This frontend never grants admin access by itself.' }),
-  ];
-  if (state.auth) {
-    children.push(el('div', { class: 'signed-out-login-panel' }, [
-      el('p', { class: 'muted signed-out-login-help', text: 'Sign in here on phones or small tablets.' }),
-      createAdminLoginForm({ className: 'login-grid signed-out-login-grid', compact: true }),
-    ]));
-  }
-  children.push(...renderNotice());
-  return el('section', { class: 'card signed-out-card' }, children);
+  const noticeNodes = renderNotice();
+  return el('section', { class: 'admin-login-page' }, [
+    ...noticeNodes,
+    el('div', { class: 'admin-login-shell' }, [
+      el('section', { class: 'admin-login-intro' }, [
+        el('img', { class: 'admin-login-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
+        el('p', { class: 'eyebrow', text: 'Fundoralit Admin Control' }),
+        el('h1', { text: 'Secure access without the confusion' }),
+        el('p', { class: 'subtitle', text: 'Sign in with your admin email and password. After MFA is connected, the authenticator code appears as a second step.' }),
+        el('div', { class: 'admin-login-explainer' }, [
+          el('div', {}, [el('span', { text: '1' }), el('div', {}, [el('strong', { text: 'Password first' }), el('small', { text: 'Use your existing or newly changed password.' })])]),
+          el('div', {}, [el('span', { text: '2' }), el('div', {}, [el('strong', { text: 'Authenticator second' }), el('small', { text: 'Only shown when MFA is enabled.' })])]),
+        ]),
+        el('p', { class: 'admin-login-security-note', text: 'This frontend never grants Admin access by itself. The Core Backend verifies the invited account, role, status, and MFA policy.' }),
+      ]),
+      el('section', { class: 'card admin-login-card' }, [
+        state.auth
+          ? createAdminLoginForm({ className: 'login-grid admin-login-form', showIntro: true })
+          : el('div', { class: 'error', text: 'Firebase is not configured. Check config.js.' }),
+      ]),
+    ]),
+  ]);
 }
 
 function render() {

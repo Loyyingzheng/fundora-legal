@@ -1,0 +1,20 @@
+const fs = require('fs');
+const path = require('path');
+const assert = require('assert');
+const root = path.resolve(__dirname, '..', '..');
+const app = fs.readFileSync(path.join(root, 'src', 'app.js'), 'utf8');
+const css = fs.readFileSync(path.join(root, 'src', 'styles.css'), 'utf8');
+const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+
+assert(app.includes('Finish your Super Admin setup'), 'My Account must explain the setup state clearly.');
+assert(app.includes('Your password is already working because you are signed in.'), 'Password must not look like an unfinished mandatory setup step.');
+assert(app.includes('Sign out and verify MFA now'), 'MFA enrollment must provide an explicit final login action.');
+assert(app.includes('Changed your password? Sign in here with the new password.'), 'Signed-out login must explain the post-password-change flow.');
+assert(app.includes("authBox.hidden = true"), 'Signed-out desktop login must not be cramped into the header.');
+assert(app.includes('admin-login-shell'), 'Signed-out users need a full-page login shell.');
+assert(app.includes('updateAdminFirebasePassword(currentPassword, newPassword, mfaCode'), 'Password changes must support enrolled MFA.');
+assert(app.includes('loginEmail: email'), 'Password change must preserve the correct email for the next login.');
+assert(css.includes('.account-security-progress'), 'Account setup progress needs dedicated responsive styling.');
+assert(css.includes('.admin-login-page'), 'Full-page Admin login needs dedicated styling.');
+assert(html.includes('20260710-admin-governance-v2-sidebar-close-v3-account-security-ux-v4'), 'Updated login/account UX must be cache-busted.');
+console.log('PASS admin account security UX audit');
