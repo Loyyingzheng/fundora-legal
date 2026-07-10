@@ -1053,7 +1053,14 @@ function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong
   const rawMessage = normalized.message || fallback;
   const backendMessage = appendBackendDiagnostics(rawMessage, normalized);
   const hasBackendMessage = Boolean(rawMessage && !/request failed \(\d+\)/i.test(rawMessage));
+  const backendCode = normalizedTrim(normalized.code).toUpperCase();
 
+  if (backendCode === 'ADMIN_MFA_REQUIRED') {
+    return 'Authenticator verification is required. Complete the highlighted authenticator setup in My Account, then sign in again with the generated code.';
+  }
+  if (backendCode === 'AUTH_NONCE_REPLAYED') {
+    return 'This protected request was already submitted. Refresh the latest state before trying again; the portal will not automatically replay the same security request.';
+  }
   if (status === 401) {
     if (isAdminAuthFailure(errorOrMessage)) return 'Your admin session has expired. Please sign in again before continuing.';
     return hasBackendMessage
@@ -2264,6 +2271,39 @@ async function applyAdminRequestIntegrityHeaders(headers, path, method, body) {
   };
 }
 
+async function readApiResponsePayload(response) {
+  const text = await response.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
+  return { text, json };
+}
+
+function isRetryableFirebaseTokenFailure(status, payload) {
+  if (Number(status || 0) !== 401) return false;
+  const code = normalizedTrim(extractBackendCode({ status, payload })).toUpperCase();
+  if (code === 'AUTH_TOKEN_INVALID') return true;
+  if (code) return false;
+  const message = normalizedTrim(normalizeBackendError({ status, payload }, '').message).toLowerCase();
+  return message.includes('authentication token is invalid')
+    || message.includes('id token has expired')
+    || message.includes('firebase token expired');
+}
+
+async function createAuthenticatedApiHeaders(path, options, body, forceTokenRefresh = false) {
+  const token = await getToken(forceTokenRefresh);
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    Accept: options.accept || 'application/json',
+    ...(options.headers || {}),
+  };
+  if (options.formData instanceof FormData) {
+    // Browser supplies the multipart boundary.
+  } else if (options.body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+  }
+  return applyAdminRequestIntegrityHeaders(headers, path, options.method || 'GET', body);
+}
+
 function buildApiError(status, payload, service, url) {
   const shell = { status, payload, service, url };
   const normalized = normalizeBackendError(shell, `Request failed (${status})`);
@@ -2301,53 +2341,38 @@ async function api(path, options = {}) {
       ? 'Collaboration API base URL is not configured in config.js. Add collaborationApiBaseUrl to enable cache clear actions.'
       : 'Core API base URL is not configured in config.js.');
   }
-  const token = await getToken(options.forceTokenRefresh === true);
   const url = new URL(`${baseUrl}${path}`);
   Object.entries(options.params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     url.searchParams.set(key, String(value));
   });
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: 'application/json',
-    ...(options.headers || {}),
-  };
-
   let body;
   if (options.formData instanceof FormData) {
     body = options.formData;
   } else if (options.body !== undefined) {
-    headers['Content-Type'] = 'application/json';
     body = JSON.stringify(options.body);
   }
 
-  Object.assign(headers, await applyAdminRequestIntegrityHeaders(headers, path, options.method || 'GET', body));
+  const method = options.method || 'GET';
+  let headers = await createAuthenticatedApiHeaders(path, options, body, options.forceTokenRefresh === true);
+  let response = await fetch(url.toString(), { method, headers, body });
+  let parsed = await readApiResponsePayload(response);
 
-  let response = await fetch(url.toString(), {
-    method: options.method || 'GET',
-    headers,
-    body,
-  });
-
-  if (response.status === 401 && options.forceTokenRefresh !== true) {
+  // Only a Firebase token failure is eligible for one refresh. Business 401s
+  // such as ADMIN_MFA_REQUIRED must be surfaced as-is and must never be replayed.
+  if (options.forceTokenRefresh !== true && isRetryableFirebaseTokenFailure(response.status, parsed.json)) {
     try {
-      headers.Authorization = `Bearer ${await getToken(true)}`;
-      response = await fetch(url.toString(), {
-        method: options.method || 'GET',
-        headers,
-        body,
-      });
+      headers = await createAuthenticatedApiHeaders(path, options, body, true);
+      response = await fetch(url.toString(), { method, headers, body });
+      parsed = await readApiResponsePayload(response);
     } catch (error) {
       if (isAdminAuthFailure(error)) handleAdminSessionExpired('refresh', { source: 'api-token-refresh' });
       throw error;
     }
   }
 
-  const text = await response.text();
-  let json = null;
-  try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
-
+  const json = parsed.json;
   if (!response.ok || json?.success === false) {
     const error = buildApiError(response.status || 400, json, service, url.toString());
     if (isAdminAuthFailure(error)) {
@@ -2357,8 +2382,8 @@ async function api(path, options = {}) {
     throw error;
   }
 
-  const method = String(options.method || 'GET').toUpperCase();
-  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+  const normalizedMethod = String(method).toUpperCase();
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(normalizedMethod)) {
     invalidateAdminTabDataCache();
   }
 
@@ -2374,41 +2399,32 @@ async function apiRaw(path, options = {}) {
       ? 'Collaboration API base URL is not configured in config.js.'
       : 'Core API base URL is not configured in config.js.');
   }
-  const token = await getToken(options.forceTokenRefresh === true);
   const url = new URL(`${baseUrl}${path}`);
   Object.entries(options.params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === '') return;
     url.searchParams.set(key, String(value));
   });
 
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: options.accept || '*/*',
-    ...(options.headers || {}),
-  };
+  const method = options.method || 'GET';
+  let headers = await createAuthenticatedApiHeaders(path, options, undefined, options.forceTokenRefresh === true);
+  let response = await fetch(url.toString(), { method, headers });
 
-  let response = await fetch(url.toString(), {
-    method: options.method || 'GET',
-    headers,
-  });
-
-  if (response.status === 401 && options.forceTokenRefresh !== true) {
-    try {
-      headers.Authorization = `Bearer ${await getToken(true)}`;
-      response = await fetch(url.toString(), {
-        method: options.method || 'GET',
-        headers,
-      });
-    } catch (error) {
-      if (isAdminAuthFailure(error)) handleAdminSessionExpired('refresh', { source: 'api-raw-token-refresh' });
-      throw error;
+  if (options.forceTokenRefresh !== true && response.status === 401) {
+    const preview = await readApiResponsePayload(response.clone());
+    if (isRetryableFirebaseTokenFailure(response.status, preview.json)) {
+      try {
+        headers = await createAuthenticatedApiHeaders(path, options, undefined, true);
+        response = await fetch(url.toString(), { method, headers });
+      } catch (error) {
+        if (isAdminAuthFailure(error)) handleAdminSessionExpired('refresh', { source: 'api-raw-token-refresh' });
+        throw error;
+      }
     }
   }
 
   if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    let json = null;
-    try { json = text ? JSON.parse(text) : null; } catch (_) { json = { message: text }; }
+    const parsed = await readApiResponsePayload(response);
+    const json = parsed.json;
     const error = buildApiError(response.status, json, service, url.toString());
     if (isAdminAuthFailure(error)) {
       error.message = buildAdminSessionExpiredNotice('server');
@@ -9934,12 +9950,19 @@ function renderMyAccountSecurityPage() {
   ]);
   reauthForm.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (mfaRequired && !mfaSatisfied) {
+      setMessage(mfaEnrolled
+        ? 'Sign out and complete the MFA login step before verifying a protected action.'
+        : 'Connect an authenticator app first. A TOTP code does not exist until the setup key is added to your authenticator app.', true);
+      render();
+      return;
+    }
     await runGovernanceAction('Recent authentication verified.', () => recordCurrentAdminReauthentication(reauthPassword.value, 'MY_ACCOUNT', reauthMfa.value));
   });
 
   const enrollmentPassword = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Enter the password you use to sign in' });
   const existingMfaCode = el('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', placeholder: 'Current authenticator code' });
-  const startEnrollmentButton = el('button', { class: 'btn account-primary-action', type: 'submit', text: mfaEnrolled ? 'Add another authenticator' : 'Connect authenticator app' });
+  const startEnrollmentButton = el('button', { class: 'btn account-primary-action', type: 'submit', text: mfaEnrolled ? 'Generate another setup key' : 'Generate authenticator setup key' });
   const enrollmentFields = [el('div', { class: 'field' }, [el('label', { text: 'Confirm your current password' }), enrollmentPassword])];
   if (mfaEnrolled) enrollmentFields.push(el('div', { class: 'field' }, [el('label', { text: 'Existing authenticator code' }), existingMfaCode]));
   const startEnrollmentForm = el('form', { class: 'governance-form compact account-enrollment-start' }, [
@@ -9964,7 +9987,7 @@ function renderMyAccountSecurityPage() {
       render();
     } catch (error) {
       startEnrollmentButton.disabled = false;
-      startEnrollmentButton.textContent = mfaEnrolled ? 'Add another authenticator' : 'Connect authenticator app';
+      startEnrollmentButton.textContent = mfaEnrolled ? 'Generate another setup key' : 'Generate authenticator setup key';
       setMessage(toFriendlyErrorMessage(error, 'Authenticator setup could not start.'), true);
       render();
     }
@@ -10078,7 +10101,7 @@ function renderMyAccountSecurityPage() {
       el('h2', { text: state.totpEnrollment ? 'Verify your authenticator code' : 'Connect an authenticator app' }),
       el('p', { class: 'account-primary-copy', text: state.totpEnrollment
         ? 'The password step is complete. Enter one current code to enable MFA.'
-        : 'Your password is already working because you are signed in. Super Admin access also requires a TOTP authenticator before the rest of the portal unlocks.' }),
+        : 'Your password is already working because you are signed in. Generate a setup key below, add it to an authenticator app, and that app will begin producing the TOTP codes used for login.' }),
       state.totpEnrollment ? enrollmentPanel : startEnrollmentForm,
     ]);
   } else if (!mfaSatisfied) {
@@ -10173,7 +10196,14 @@ function renderMyAccountSecurityPage() {
         el('summary', {}, [el('span', {}, [el('strong', { text: 'Verify a sensitive action' }), el('small', { text: 'Needed before ownership transfer and protected operations' })]), el('span', { class: 'disclosure-chevron', 'aria-hidden': 'true', text: '›' })]),
         el('div', { class: 'account-security-disclosure-body' }, [
           el('p', { class: 'muted', text: 'This records a recent re-authentication for a protected action. It is not required for normal sign-in.' }),
-          reauthForm,
+          mfaRequired && !mfaSatisfied
+            ? el('div', { class: 'notice warning inline-notice' }, [
+              el('strong', { text: mfaEnrolled ? 'Verify MFA login first' : 'Authenticator setup required first' }),
+              el('span', { text: mfaEnrolled
+                ? 'Use the highlighted final sign-in step above. Protected-action verification is available only after the current token proves MFA.'
+                : 'Use Generate authenticator setup key above. Add the key to your authenticator app; the app then generates the code.' }),
+            ])
+            : reauthForm,
         ]),
       ]),
     ]),

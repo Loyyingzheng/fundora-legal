@@ -16,5 +16,5 @@ assert(app.includes('updateAdminFirebasePassword(currentPassword, newPassword, m
 assert(app.includes('loginEmail: email'), 'Password change must preserve the correct email for the next login.');
 assert(css.includes('.account-security-progress'), 'Account setup progress needs dedicated responsive styling.');
 assert(css.includes('.admin-login-page'), 'Full-page Admin login needs dedicated styling.');
-assert(html.includes('20260710-admin-governance-v2-sidebar-close-v3-account-security-ux-v4'), 'Updated login/account UX must be cache-busted.');
+assert(html.includes('20260710-admin-governance-v2-sidebar-close-v3-account-security-ux-v5-nonce-retry'), 'Updated login/account UX must be cache-busted.');
 console.log('PASS admin account security UX audit');
