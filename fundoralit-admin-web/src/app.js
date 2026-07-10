@@ -54,6 +54,7 @@ const API_PATHS = {
     invites: '/api/analytics/admin/invites',
     smartCapture: '/api/analytics/admin/smart-capture',
     conversion: '/api/analytics/admin/conversion',
+    inviteLinks: '/api/analytics/admin/invite-links',
   },
   featureLimits: {
     list: '/api/admin/feature-limits',
@@ -416,6 +417,7 @@ const state = {
     invites: null,
     smartCapture: null,
     conversion: null,
+    inviteLinks: null,
   },
   analyticsLoading: false,
   analyticsError: '',
@@ -2398,6 +2400,7 @@ async function loadAnalyticsData(loadRequest = null) {
     ['invites', API_PATHS.analytics.invites],
     ['smartCapture', API_PATHS.analytics.smartCapture],
     ['conversion', API_PATHS.analytics.conversion],
+    ['inviteLinks', API_PATHS.analytics.inviteLinks],
   ].map(async ([key, path]) => {
     try {
       const response = await api(path, { params });
@@ -2411,7 +2414,7 @@ async function loadAnalyticsData(loadRequest = null) {
   if (!isLoadRequestCurrent(request)) return;
 
   const failedSections = [];
-  const nextData = { overview: null, retention: null, funnel: null, features: null, invites: null, smartCapture: null, conversion: null };
+  const nextData = { overview: null, retention: null, funnel: null, features: null, invites: null, smartCapture: null, conversion: null, inviteLinks: null };
 
   results.forEach((result) => {
     if (result.status !== 'fulfilled' || !result.value) {
@@ -3976,6 +3979,7 @@ function renderAnalyticsDashboard() {
   const invites = normalizeAnalyticsResponse(state.analyticsData.invites) || {};
   const smartCapture = normalizeAnalyticsResponse(state.analyticsData.smartCapture) || {};
   const conversion = normalizeAnalyticsResponse(state.analyticsData.conversion) || {};
+  const inviteLinks = normalizeAnalyticsResponse(state.analyticsData.inviteLinks) || {};
   const conversionFunnel = normalizeAnalyticsResponse(conversion.funnel) || {};
   const limitMetrics = normalizeAnalyticsResponse(conversion.limits) || {};
   const byLimitType = normalizeAnalyticsList(conversion, 'byLimitType');
@@ -4089,6 +4093,54 @@ function renderAnalyticsDashboard() {
     ]),
   ]);
 
+  const inviteLinkTotals = normalizeAnalyticsResponse(inviteLinks.totals) || {};
+  const inviteLinkByType = normalizeAnalyticsList(inviteLinks, 'byEntityType');
+  const inviteLinkDailyTrend = normalizeAnalyticsList(inviteLinks, 'dailyTrend');
+  const inviteLinkFunnelSection = renderAnalyticsSection('Invitation Growth Funnel', 'Daily Collaboration invite-link metrics synchronized to Core. The latest UTC day may be unavailable until the next scheduled sync.', [
+    renderAnalyticsExplanation('Shares measure native share-sheet invocations, clicks measure public invitation preview visits, Open App measures landing-page open attempts, and Successful Join is counted only after the backend confirms membership creation.'),
+    el('div', { class: 'analytics-grid' }, [
+      renderAnalyticsCard('Invite links created', formatMetricValue(getMetric(inviteLinkTotals, ['linksCreated'])), 'Server-issued Event and Goal invite links.', ''),
+      renderAnalyticsCard('Shares', formatMetricValue(getMetric(inviteLinkTotals, ['shares'])), 'Idempotent share events from the mobile app.', ''),
+      renderAnalyticsCard('Clicks', formatMetricValue(getMetric(inviteLinkTotals, ['clicks'])), 'Deduplicated invitation preview visits.', ''),
+      renderAnalyticsCard('Open App attempts', formatMetricValue(getMetric(inviteLinkTotals, ['openAppAttempts'])), 'Landing-page attempts to launch Fundoralit.', ''),
+      renderAnalyticsCard('Successful joins', formatMetricValue(getMetric(inviteLinkTotals, ['successfulJoins'])), 'Confirmed joins attributed to an invite link.', ''),
+      renderAnalyticsCard('Unique joined users', formatMetricValue(getMetric(inviteLinkTotals, ['uniqueSuccessfulUsers'])), 'Unique users who completed attributed joins.', ''),
+    ]),
+    renderAnalyticsMiniTable('Invitation conversion funnel', [
+      ['Stage', 'Count', 'Conversion from previous stage'],
+      ['Shared', formatMetricValue(getMetric(inviteLinkTotals, ['shares'])), '100%'],
+      ['Clicked', formatMetricValue(getMetric(inviteLinkTotals, ['clicks'])), formatPercent(getMetric(inviteLinkTotals, ['shareToClickRate']))],
+      ['Open App attempted', formatMetricValue(getMetric(inviteLinkTotals, ['openAppAttempts'])), formatPercent(getMetric(inviteLinkTotals, ['clickToOpenRate']))],
+      ['Successfully joined', formatMetricValue(getMetric(inviteLinkTotals, ['successfulJoins'])), formatPercent(getMetric(inviteLinkTotals, ['openToJoinRate']))],
+      ['Overall Share → Join', '-', formatPercent(getMetric(inviteLinkTotals, ['overallShareToJoinRate']))],
+    ]),
+    renderAnalyticsMiniTable('Event vs Goal performance', [
+      ['Type', 'Links', 'Shares', 'Clicks', 'Open App', 'Joins', 'Share → Join'],
+      ...(inviteLinkByType.length ? inviteLinkByType.map((row) => [
+        row.entityType === 'GROUP_EVENT' ? 'Group Event' : row.entityType === 'GROUP_GOAL' ? 'Group Goal' : row.entityType || 'Unknown',
+        formatMetricValue(getMetric(row, ['linksCreated'])),
+        formatMetricValue(getMetric(row, ['shares'])),
+        formatMetricValue(getMetric(row, ['clicks'])),
+        formatMetricValue(getMetric(row, ['openAppAttempts'])),
+        formatMetricValue(getMetric(row, ['successfulJoins'])),
+        formatPercent(getMetric(row, ['overallShareToJoinRate'])),
+      ]) : [['No synchronized invite-link data', '-', '-', '-', '-', '-', '-']]),
+    ]),
+    renderAnalyticsMiniTable('Daily invitation trend', [
+      ['UTC date', 'Shares', 'Clicks', 'Open App', 'Joins'],
+      ...(inviteLinkDailyTrend.length ? inviteLinkDailyTrend.map((row) => [
+        row.statDate || '-',
+        formatMetricValue(getMetric(row, ['shares'])),
+        formatMetricValue(getMetric(row, ['clicks'])),
+        formatMetricValue(getMetric(row, ['openAppAttempts'])),
+        formatMetricValue(getMetric(row, ['successfulJoins'])),
+      ]) : [['No daily invite-link metrics in this range', '-', '-', '-', '-']]),
+    ]),
+    el('p', { class: 'muted', text: inviteLinks.latestSyncedDate
+      ? `Latest Collaboration sync: ${inviteLinks.latestSyncedDate}${inviteLinks.dataCompleteThroughYesterday ? '' : ' · Daily sync may be behind'}`
+      : 'No Collaboration invite analytics have been synchronized to Core yet.' }),
+  ]);
+
   const smartCaptureSection = renderAnalyticsSection('Smart Capture performance', 'Monitoring Smart Capture enablement and candidate resolution.', [
     renderAnalyticsMiniTable('Smart Capture summary', [
       ['Enabled users', formatMetricValue(getMetric(smartCapture, ['enabledUsers', 'smartCaptureEnabledUsers']))],
@@ -4129,6 +4181,7 @@ function renderAnalyticsDashboard() {
     retentionRows.length ? retentionTable : renderAnalyticsEmptyState(),
     featuresList,
     invitesSection,
+    inviteLinkFunnelSection,
     smartCaptureSection,
   ]);
 }
