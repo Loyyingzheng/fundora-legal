@@ -18,12 +18,15 @@ assert(app.includes('const canonical = `${String(method || \'GET\').toUpperCase(
 assert(app.includes('Only one browser device can hold active Admin access at a time.'), 'UI must explain the single-active-device rule.');
 assert(app.includes('Another trusted Admin device is active. Replace it with this browser?'), 'Replacing the trusted browser must require explicit confirmation.');
 assert(app.includes('Recover and reset security'), 'Signed-out recovery must have an explicit destructive action.');
-assert(app.includes("recoverAdminWithRecoveryCode(recoveryEmail.value, recoveryCode.value, 'RECOVER ADMIN')"), 'Recovery confirmation phrase must be supplied only after user acknowledgement.');
-assert(app.includes('all current Admin sessions and trusted browsers will be revoked'), 'Recovery UI must clearly explain its blast radius.');
+assert(app.includes("confirmation: ownerMode ? 'RESET OWNER MFA' : 'RECOVER ADMIN'"), 'Recovery confirmation phrase must match the selected recovery method.');
+assert(app.includes('all current Admin sessions, trusted browsers, and the old authenticator will be revoked'), 'Recovery UI must clearly explain its blast radius.');
+assert(app.includes('System Owner emergency token') && app.includes('FUNDORA_ADMIN_OWNER_EMERGENCY_RECOVERY_TOKEN'), 'UI must expose the ENV-gated bootstrap recovery path when no recovery code exists.');
+assert(app.includes('Cancelling a new setup does not remove that older factor'), 'UI must distinguish cancelling a pending setup from removing an already-enrolled Firebase factor.');
 assert(app.includes('accounts/mfaEnrollment:withdraw'), 'Authenticator replacement must withdraw the old Firebase factor.');
-assert(app.includes('browser token') || app.includes('encrypted session'), 'Persistent-login behavior must remain visible in source/UX.');
+assert(app.includes("indexedDB.open(ADMIN_SECURITY_DB_NAME") || app.includes("indexedDB.open(ADMIN_SECURITY_DB_NAME,"), 'Persistent login must use the encrypted IndexedDB store.');
+assert(app.includes("name: 'AES-GCM'"), 'Persistent Firebase session material must remain AES-GCM encrypted.');
 assert(css.includes('.trusted-device-onboarding'), 'Trusted-device onboarding needs dedicated responsive styling.');
 assert(css.includes('.admin-recovery-login-form'), 'Emergency recovery needs dedicated styling.');
-assert(html.includes('20260710-admin-trusted-device-recovery-v1'), 'Trusted-device runtime must be cache-busted.');
+assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'MFA stale-state recovery runtime must be cache-busted.');
 
 console.log('PASS admin trusted-device and recovery audit');

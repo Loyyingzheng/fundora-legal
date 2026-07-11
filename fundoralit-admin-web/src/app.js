@@ -2500,18 +2500,29 @@ async function signInAdminWithCustomToken(customToken, email = '') {
   return session;
 }
 
-async function recoverAdminWithRecoveryCode(email, recoveryCode, confirmation) {
+async function recoverAdminAccess(email, { recoveryCode = '', ownerEmergencyToken = '', confirmation = '' } = {}) {
   const result = await publicApi(API_PATHS.admin.consumeRecoveryCode, {
     method: 'POST',
-    body: { email: normalizedTrim(email), recoveryCode: normalizedTrim(recoveryCode), confirmation: normalizedTrim(confirmation) },
+    body: {
+      email: normalizedTrim(email),
+      recoveryCode: normalizedTrim(recoveryCode),
+      ownerEmergencyToken: normalizedTrim(ownerEmergencyToken),
+      confirmation: normalizedTrim(confirmation),
+    },
   });
   await signInAdminWithCustomToken(result.customToken, result.email || email);
   state.loginEmail = result.email || email;
   state.pendingMfa = null;
   state.showRecoveryForm = false;
-  state.message = 'Recovery succeeded. Connect a new authenticator, trust this browser, and generate new recovery codes.';
+  state.message = ownerEmergencyToken
+    ? 'System Owner recovery succeeded. Connect a new authenticator now, then disable and rotate the emergency token in Render.'
+    : 'Recovery succeeded. Connect a new authenticator, trust this browser, and generate new recovery codes.';
   state.error = '';
   await completeAdminSignIn();
+}
+
+async function recoverAdminWithRecoveryCode(email, recoveryCode, confirmation) {
+  return recoverAdminAccess(email, { recoveryCode, confirmation });
 }
 
 function assertSessionActive(session = memoryAuthSession) {
@@ -3986,6 +3997,10 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
     placeholder: 'admin@example.com',
     value: state.pendingMfa?.email || state.loginEmail || email.value || '',
   });
+  const recoveryMethod = el('select', {}, [
+    el('option', { value: 'RECOVERY_CODE', text: 'One-time recovery code' }),
+    el('option', { value: 'OWNER_EMERGENCY', text: 'System Owner emergency token' }),
+  ]);
   const recoveryCode = el('input', {
     type: 'text',
     autocomplete: 'off',
@@ -3994,23 +4009,45 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
     placeholder: 'FUND-XXXXX-XXXXX-XXXXX-XXXXX',
     maxlength: '80',
   });
+  const ownerEmergencyToken = el('input', {
+    type: 'password',
+    autocomplete: 'off',
+    placeholder: 'Render emergency token (32+ characters)',
+    maxlength: '256',
+  });
+  const recoveryCodeField = el('div', { class: 'field' }, [el('label', { text: 'Unused recovery code' }), recoveryCode]);
+  const ownerEmergencyField = el('div', { class: 'field', hidden: 'hidden' }, [
+    el('label', { text: 'System Owner emergency token' }),
+    ownerEmergencyToken,
+    el('p', { class: 'muted small-copy', text: 'This must match FUNDORA_ADMIN_OWNER_EMERGENCY_RECOVERY_TOKEN in Render. Enable the recovery switch temporarily, then rotate and disable it immediately after use.' }),
+  ]);
   const acknowledgement = el('input', { type: 'checkbox' });
   const recoverySubmit = el('button', { class: 'btn danger', type: 'submit', text: 'Recover and reset security' });
   const recoveryForm = el('form', { class: 'login-grid admin-recovery-login-form' }, [
     el('div', { class: 'login-form-heading' }, [
       el('p', { class: 'eyebrow', text: 'Emergency recovery' }),
-      el('h3', { text: 'Use a one-time recovery code' }),
-      el('p', { class: 'muted', text: 'This removes the old authenticator, revokes every trusted browser and session, and requires a new security setup.' }),
+      el('h3', { text: 'Reset an unavailable authenticator' }),
+      el('p', { class: 'muted', text: 'This removes the old Firebase authenticator, resets the backend enrollment flag, and revokes every trusted browser and Admin session.' }),
     ]),
     el('div', { class: 'field' }, [el('label', { text: 'Admin email' }), recoveryEmail]),
-    el('div', { class: 'field' }, [el('label', { text: 'Unused recovery code' }), recoveryCode]),
+    el('div', { class: 'field' }, [el('label', { text: 'Recovery method' }), recoveryMethod]),
+    recoveryCodeField,
+    ownerEmergencyField,
     el('label', { class: 'recovery-confirmation-check' }, [
       acknowledgement,
-      el('span', { text: 'I understand that all current Admin sessions and trusted browsers will be revoked.' }),
+      el('span', { text: 'I understand that all current Admin sessions, trusted browsers, and the old authenticator will be revoked.' }),
     ]),
     recoverySubmit,
-    el('p', { class: 'muted small-copy', text: 'No recovery code? Use the ENV-gated System Owner emergency procedure. Do not create a second Super Admin account.' }),
+    el('p', { class: 'muted small-copy', text: 'Use the System Owner emergency token only when no recovery code exists. It is disabled by default and works only for the active System Owner.' }),
   ]);
+  const syncRecoveryMethod = () => {
+    const ownerMode = recoveryMethod.value === 'OWNER_EMERGENCY';
+    recoveryCodeField.hidden = ownerMode;
+    ownerEmergencyField.hidden = !ownerMode;
+    recoverySubmit.textContent = ownerMode ? 'Reset System Owner MFA' : 'Recover and reset security';
+  };
+  recoveryMethod.addEventListener('change', syncRecoveryMethod);
+  syncRecoveryMethod();
   recoveryForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!acknowledgement.checked) {
@@ -4018,14 +4055,29 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
       render();
       return;
     }
+    const ownerMode = recoveryMethod.value === 'OWNER_EMERGENCY';
+    if (ownerMode && !normalizedTrim(ownerEmergencyToken.value)) {
+      setMessage('Enter the System Owner emergency token configured in Render.', true);
+      render();
+      return;
+    }
+    if (!ownerMode && !normalizedTrim(recoveryCode.value)) {
+      setMessage('Enter an unused recovery code.', true);
+      render();
+      return;
+    }
     recoverySubmit.disabled = true;
-    recoverySubmit.textContent = 'Recovering…';
+    recoverySubmit.textContent = ownerMode ? 'Resetting owner MFA…' : 'Recovering…';
     state.error = '';
     try {
-      await recoverAdminWithRecoveryCode(recoveryEmail.value, recoveryCode.value, 'RECOVER ADMIN');
+      await recoverAdminAccess(recoveryEmail.value, {
+        recoveryCode: ownerMode ? '' : recoveryCode.value,
+        ownerEmergencyToken: ownerMode ? ownerEmergencyToken.value : '',
+        confirmation: ownerMode ? 'RESET OWNER MFA' : 'RECOVER ADMIN',
+      });
     } catch (error) {
       recoverySubmit.disabled = false;
-      recoverySubmit.textContent = 'Recover and reset security';
+      recoverySubmit.textContent = ownerMode ? 'Reset System Owner MFA' : 'Recover and reset security';
       setMessage(toFriendlyErrorMessage(error, 'Recovery could not be verified.'), true);
       render();
     }
@@ -10765,11 +10817,24 @@ function renderMyAccountSecurityPage() {
       state.totpEnrollment ? enrollmentPanel : startEnrollmentForm,
     ]);
   } else if (!mfaSatisfied) {
+    const lostAuthenticatorButton = el('button', {
+      class: 'btn ghost',
+      type: 'button',
+      text: 'I no longer have access to this authenticator',
+      onclick: () => {
+        signOutAdmin({
+          loginEmail: state.user?.email,
+          notice: 'Use a saved recovery code, or the temporary ENV-gated System Owner emergency token, to remove the unavailable authenticator.',
+        });
+        state.showRecoveryForm = true;
+        render();
+      },
+    });
     primarySetupContent = el('div', { class: 'account-primary-panel' }, [
-      el('p', { class: 'eyebrow', text: 'One final step' }),
-      el('h2', { text: 'Sign in once more to verify MFA' }),
-      el('p', { class: 'account-primary-copy', text: 'The authenticator is connected. Your current browser token was created before MFA, so sign in again and enter the code to unlock all Admin pages.' }),
-      signInAgainButton,
+      el('p', { class: 'eyebrow', text: 'Existing authenticator detected' }),
+      el('h2', { text: 'Verify the enrolled authenticator or reset it' }),
+      el('p', { class: 'account-primary-copy', text: 'Firebase still has an authenticator factor enrolled. Cancelling a new setup does not remove that older factor. Use its current code to sign in, or reset it through recovery if the old app is gone.' }),
+      el('div', { class: 'governance-actions stacked-actions' }, [signInAgainButton, lostAuthenticatorButton]),
     ]);
   } else if (!trustedDeviceReady) {
     primarySetupContent = el('div', { class: 'account-primary-panel trusted-device-onboarding' }, [
@@ -10798,7 +10863,9 @@ function renderMyAccountSecurityPage() {
         el('h1', { text: setupComplete ? 'Security setup complete' : `Finish your ${setupOwnerLabel} setup` }),
         el('p', { class: 'subtitle', text: setupComplete
           ? 'Your password and MFA are ready. Use the optional controls below only when needed.'
-          : 'You do not need to set the password again. Follow the highlighted next step, then sign in once more.' }),
+          : (mfaEnrolled && !mfaSatisfied
+            ? 'An authenticator is still enrolled in Firebase. Verify it, or use recovery to remove the unavailable old factor.'
+            : 'You do not need to set the password again. Follow the highlighted next step.') }),
       ]),
       el('div', { class: 'account-identity-chip' }, [
         el('strong', { text: session.email || state.user?.email || '-' }),
@@ -10811,7 +10878,7 @@ function renderMyAccountSecurityPage() {
       ]),
       el('div', { class: 'account-security-progress' }, [
         renderAccountSecurityStep(1, 'Password', 'Your password is working because this session is signed in.', 'Complete', 'complete'),
-        renderAccountSecurityStep(2, 'Authenticator app', mfaRequired ? `Connect a TOTP authenticator for ${setupOwnerLabel} security.` : 'Not required by the current policy.', mfaRequired ? (mfaEnrolled ? 'Complete' : 'Required') : 'Optional', mfaRequired ? (mfaEnrolled ? 'complete' : 'active') : 'complete'),
+        renderAccountSecurityStep(2, 'Authenticator app', mfaRequired ? `Connect a TOTP authenticator for ${setupOwnerLabel} security.` : 'Not required by the current policy.', mfaRequired ? (mfaEnrolled ? 'Enrolled' : 'Required') : 'Optional', mfaRequired ? (mfaEnrolled ? 'complete' : 'active') : 'complete'),
         renderAccountSecurityStep(3, 'Verified login', mfaRequired ? 'Sign in with password, then verify the authenticator code.' : 'Password sign-in is sufficient.', mfaRequired ? (mfaSatisfied ? 'Complete' : 'Waiting') : 'Complete', mfaRequired && !mfaSatisfied ? 'pending' : 'complete'),
         renderAccountSecurityStep(4, 'Trusted browser', mfaRequired ? 'Only one browser device can hold active Admin access at a time.' : 'Not required by the current policy.', mfaRequired ? (trustedDeviceReady ? 'Complete' : 'Required') : 'Optional', mfaRequired && !trustedDeviceReady ? 'active' : 'complete'),
       ]),
@@ -10837,7 +10904,7 @@ function renderMyAccountSecurityPage() {
         ['Role', adminRoleLabel(session.role)],
         ['System Owner', session.systemOwner ? 'Yes' : 'No'],
         ['MFA required', mfaRequired ? 'Yes' : 'No'],
-        ['MFA enrolled', mfaEnrolled ? 'Yes' : 'No'],
+        ['MFA enrolled in Firebase', mfaEnrolled ? 'Yes' : 'No'],
         ['MFA verified now', mfaSatisfied ? 'Yes' : 'No'],
         ['Trusted browser', trustedDeviceReady ? (trustedDevice.deviceName || 'This browser') : (trustedDevice.configured ? 'Another browser' : 'Not configured')],
         ['Recovery codes available', String(trustedDevice.activeRecoveryCodes ?? 0)],

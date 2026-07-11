@@ -20,5 +20,5 @@ assert(app.includes('Trust this browser'), 'My Account must expose the single tr
 assert(app.includes('Lost authenticator?'), 'The login UI must expose recovery without requiring Cloud Shell.');
 assert(app.includes('Generate ten one-time codes'), 'My Account must explain recovery-code rotation.');
 assert(css.includes('.account-recovery-code-grid'), 'Recovery codes need mobile-safe dedicated styling.');
-assert(html.includes('20260710-admin-trusted-device-recovery-v1'), 'Updated login/account UX must be cache-busted.');
+assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'Updated login/account UX must be cache-busted.');
 console.log('PASS admin account security UX audit');

@@ -14,5 +14,5 @@ assert(app.includes("backendCode === 'ADMIN_MFA_REQUIRED'"), 'MFA bootstrap erro
 assert(app.includes("backendCode === 'AUTH_NONCE_REPLAYED'"), 'Nonce replay needs a specific recovery message.');
 assert(app.includes('mfaRequired && !mfaSatisfied'), 'Sensitive-action verification must be gated until MFA is satisfied.');
 assert(app.includes('Generate authenticator setup key'), 'TOTP enrollment must explain that setup generates the key before a code exists.');
-assert(html.includes('20260710-admin-trusted-device-recovery-v1'), 'Nonce retry fix must remain cache-busted.');
+assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'Nonce retry fix must remain cache-busted.');
 console.log('PASS admin nonce retry close-loop audit');

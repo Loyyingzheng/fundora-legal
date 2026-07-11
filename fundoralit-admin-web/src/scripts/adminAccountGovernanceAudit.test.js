@@ -32,5 +32,5 @@ assert(app.includes('protectedOwnerTransferAction'), 'Owner verify/commit must r
 assert(app.includes('Final atomic commit'), 'Ownership UI must clearly identify the irreversible final commit.');
 assert(css.includes('.governance-page'), 'Governance pages must have dedicated responsive styling.');
 assert(css.includes('.sensitive-secret-box'), 'TOTP secret must have a clear sensitive-data treatment.');
-assert(html.includes('20260710-admin-trusted-device-recovery-v1'), 'Governance runtime must be cache-busted.');
+assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'Governance runtime must be cache-busted.');
 console.log('PASS admin account governance web audit');
