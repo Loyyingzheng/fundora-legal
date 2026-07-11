@@ -431,6 +431,7 @@ const state = {
   recoveryCodes: null,
   deviceSecurityBusy: false,
   showRecoveryForm: false,
+  recoveryMethod: 'RECOVERY_CODE',
   governanceLink: null,
   governancePreview: null,
   governanceMfaRequired: false,
@@ -1972,6 +1973,7 @@ function resetSignedInRuntimeState() {
   state.recoveryCodes = null;
   state.deviceSecurityBusy = false;
   state.showRecoveryForm = false;
+  state.recoveryMethod = 'RECOVERY_CODE';
   state.governanceMfaRequired = false;
   state.adminSession = null;
   state.modal = null;
@@ -2514,6 +2516,7 @@ async function recoverAdminAccess(email, { recoveryCode = '', ownerEmergencyToke
   state.loginEmail = result.email || email;
   state.pendingMfa = null;
   state.showRecoveryForm = false;
+  state.recoveryMethod = 'RECOVERY_CODE';
   state.message = ownerEmergencyToken
     ? 'System Owner recovery succeeded. Connect a new authenticator now, then disable and rotate the emergency token in Render.'
     : 'Recovery succeeded. Connect a new authenticator, trust this browser, and generate new recovery codes.';
@@ -3997,7 +4000,7 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
     placeholder: 'admin@example.com',
     value: state.pendingMfa?.email || state.loginEmail || email.value || '',
   });
-  const recoveryMethod = el('select', {}, [
+  const recoveryMethod = el('select', { value: state.recoveryMethod || 'RECOVERY_CODE' }, [
     el('option', { value: 'RECOVERY_CODE', text: 'One-time recovery code' }),
     el('option', { value: 'OWNER_EMERGENCY', text: 'System Owner emergency token' }),
   ]);
@@ -4042,8 +4045,21 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
   ]);
   const syncRecoveryMethod = () => {
     const ownerMode = recoveryMethod.value === 'OWNER_EMERGENCY';
-    recoveryCodeField.hidden = ownerMode;
-    ownerEmergencyField.hidden = !ownerMode;
+    state.recoveryMethod = ownerMode ? 'OWNER_EMERGENCY' : 'RECOVERY_CODE';
+
+    recoveryCodeField.toggleAttribute('hidden', ownerMode);
+    ownerEmergencyField.toggleAttribute('hidden', !ownerMode);
+    recoveryCodeField.setAttribute('aria-hidden', ownerMode ? 'true' : 'false');
+    ownerEmergencyField.setAttribute('aria-hidden', ownerMode ? 'false' : 'true');
+
+    recoveryCode.disabled = ownerMode;
+    recoveryCode.required = !ownerMode;
+    ownerEmergencyToken.disabled = !ownerMode;
+    ownerEmergencyToken.required = ownerMode;
+
+    if (ownerMode) recoveryCode.value = '';
+    else ownerEmergencyToken.value = '';
+
     recoverySubmit.textContent = ownerMode ? 'Reset System Owner MFA' : 'Recover and reset security';
   };
   recoveryMethod.addEventListener('change', syncRecoveryMethod);

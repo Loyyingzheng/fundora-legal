@@ -12,6 +12,6 @@ assert(app.includes('I no longer have access to this authenticator'), 'Locked ow
 assert(app.includes("value: 'OWNER_EMERGENCY'"), 'Recovery method must support System Owner emergency reset.');
 assert(app.includes("ownerEmergencyToken: ownerMode ? ownerEmergencyToken.value : ''"), 'Emergency token must be sent only in owner recovery mode.');
 assert(app.includes("confirmation: ownerMode ? 'RESET OWNER MFA' : 'RECOVER ADMIN'"), 'Destructive confirmation must be method-specific.');
-assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'Deployment must bypass the old cached runtime.');
+assert(html.includes('20260711-admin-mfa-recovery-method-v3'), 'Deployment must bypass the old cached runtime.');
 
 console.log('PASS admin stale MFA recovery UX audit');

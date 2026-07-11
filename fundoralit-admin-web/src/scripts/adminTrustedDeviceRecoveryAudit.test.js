@@ -27,6 +27,6 @@ assert(app.includes("indexedDB.open(ADMIN_SECURITY_DB_NAME") || app.includes("in
 assert(app.includes("name: 'AES-GCM'"), 'Persistent Firebase session material must remain AES-GCM encrypted.');
 assert(css.includes('.trusted-device-onboarding'), 'Trusted-device onboarding needs dedicated responsive styling.');
 assert(css.includes('.admin-recovery-login-form'), 'Emergency recovery needs dedicated styling.');
-assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'MFA stale-state recovery runtime must be cache-busted.');
+assert(html.includes('20260711-admin-mfa-recovery-method-v3'), 'MFA stale-state recovery runtime must be cache-busted.');
 
 console.log('PASS admin trusted-device and recovery audit');

@@ -29,7 +29,7 @@ assert(!/return\s+status\s*={3}\s*401/.test(app), 'Do not treat every backend 40
 assert(app.includes('signedInAt: Number(existing.signedInAt'), 'Token refresh must preserve the original absolute session start time.');
 assert(app.includes('ADMIN_ABSOLUTE_TIMEOUT_MS = Number(config.adminAbsoluteTimeoutMs || 7 * 24 * 60 * 60 * 1000)'), 'Trusted-browser sessions must have a bounded seven-day absolute lifetime by default.');
 
-assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'Admin assets must be cache-busted for the persistent-session/device fix.');
+assert(html.includes('20260711-admin-mfa-recovery-method-v3'), 'Admin assets must be cache-busted for the persistent-session/device fix.');
 assert(/@media\s*\(max-width:\s*760px\)[\s\S]*input,[\s\S]*font-size:\s*16px/.test(styles), 'Mobile form fields must use 16px font size to avoid browser zoom.');
 assert(/@media\s*\(max-width:\s*760px\)[\s\S]*\.modal-card,[\s\S]*min-height:\s*100dvh/.test(styles), 'Mobile modals must use the dynamic viewport height.');
 assert(/@media\s*\(max-width:\s*760px\)[\s\S]*\.modal-actions[\s\S]*position:\s*sticky/.test(styles), 'Mobile modal actions must remain reachable.');

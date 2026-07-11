@@ -146,6 +146,9 @@ h4 { margin: 0 0 12px; font-size: 0.95rem; }
 .card { padding: clamp(16px, 2vw, 22px); }
 .page-section { display: grid; gap: 16px; }
 .login-grid { display: grid; gap: 12px; }
+
+/* Native hidden must win over component display rules. */
+[hidden] { display: none !important; }
 .field { display: grid; gap: 7px; margin-bottom: 12px; }
 label, .field label { font-size: 12px; font-weight: 850; color: var(--muted-strong); letter-spacing: 0.02em; }
 input, select, textarea {

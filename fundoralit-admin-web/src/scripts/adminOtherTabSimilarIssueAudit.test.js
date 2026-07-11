@@ -88,5 +88,5 @@ assert(source.includes("return el('div', { class: modalFieldClass(key) }, [el('l
   assert(source.includes(snippet), `Backend field alias not covered: ${snippet}`);
 });
 
-assert(html.includes('20260711-admin-mfa-stale-recovery-v2'), 'index.html cache-bust version was not updated.');
+assert(html.includes('20260711-admin-mfa-recovery-method-v3'), 'index.html cache-bust version was not updated.');
 console.log('adminOtherTabSimilarIssueAudit.test passed');
