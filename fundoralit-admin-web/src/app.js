@@ -1077,6 +1077,24 @@ function toFriendlyErrorMessage(errorOrMessage, fallback = 'Something went wrong
   if (backendCode === 'AUTH_NONCE_REPLAYED') {
     return 'This protected request was already submitted. Refresh the latest state before trying again; the portal will not automatically replay the same security request.';
   }
+  if (backendCode === 'AUTH_FIREBASE_CONFIGURATION_INVALID') {
+    return appendBackendDiagnostics('Backend Firebase Admin configuration is invalid. Set FIREBASE_PROJECT_ID to the same project as the service-account project_id, redeploy the Backend, then retry this same recovery request.', normalized);
+  }
+  if (backendCode === 'AUTH_FIREBASE_PERMISSION_DENIED') {
+    return appendBackendDiagnostics('The Backend service account cannot manage Firebase MFA. Grant it Firebase Authentication Admin permission, redeploy if needed, then retry this same recovery request.', normalized);
+  }
+  if (backendCode === 'AUTH_FIREBASE_PROJECT_MISMATCH') {
+    return appendBackendDiagnostics('The Backend is targeting the wrong Firebase project. FIREBASE_PROJECT_ID and the service-account project_id must both be fundora-2cb67 before you retry.', normalized);
+  }
+  if (backendCode === 'AUTH_FIREBASE_REQUEST_REJECTED') {
+    return appendBackendDiagnostics('Firebase rejected the Admin MFA reset. Confirm the Super Admin Firebase user exists in the configured project, then retry the same recovery request.', normalized);
+  }
+  if (backendCode === 'AUTH_FIREBASE_MFA_RESET_NOT_CONFIRMED') {
+    return appendBackendDiagnostics('Firebase received the reset but the old authenticator is still visible. Do not start a new recovery. Wait briefly, then retry the same recovery method.', normalized);
+  }
+  if (backendCode === 'AUTH_FIREBASE_UNAVAILABLE') {
+    return appendBackendDiagnostics('Firebase Admin could not complete the MFA reset. The recovery is resumable: fix the Backend Firebase configuration or wait for Firebase, then retry the same recovery method.', normalized);
+  }
   if (status === 401) {
     if (isAdminAuthFailure(errorOrMessage)) return 'Your admin session has expired. Please sign in again before continuing.';
     return hasBackendMessage
@@ -4042,6 +4060,7 @@ function createAdminLoginForm({ className = 'login-grid', compact = false, showI
     ]),
     recoverySubmit,
     el('p', { class: 'muted small-copy', text: 'Use the System Owner emergency token only when no recovery code exists. It is disabled by default and works only for the active System Owner.' }),
+    el('p', { class: 'recovery-resume-note', text: 'Recovery is resumable. If Firebase configuration or permissions fail, fix the Backend and submit the same recovery method again—do not create a second recovery attempt.' }),
   ]);
   const syncRecoveryMethod = () => {
     const ownerMode = recoveryMethod.value === 'OWNER_EMERGENCY';

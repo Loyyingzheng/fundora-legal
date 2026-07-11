@@ -5766,3 +5766,12 @@ body {
 .account-login-steps li > span {
   grid-column: 2;
 }
+
+.recovery-resume-note {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #d8e4e1);
+  border-radius: 14px;
+  background: rgba(21, 128, 117, 0.06);
+  line-height: 1.55;
+}
