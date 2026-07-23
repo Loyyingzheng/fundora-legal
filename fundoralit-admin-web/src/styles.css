@@ -5775,3 +5775,174 @@ body {
   background: rgba(21, 128, 117, 0.06);
   line-height: 1.55;
 }
+
+
+/* Subscription Support: separate effective user entitlement from approval workflow. */
+.subscription-support-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 4px 0 16px;
+}
+
+.subscription-support-view-tab {
+  min-width: 0;
+  min-height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  color: var(--text);
+  text-align: left;
+  box-shadow: var(--shadow-soft);
+}
+
+.subscription-support-view-tab:hover {
+  border-color: rgba(15, 118, 110, 0.34);
+  background: var(--primary-soft-2);
+}
+
+.subscription-support-view-tab.active {
+  border-color: rgba(15, 118, 110, 0.58);
+  background: var(--primary-soft-2);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.10), var(--shadow-soft);
+}
+
+.subscription-support-view-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.subscription-support-view-copy strong {
+  color: var(--heading);
+  font-size: 15px;
+}
+
+.subscription-support-view-copy small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.subscription-support-view-count {
+  flex: 0 0 auto;
+  min-width: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--card-soft);
+  color: var(--muted-strong);
+  font-size: 11px;
+  font-weight: 850;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.subscription-support-view-tab.active .subscription-support-view-count {
+  border-color: rgba(15, 118, 110, 0.26);
+  background: var(--card);
+  color: var(--primary-dark);
+}
+
+.subscription-action-panel {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card-soft);
+}
+
+.subscription-action-panel.free {
+  border-color: rgba(100, 116, 139, 0.26);
+}
+
+.subscription-action-panel.pro {
+  border-color: rgba(15, 118, 110, 0.28);
+  background: var(--primary-soft-2);
+}
+
+.subscription-action-panel.scheduled {
+  border-color: rgba(217, 119, 6, 0.30);
+  background: var(--warning-soft);
+}
+
+.subscription-action-copy {
+  display: grid;
+  gap: 5px;
+}
+
+.subscription-action-copy strong {
+  color: var(--heading);
+  font-size: 14px;
+}
+
+.subscription-action-copy p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.subscription-action-buttons {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.subscription-read-only-note {
+  margin: 0;
+}
+
+.subscription-request-type-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 14px;
+  background: var(--primary-soft-2);
+}
+
+.subscription-request-type-card strong {
+  color: var(--heading);
+  font-size: 16px;
+}
+
+.subscription-request-type-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.subscription-section-title {
+  align-items: flex-start;
+  margin-top: 6px;
+}
+
+.subscription-section-title h2,
+.subscription-section-title p {
+  margin-top: 0;
+}
+
+.subscription-entitlement-summary {
+  gap: 16px;
+}
+
+@media (max-width: 760px) {
+  .subscription-support-view-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .subscription-support-view-tab {
+    min-height: 68px;
+  }
+
+  .subscription-action-buttons .btn {
+    width: 100%;
+  }
+}

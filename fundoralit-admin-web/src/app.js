@@ -424,6 +424,7 @@ const state = {
   auth: null,
   user: null,
   adminSession: null,
+  criticalActionProof: null,
   pendingMfa: null,
   loginEmail: '',
   totpEnrollment: null,
@@ -497,6 +498,9 @@ const state = {
   },
   learningConsole: {
     activeSubtab: 'Overview',
+  },
+  subscriptionSupport: {
+    activeView: 'users',
   },
   adminOptions: {
     featureLimitKeys: [],
@@ -1610,6 +1614,59 @@ function normalizeBaseUrl(url) {
   return String(url || '').replace(/\/+$/, '');
 }
 
+function resolveAdminRuntimeEnvironment() {
+  const raw = normalizedTrim(config.environment || config.env || config.nodeEnv || 'production').toLowerCase();
+  if (['local', 'development', 'dev', 'test', 'staging', 'production', 'prod'].includes(raw)) return raw;
+  return 'production';
+}
+
+function isDevelopmentRuntimeEnvironment(environmentName = resolveAdminRuntimeEnvironment()) {
+  return ['local', 'development', 'dev', 'test'].includes(String(environmentName || '').toLowerCase());
+}
+
+function parseConfiguredUrl(value) {
+  try {
+    return value ? new URL(value) : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isLocalhostUrl(value) {
+  const parsed = parseConfiguredUrl(value);
+  if (!parsed) return false;
+  return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(parsed.hostname);
+}
+
+function validateAdminApiBaseUrl(label, value, { required = false } = {}) {
+  const errors = [];
+  const text = normalizeBaseUrl(value || '');
+  if (!text) {
+    if (required) errors.push(`${label} is required.`);
+    return errors;
+  }
+
+  const parsed = parseConfiguredUrl(text);
+  if (!parsed || !['https:', 'http:'].includes(parsed.protocol)) {
+    return [`${label} must be a valid http(s) URL.`];
+  }
+
+  const environmentName = resolveAdminRuntimeEnvironment();
+  const localDevelopmentAllowed =
+    isDevelopmentRuntimeEnvironment(environmentName) &&
+    config.allowLocalhostApi === true;
+
+  if (isLocalhostUrl(text) && !localDevelopmentAllowed) {
+    errors.push(`${label} may use localhost only when environment is development/local/test and allowLocalhostApi is true.`);
+  }
+
+  if (!localDevelopmentAllowed && parsed.protocol !== 'https:') {
+    errors.push(`${label} must use HTTPS outside explicit local development.`);
+  }
+
+  return errors;
+}
+
 
 function uniqueSortedOptions(values = []) {
   return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)))
@@ -1994,6 +2051,7 @@ function resetSignedInRuntimeState() {
   state.recoveryMethod = 'RECOVERY_CODE';
   state.governanceMfaRequired = false;
   state.adminSession = null;
+  state.criticalActionProof = null;
   state.modal = null;
   state.navOpen = false;
   state.loading = false;
@@ -2093,6 +2151,7 @@ function saveAuthSession(session) {
 
 function clearAuthSession() {
   memoryAuthSession = null;
+  state.criticalActionProof = null;
   queueAdminAuthStorage(() => clearStoredAuthSession()).catch(() => {});
 }
 
@@ -2356,7 +2415,48 @@ async function recordCurrentAdminReauthentication(password, context = 'ADMIN_SEC
     }, mfaCode, { persist: false });
   }
   applyAuthSession(session);
-  return api(API_PATHS.admin.reauthenticated, { method: 'POST', body: { context } });
+  return storeCriticalActionProofFromResponse(await api(API_PATHS.admin.reauthenticated, { method: 'POST', body: { context } }));
+}
+
+function storeCriticalActionProofFromResponse(response) {
+  const proof = response?.criticalActionProof;
+  if (proof?.token) {
+    state.criticalActionProof = {
+      token: String(proof.token),
+      expiresAt: proof.expiresAt || null,
+      actionKey: proof.actionKey || 'ADMIN_CRITICAL',
+    };
+  } else if (response && Object.prototype.hasOwnProperty.call(response, 'criticalActionProof')) {
+    state.criticalActionProof = null;
+  }
+  return response;
+}
+
+function takeCriticalActionProofToken() {
+  const proof = state.criticalActionProof;
+  if (!proof?.token) return '';
+  if (proof.expiresAt && Date.parse(proof.expiresAt) <= Date.now() + 5000) {
+    state.criticalActionProof = null;
+    return '';
+  }
+  state.criticalActionProof = null;
+  return proof.token;
+}
+
+function isCriticalActionProofError(error) {
+  const code = normalizedTrim(extractBackendCode(error)).toUpperCase();
+  const message = normalizedTrim(error?.message || error).toLowerCase();
+  return code === 'ADMIN_CRITICAL_ACTION_PROOF_REQUIRED'
+    || message.includes('critical action proof')
+    || message.includes('critical-action verification is required');
+}
+
+async function promptCriticalActionReauthentication(context = 'ADMIN_CRITICAL') {
+  const password = window.prompt('Current Firebase password required for this critical admin action:');
+  if (!password) return false;
+  const mfaCode = window.prompt('Current TOTP authenticator code:') || '';
+  await recordCurrentAdminReauthentication(password, context, mfaCode);
+  return Boolean(state.criticalActionProof?.token);
 }
 
 function decodeFirebaseIdTokenPayload(idToken) {
@@ -2410,7 +2510,7 @@ async function loadTrustedDeviceState({ renderAfter = false } = {}) {
 async function ensureFreshAdminReauthentication(context = 'TRUSTED_DEVICE_LOGIN') {
   if (!state.adminSession?.mfaSatisfied) return null;
   try {
-    return await api(API_PATHS.admin.reauthenticated, { method: 'POST', body: { context } });
+    return storeCriticalActionProofFromResponse(await api(API_PATHS.admin.reauthenticated, { method: 'POST', body: { context } }));
   } catch (error) {
     if (extractBackendCode(error) === 'ADMIN_REAUTHENTICATION_REQUIRED') return null;
     throw error;
@@ -2700,10 +2800,15 @@ function createAdminIdempotencyKey(prefix = 'admin_action') {
 }
 
 function criticalActionFields(reason, confirmPhrase, idempotencyPrefix = 'critical') {
+  const reauthToken = takeCriticalActionProofToken();
+  if (!reauthToken) {
+    throw new Error('Recent critical-action verification is required. Re-enter your password and MFA code, then retry the action.');
+  }
   return {
     reason,
     confirmPhrase,
     idempotencyKey: createAdminIdempotencyKey(idempotencyPrefix),
+    reauthToken,
   };
 }
 
@@ -3463,22 +3568,33 @@ async function loadAdminControlData(loadRequest) {
     return;
   }
   if (state.activeTab === 'subscriptionSupport') {
-    const [requests, users, user] = await Promise.all([
-      api(API_PATHS.subscriptionSupport.requests, { params: { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail } }),
+    const requestParams = { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail };
+    const requestPromise = api(API_PATHS.subscriptionSupport.requests, { params: requestParams });
+    const pendingPromise = filters.subscriptionRequestStatus === 'PENDING'
+      ? requestPromise
+      : api(API_PATHS.subscriptionSupport.requests, { params: { status: 'PENDING', userEmail: filters.userEmail } });
+    const [requests, pendingRequestsResponse, users, user] = await Promise.all([
+      requestPromise,
+      pendingPromise,
       api(API_PATHS.subscriptionSupport.usersList, { params: { email: filters.userEmail, tier: filters.subscriptionUserTier, status: filters.subscriptionUserStatus } }),
       filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'User not found.') })) : Promise.resolve(null),
     ]);
     const requestPayload = normalizeAdminObjectResponse(requests);
+    const pendingPayload = normalizeAdminObjectResponse(pendingRequestsResponse);
     const userPayload = normalizeAdminObjectResponse(users);
+    const exactUserPayload = user && !user.lookupError ? normalizeAdminObjectResponse(user) : {};
     const requestItems = Array.isArray(requestPayload.items) ? requestPayload.items : normalizeAdminListResponse(requests);
-    const subscriptionUsers = Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users);
+    const pendingRequests = Array.isArray(pendingPayload.items) ? pendingPayload.items : normalizeAdminListResponse(pendingRequestsResponse);
+    const subscriptionUsers = (Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users)).map(normalizeSubscriptionUserSummary);
+    const exactUser = exactUserPayload.user || exactUserPayload.item || exactUserPayload.subscription || exactUserPayload;
     if (!isLoadRequestCurrent(loadRequest)) return;
     setScopedData({
       content: requestItems,
+      pendingRequests,
       subscriptionUsers,
-      userSummary: user && !user.lookupError ? normalizeAdminObjectResponse(user) : null,
+      userSummary: user && !user.lookupError ? normalizeSubscriptionUserSummary(exactUser) : null,
       lookupError: user?.lookupError || '',
-      permissions: requestPayload.permissions || userPayload.permissions || {},
+      permissions: { ...(userPayload.permissions || {}), ...(exactUserPayload.permissions || {}), ...(pendingPayload.permissions || {}), ...(requestPayload.permissions || {}) },
       page: 0,
       size: 200,
       totalElements: requestItems.length,
@@ -7326,60 +7442,297 @@ function normalizeSubscriptionRequestItem(item = {}) {
   };
 }
 
-function renderSubscriptionSupportToolbar() {
-  const email = el('input', { placeholder: 'Search user email', value: state.adminFilters.userEmail || '' });
-  email.addEventListener('input', () => { state.adminFilters.userEmail = email.value.trim(); });
-  const tier = select(ADMIN_ENUMS.subscriptionUserTiers, state.adminFilters.subscriptionUserTier || '', (value) => { state.adminFilters.subscriptionUserTier = value; });
-  const userStatus = select(ADMIN_ENUMS.subscriptionUserStatuses, state.adminFilters.subscriptionUserStatus || '', (value) => { state.adminFilters.subscriptionUserStatus = value; });
-  const requestStatus = select(ADMIN_ENUMS.subscriptionRequestStatuses, state.adminFilters.subscriptionRequestStatus || '', (value) => { state.adminFilters.subscriptionRequestStatus = value; });
-  return renderControlToolbar([
-    el('div', {}, [el('label', { text: 'User email' }), email]),
-    el('div', {}, [el('label', { text: 'User tier' }), tier]),
-    el('div', {}, [el('label', { text: 'User status' }), userStatus]),
-    el('div', {}, [el('label', { text: 'Request status' }), requestStatus]),
-    el('button', { class: 'btn', text: 'Search', onclick: () => loadData() }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
+function normalizeSubscriptionUserSummary(item = {}) {
+  return {
+    ...item,
+    userId: firstPresent(item.userId, item.user_id),
+    email: firstPresent(item.email, item.userEmail, item.user_email),
+    tier: firstPresent(item.tier, item.subscriptionTier, item.subscription_tier, 'FREE'),
+    status: firstPresent(item.status, item.subscriptionStatus, item.subscription_status, 'EMPTY'),
+    billingCycle: firstPresent(item.billingCycle, item.billing_cycle),
+    provider: firstPresent(item.provider, item.subscriptionProvider, item.subscription_provider),
+    providerCustomerId: firstPresent(item.providerCustomerId, item.provider_customer_id),
+    providerEntitlementId: firstPresent(item.providerEntitlementId, item.provider_entitlement_id),
+    expiresAt: firstPresent(item.expiresAt, item.expires_at),
+    updatedAt: firstPresent(item.updatedAt, item.updated_at),
+    cancelledAt: firstPresent(item.cancelledAt, item.cancelled_at),
+    cancellationEffectiveAt: firstPresent(item.cancellationEffectiveAt, item.cancellation_effective_at),
+    trialUsed: asBoolean(firstPresent(item.trialUsed, item.trial_used), false),
+    trialExpiresAt: firstPresent(item.trialExpiresAt, item.trial_expires_at),
+    feedbackTrialUsed: asBoolean(firstPresent(item.feedbackTrialUsed, item.feedback_trial_used), false),
+    feedbackTrialExpiresAt: firstPresent(item.feedbackTrialExpiresAt, item.feedback_trial_expires_at),
+  };
+}
+
+const SUBSCRIPTION_REQUEST_COPY = Object.freeze({
+  GRANT_TRIAL: {
+    label: 'Request trial access',
+    shortLabel: 'Trial access',
+    description: 'Grant a one-time trial only when the user is currently Free and has not already used the standard trial.',
+  },
+  GRANT_COMPENSATION_DAYS: {
+    label: 'Request compensation extension',
+    shortLabel: 'Compensation days',
+    description: 'Extend an active Pro entitlement after a verified service issue or approved support case.',
+  },
+  CORRECT_TO_PRO: {
+    label: 'Request Pro entitlement fix',
+    shortLabel: 'Restore Pro access',
+    description: 'Use only after verifying a paid purchase or entitlement-sync mismatch. This is not a complimentary manual upgrade.',
+  },
+  CORRECT_TO_FREE: {
+    label: 'Request end Pro access',
+    shortLabel: 'End Pro access',
+    description: 'Use only while Pro access is effectively active and no cancellation is already scheduled.',
+  },
+});
+
+const EFFECTIVE_PRO_SUBSCRIPTION_STATUSES = new Set(['ACTIVE', 'TRIAL', 'TRIALING', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'PAST_DUE']);
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set(['CANCELLED', 'CANCELED', 'EXPIRED', 'EMPTY', 'NONE', 'INACTIVE']);
+
+function subscriptionRequestLabel(requestType, fallback = 'Subscription support request') {
+  return SUBSCRIPTION_REQUEST_COPY[String(requestType || '').toUpperCase()]?.label || fallback;
+}
+
+function normalizedSubscriptionTier(summary) {
+  return String(summary?.tier || 'FREE').trim().toUpperCase();
+}
+
+function normalizedSubscriptionStatus(summary) {
+  return String(summary?.status || 'EMPTY').trim().toUpperCase();
+}
+
+function subscriptionHasScheduledCancellation(summary) {
+  if (!summary) return false;
+  const effectiveAt = Date.parse(summary.cancellationEffectiveAt || '');
+  if (Number.isFinite(effectiveAt) && effectiveAt > Date.now()) return true;
+  const cancelledAt = Date.parse(summary.cancelledAt || '');
+  if (!Number.isFinite(cancelledAt)) return false;
+  const updatedAt = Date.parse(summary.updatedAt || '');
+  // A reactivated entitlement can legitimately retain historical cancellation
+  // metadata. Treat it as scheduled only when cancellation is at least as new
+  // as the latest entitlement update.
+  return !Number.isFinite(updatedAt) || cancelledAt >= updatedAt;
+}
+
+function isEffectiveProSubscription(summary) {
+  return normalizedSubscriptionTier(summary) === 'PRO' && EFFECTIVE_PRO_SUBSCRIPTION_STATUSES.has(normalizedSubscriptionStatus(summary));
+}
+
+function subscriptionRequestTargetsUser(request, summary) {
+  const view = normalizeSubscriptionRequestItem(request || {});
+  const requestUserId = String(view.targetUserId || '').trim();
+  const summaryUserId = String(summary?.userId || '').trim();
+  if (requestUserId && summaryUserId && requestUserId === summaryUserId) return true;
+  const requestEmail = normalizedEmail(view.targetUserEmail);
+  const summaryEmail = normalizedEmail(summary?.email);
+  return Boolean(requestEmail && summaryEmail && requestEmail === summaryEmail);
+}
+
+function pendingSubscriptionRequestsForUser(summary) {
+  return (state.data?.pendingRequests || []).filter((request) => {
+    const view = normalizeSubscriptionRequestItem(request);
+    return String(view.status || '').toUpperCase() === 'PENDING' && subscriptionRequestTargetsUser(request, summary);
+  });
+}
+
+function pendingSubscriptionRequest(summary, requestType) {
+  const normalizedType = String(requestType || '').toUpperCase();
+  return pendingSubscriptionRequestsForUser(summary).find((request) => {
+    const view = normalizeSubscriptionRequestItem(request);
+    return String(view.requestType || '').toUpperCase() === normalizedType;
+  }) || null;
+}
+
+function getSubscriptionSupportActionState(summary, permissions = {}) {
+  const normalizedSummary = normalizeSubscriptionUserSummary(summary || {});
+  const tier = normalizedSubscriptionTier(normalizedSummary);
+  const status = normalizedSubscriptionStatus(normalizedSummary);
+  const effectivePro = isEffectiveProSubscription(normalizedSummary);
+  const cancellationScheduled = subscriptionHasScheduledCancellation(normalizedSummary);
+  const canRequest = permissions.supportAdmin !== false;
+  const actions = [];
+  const pendingForUser = pendingSubscriptionRequestsForUser(normalizedSummary);
+  const blockingPending = pendingForUser[0] || null;
+
+  const addAction = (type, tone) => {
+    const pending = pendingSubscriptionRequest(normalizedSummary, type);
+    actions.push({
+      type,
+      tone,
+      label: SUBSCRIPTION_REQUEST_COPY[type]?.label || type,
+      description: SUBSCRIPTION_REQUEST_COPY[type]?.description || '',
+      pending,
+      blockingPending,
+      enabled: canRequest && !blockingPending,
+    });
+  };
+
+  if (effectivePro) {
+    addAction('GRANT_COMPENSATION_DAYS', 'secondary');
+    if (!cancellationScheduled) addAction('CORRECT_TO_FREE', 'danger');
+  } else {
+    addAction('CORRECT_TO_PRO', 'primary');
+    if (!normalizedSummary.trialUsed && !normalizedSummary.feedbackTrialUsed) addAction('GRANT_TRIAL', 'secondary');
+  }
+
+  let title;
+  let message;
+  let tone;
+  if (effectivePro && cancellationScheduled) {
+    title = 'Pro access · cancellation already scheduled';
+    message = `The end-Pro action is hidden because a cancellation is already recorded${normalizedSummary.cancellationEffectiveAt ? ` for ${formatDate(normalizedSummary.cancellationEffectiveAt)}` : ''}. Do not submit a duplicate cancellation request.`;
+    tone = 'scheduled';
+  } else if (effectivePro) {
+    title = `Active Pro entitlement · ${status}`;
+    message = 'Compensation and end-Pro actions are available only for an effectively active Pro entitlement. Pro correction and trial actions are intentionally hidden.';
+    tone = 'pro';
+  } else if (tier === 'PRO' && TERMINAL_SUBSCRIPTION_STATUSES.has(status)) {
+    title = `Pro entitlement is no longer active · ${status}`;
+    message = 'There is no active subscription to cancel. Restore Pro only after verifying a valid paid purchase or entitlement-sync issue.';
+    tone = 'free';
+  } else {
+    title = `Free entitlement · ${status}`;
+    message = 'Free users never receive an end-Pro or cancellation button. Use Pro entitlement fix only for a verified purchase mismatch; use trial only when the user remains eligible.';
+    tone = 'free';
+  }
+
+  if (blockingPending) {
+    const pendingView = normalizeSubscriptionRequestItem(blockingPending);
+    message = `${message} A pending “${subscriptionRequestLabel(pendingView.requestType)}” request already exists, so new entitlement actions are locked until it is resolved or withdrawn.`;
+  }
+
+  return { summary: normalizedSummary, tier, status, effectivePro, cancellationScheduled, canRequest, actions, title, message, tone, blockingPending };
+}
+
+function renderSubscriptionSupportActions(summary, permissions = {}) {
+  const actionState = getSubscriptionSupportActionState(summary, permissions);
+  const buttons = actionState.actions.map((action) => {
+    const button = el('button', {
+      class: `btn ${action.tone === 'primary' ? '' : action.tone} small`.replace(/\s+/g, ' ').trim(),
+      text: action.pending
+        ? `${SUBSCRIPTION_REQUEST_COPY[action.type]?.shortLabel || action.label} pending`
+        : action.blockingPending ? `${action.label} · locked` : action.label,
+      disabled: !action.enabled,
+      title: action.blockingPending ? 'Resolve or withdraw the existing pending subscription request before creating another action.' : action.description,
+      onclick: action.enabled ? () => openSubscriptionSupportRequestModal(actionState.summary, action.type) : null,
+    });
+    return button;
+  });
+
+  return el('div', { class: `subscription-action-panel ${actionState.tone}` }, [
+    el('div', { class: 'subscription-action-copy' }, [
+      el('strong', { text: actionState.title }),
+      el('p', { class: 'muted', text: actionState.message }),
+    ]),
+    actionState.canRequest
+      ? el('div', { class: 'subscription-action-buttons' }, buttons)
+      : el('p', { class: 'muted subscription-read-only-note', text: 'Your admin role has read-only access to subscription entitlement actions.' }),
   ]);
 }
 
+function setSubscriptionSupportView(view) {
+  const normalizedView = view === 'requests' ? 'requests' : 'users';
+  if (state.subscriptionSupport.activeView === normalizedView) return;
+  state.subscriptionSupport.activeView = normalizedView;
+  render();
+}
+
+function renderSubscriptionSupportViewTabs() {
+  const activeView = state.subscriptionSupport.activeView || 'users';
+  const userCount = state.data?.subscriptionUsers?.length || 0;
+  const requestCount = state.data?.content?.length || 0;
+  const pendingCount = (state.data?.pendingRequests || []).length;
+  const tab = (id, title, helper, count, extra = '') => el('button', {
+    class: `subscription-support-view-tab ${activeView === id ? 'active' : ''}`,
+    type: 'button',
+    role: 'tab',
+    'aria-selected': activeView === id ? 'true' : 'false',
+    onclick: () => setSubscriptionSupportView(id),
+  }, [
+    el('span', { class: 'subscription-support-view-copy' }, [
+      el('strong', { text: title }),
+      el('small', { text: helper }),
+    ]),
+    el('span', { class: 'subscription-support-view-count', text: extra ? `${count} · ${extra}` : String(count) }),
+  ]);
+  return el('div', { class: 'subscription-support-view-tabs', role: 'tablist', 'aria-label': 'Subscription support views' }, [
+    tab('users', 'User subscriptions', 'View effective Free / Pro entitlement and valid actions', userCount),
+    tab('requests', 'Approval requests', 'Review, approve, reject, or cancel admin requests', requestCount, pendingCount ? `${pendingCount} pending` : ''),
+  ]);
+}
+
+function renderSubscriptionSupportToolbar(view = state.subscriptionSupport.activeView || 'users') {
+  const email = el('input', { placeholder: 'Search exact user email', value: state.adminFilters.userEmail || '' });
+  email.addEventListener('input', () => { state.adminFilters.userEmail = email.value.trim(); });
+  email.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      loadData();
+    }
+  });
+
+  const controls = [el('div', {}, [el('label', { text: 'User email' }), email])];
+  if (view === 'requests') {
+    const requestStatus = select(ADMIN_ENUMS.subscriptionRequestStatuses, state.adminFilters.subscriptionRequestStatus || '', (value) => { state.adminFilters.subscriptionRequestStatus = value; });
+    controls.push(el('div', {}, [el('label', { text: 'Request status' }), requestStatus]));
+  } else {
+    const tier = select(ADMIN_ENUMS.subscriptionUserTiers, state.adminFilters.subscriptionUserTier || '', (value) => { state.adminFilters.subscriptionUserTier = value; });
+    const userStatus = select(ADMIN_ENUMS.subscriptionUserStatuses, state.adminFilters.subscriptionUserStatus || '', (value) => { state.adminFilters.subscriptionUserStatus = value; });
+    controls.push(el('div', {}, [el('label', { text: 'User tier' }), tier]));
+    controls.push(el('div', {}, [el('label', { text: 'User status' }), userStatus]));
+  }
+
+  controls.push(el('button', { class: 'btn', text: view === 'requests' ? 'Filter requests' : 'Search users', onclick: () => loadData() }));
+  controls.push(el('button', {
+    class: 'btn ghost',
+    text: 'Clear filters',
+    onclick: () => {
+      state.adminFilters.userEmail = '';
+      if (view === 'requests') state.adminFilters.subscriptionRequestStatus = '';
+      else {
+        state.adminFilters.subscriptionUserTier = '';
+        state.adminFilters.subscriptionUserStatus = '';
+      }
+      loadData({ force: true });
+    },
+  }));
+  controls.push(el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }));
+  return renderControlToolbar(controls);
+}
 
 function renderSubscriptionUserItem(summary) {
-  const permissions = state.data?.permissions || summary?.permissions || {};
-  const canRequest = permissions.supportAdmin !== false;
-  const status = String(summary?.status || 'UNKNOWN').toUpperCase();
-  const title = summary?.email || summary?.userId || 'Subscription user';
+  const normalizedSummary = normalizeSubscriptionUserSummary(summary);
+  const permissions = state.data?.permissions || normalizedSummary?.permissions || {};
+  const status = normalizedSubscriptionStatus(normalizedSummary);
+  const title = normalizedSummary?.email || normalizedSummary?.userId || 'Subscription user';
   return renderCollapsibleItem({
     title,
-    subtitle: `${summary?.tier || '-'} / ${summary?.status || '-'} \u00B7 provider ${summary?.provider || '-'}`,
+    subtitle: `${normalizedSubscriptionTier(normalizedSummary)} / ${status} · provider ${normalizedSummary?.provider || '-'}`,
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
       renderMetaGrid([
-        ['User ID', summary?.userId], ['Email', summary?.email], ['Tier', summary?.tier], ['Status', summary?.status],
-        ['Billing Cycle', summary?.billingCycle], ['Provider', summary?.provider], ['Provider Customer', summary?.providerCustomerId],
-        ['Provider Entitlement', summary?.providerEntitlementId ? 'Stored' : '-'], ['Expires At', formatDate(summary?.expiresAt)], ['Updated', formatDate(summary?.updatedAt)],
-        ['Cancelled At', formatDate(summary?.cancelledAt)], ['Cancellation Effective', formatDate(summary?.cancellationEffectiveAt)],
-        ['Trial Used', summary?.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(summary?.trialExpiresAt)],
-        ['Feedback Trial Used', summary?.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(summary?.feedbackTrialExpiresAt)],
+        ['User ID', normalizedSummary?.userId], ['Email', normalizedSummary?.email], ['Tier', normalizedSubscriptionTier(normalizedSummary)], ['Status', status],
+        ['Billing Cycle', normalizedSummary?.billingCycle], ['Provider', normalizedSummary?.provider], ['Provider Customer', normalizedSummary?.providerCustomerId],
+        ['Provider Entitlement', normalizedSummary?.providerEntitlementId ? 'Stored' : '-'], ['Expires At', formatDate(normalizedSummary?.expiresAt)], ['Updated', formatDate(normalizedSummary?.updatedAt)],
+        ['Cancelled At', formatDate(normalizedSummary?.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary?.cancellationEffectiveAt)],
+        ['Trial Used', normalizedSummary?.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary?.trialExpiresAt)],
+        ['Feedback Trial Used', normalizedSummary?.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(normalizedSummary?.feedbackTrialExpiresAt)],
       ]),
-      el('div', { class: 'actions' }, [
-        canRequest ? el('button', { class: 'btn secondary small', text: 'Request trial', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_TRIAL') }) : null,
-        canRequest ? el('button', { class: 'btn secondary small', text: 'Request compensation days', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_COMPENSATION_DAYS') }) : null,
-        canRequest ? el('button', { class: 'btn ghost small', text: 'Request apply Pro', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_PRO') }) : null,
-        canRequest ? el('button', { class: 'btn danger small', text: 'Request cancel / Free', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_FREE') }) : null,
-      ]),
+      renderSubscriptionSupportActions(normalizedSummary, permissions),
     ],
   });
 }
 
 function renderSubscriptionUserList(users = []) {
   if (state.loading && !users.length) {
-    return renderLoadingState('Loading subscription users...', 'Please wait while subscription users and support requests finish loading.');
+    return renderLoadingState('Loading subscription users...', 'Please wait while the effective entitlement list is loaded.');
   }
   if (!users.length) {
     return el('div', { class: 'card empty-state compact-empty' }, [
       el('img', { class: 'loading-logo muted-logo', src: brandLogoSrc, alt: 'Fundoralit logo' }),
       el('strong', { text: 'No subscription users found.' }),
-      el('p', { class: 'muted', text: 'Try clearing tier/status filters, or search by the exact email shown in the users table.' }),
+      el('p', { class: 'muted', text: 'Clear the tier/status filters or search using the exact account email.' }),
     ]);
   }
   return el('div', { class: 'list' }, users.map(renderSubscriptionUserItem));
@@ -7387,44 +7740,50 @@ function renderSubscriptionUserList(users = []) {
 
 function renderSubscriptionSupportSummary(summary, permissions = {}) {
   if (!summary) {
-    return el('div', { class: 'card empty-state compact-empty' }, [
-      el('strong', { text: 'Search a user to view subscription entitlement.' }),
-      el('p', { class: 'muted', text: 'This page is separate from Reward Surveys, Feedback Service Credit, Usage counters, and global Feature Limits.' }),
+    return el('div', { class: 'card empty-state compact-empty subscription-lookup-empty' }, [
+      el('strong', { text: 'Search an exact email for entitlement details.' }),
+      el('p', { class: 'muted', text: 'The user list shows effective subscription state. Approval requests are kept in the separate Requests tab.' }),
     ]);
   }
-  const canRequest = permissions.supportAdmin !== false;
-  return el('div', { class: 'card control-hero' }, [
+  const normalizedSummary = normalizeSubscriptionUserSummary(summary);
+  return el('div', { class: 'card control-hero subscription-entitlement-summary' }, [
     el('div', {}, [
-      el('p', { class: 'eyebrow', text: 'User entitlement' }),
-      el('h2', { text: summary.email || 'Subscription user' }),
-      el('p', { class: 'muted', text: `Effective state: ${summary.tier || '-'} / ${summary.status || '-'} \u00B7 Provider ${summary.provider || '-'}` }),
+      el('p', { class: 'eyebrow', text: 'Exact user entitlement' }),
+      el('h2', { text: normalizedSummary.email || 'Subscription user' }),
+      el('p', { class: 'muted', text: `Effective state: ${normalizedSubscriptionTier(normalizedSummary)} / ${normalizedSubscriptionStatus(normalizedSummary)} · Provider ${normalizedSummary.provider || '-'}` }),
     ]),
     renderMetaGrid([
-      ['User ID', summary.userId], ['Tier', summary.tier], ['Status', summary.status], ['Billing Cycle', summary.billingCycle],
-      ['Provider', summary.provider], ['Provider Customer', summary.providerCustomerId], ['Provider Entitlement', summary.providerEntitlementId ? 'Stored' : '-'],
-      ['Expires At', formatDate(summary.expiresAt)], ['Updated', formatDate(summary.updatedAt)],
-      ['Cancelled At', formatDate(summary.cancelledAt)], ['Cancellation Effective', formatDate(summary.cancellationEffectiveAt)],
-      ['Trial Used', summary.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(summary.trialExpiresAt)],
-      ['Feedback Trial Used', summary.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(summary.feedbackTrialExpiresAt)],
+      ['User ID', normalizedSummary.userId], ['Tier', normalizedSubscriptionTier(normalizedSummary)], ['Status', normalizedSubscriptionStatus(normalizedSummary)], ['Billing Cycle', normalizedSummary.billingCycle],
+      ['Provider', normalizedSummary.provider], ['Provider Customer', normalizedSummary.providerCustomerId], ['Provider Entitlement', normalizedSummary.providerEntitlementId ? 'Stored' : '-'],
+      ['Expires At', formatDate(normalizedSummary.expiresAt)], ['Updated', formatDate(normalizedSummary.updatedAt)],
+      ['Cancelled At', formatDate(normalizedSummary.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary.cancellationEffectiveAt)],
+      ['Trial Used', normalizedSummary.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary.trialExpiresAt)],
+      ['Feedback Trial Used', normalizedSummary.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(normalizedSummary.feedbackTrialExpiresAt)],
     ]),
-    el('div', { class: 'actions' }, [
-      canRequest ? el('button', { class: 'btn secondary small', text: 'Request trial', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_TRIAL') }) : null,
-      canRequest ? el('button', { class: 'btn secondary small', text: 'Request compensation days', onclick: () => openSubscriptionSupportRequestModal(summary, 'GRANT_COMPENSATION_DAYS') }) : null,
-      canRequest ? el('button', { class: 'btn ghost small', text: 'Request apply Pro', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_PRO') }) : null,
-      canRequest ? el('button', { class: 'btn danger small', text: 'Request cancel / Free', onclick: () => openSubscriptionSupportRequestModal(summary, 'CORRECT_TO_FREE') }) : null,
-    ]),
+    renderSubscriptionSupportActions(normalizedSummary, permissions),
   ]);
 }
 
 function openSubscriptionSupportRequestModal(summary, requestType = 'GRANT_COMPENSATION_DAYS') {
+  const normalizedSummary = normalizeSubscriptionUserSummary(summary || {});
+  const actionState = getSubscriptionSupportActionState(normalizedSummary, state.data?.permissions || {});
+  const action = actionState.actions.find((item) => item.type === requestType);
+  if (!action || !action.enabled) {
+    const reason = action?.pending
+      ? 'A pending request for this same subscription action already exists.'
+      : 'This subscription action is not valid for the user current entitlement state.';
+    setMessage(reason, true);
+    render();
+    return;
+  }
   const now = new Date();
   now.setDate(now.getDate() + (requestType === 'CORRECT_TO_PRO' ? 30 : 7));
   state.modal = {
     kind: 'subscriptionSupportRequest',
-    title: 'Create subscription support request',
-    summary,
-    targetUserId: summary?.userId || '',
-    targetUserEmail: summary?.email || state.adminFilters.userEmail || '',
+    title: subscriptionRequestLabel(requestType),
+    summary: normalizedSummary,
+    targetUserId: normalizedSummary.userId || '',
+    targetUserEmail: normalizedSummary.email || state.adminFilters.userEmail || '',
     requestType,
     requestedDays: requestType === 'GRANT_COMPENSATION_DAYS' || requestType === 'GRANT_TRIAL' ? 7 : '',
     requestedExpiresAt: requestType === 'CORRECT_TO_PRO' ? toDateTimeLocalValue(now.toISOString()) : '',
@@ -7442,7 +7801,7 @@ function renderSubscriptionSupportRequestItem(item) {
   const canSelfReview = Boolean(permissions.superAdmin);
   const canApprove = Boolean(permissions.approverAdmin) && status === 'PENDING' && (!isOwnRequest || canSelfReview);
   const canCancelRequest = Boolean(permissions.supportAdmin) && status === 'PENDING' && isOwnRequest;
-  const titleLeft = view.requestType || 'Subscription support request';
+  const titleLeft = subscriptionRequestLabel(view.requestType);
   const titleRight = view.targetUserEmail || view.targetUserId || 'Unknown user';
   const hasUsefulDetail = Boolean(view.targetUserEmail || view.currentTier || view.requestedTier || view.reason || view.beforeJson || view.afterJson);
   return renderCollapsibleItem({
@@ -7475,21 +7834,28 @@ function renderSubscriptionSupportRequestItem(item) {
 
 function renderSubscriptionSupportRequestModal() {
   const modal = state.modal;
-  const type = select(ADMIN_ENUMS.subscriptionRequestTypes, modal.requestType, (value) => { modal.requestType = value; render(); });
   const days = el('input', { type: 'number', min: '1', max: '365', step: '1', value: modal.requestedDays || '', 'data-field-key': 'requestedDays' });
   days.addEventListener('input', () => { modal.requestedDays = days.value; });
   const expiry = el('input', { type: 'datetime-local', value: modal.requestedExpiresAt || '', 'data-field-key': 'requestedExpiresAt' });
   expiry.addEventListener('input', () => { modal.requestedExpiresAt = expiry.value; });
   const reason = el('textarea', { rows: '4', placeholder: 'Required reason for audit and approval review.', 'data-field-key': 'reason' });
   reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
-  const evidence = el('textarea', { rows: '3', placeholder: 'Optional evidence, support ticket, payment proof, or sync issue note.' });
+  const evidence = el('textarea', { rows: '3', placeholder: 'Optional support ticket, payment proof, provider status, or sync issue note.' });
   evidence.value = modal.evidenceNote || ''; evidence.addEventListener('input', () => { modal.evidenceNote = evidence.value; });
-  return renderControlModal('Create subscription support request', 'Entitlement Support', [
-    renderPolicySafetyNote('This creates a request only. Subscription is not changed until approval. Super admins can approve their own requests; support admins need another subscription approver or super admin.'),
+  const copy = SUBSCRIPTION_REQUEST_COPY[modal.requestType] || {};
+  const riskNote = modal.requestType === 'CORRECT_TO_FREE'
+    ? 'Verify the provider or support cancellation state before applying this entitlement correction. Ending app access does not itself prove a provider refund or billing cancellation.'
+    : copy.description || 'This creates a request only and does not change entitlement until approval.';
+  return renderControlModal(subscriptionRequestLabel(modal.requestType), 'Entitlement Support', [
+    renderPolicySafetyNote('This creates an approval request only. The selected action is locked to the user current entitlement state to prevent accidental Free / Pro reversals.'),
+    el('div', { class: 'subscription-request-type-card' }, [
+      el('span', { class: 'eyebrow', text: 'Selected action' }),
+      el('strong', { text: copy.label || modal.requestType }),
+      el('p', { class: 'muted', text: riskNote }),
+    ]),
     renderMetaGrid([['User Email', modal.targetUserEmail], ['Current Tier', modal.summary?.tier], ['Current Status', modal.summary?.status], ['Current Expiry', formatDate(modal.summary?.expiresAt)]]),
-    el('div', { class: 'field' }, [el('label', { text: 'Request type' }), type]),
     ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS'].includes(modal.requestType) ? el('div', { class: modalFieldClass('requestedDays') }, [el('label', { text: 'Requested days' }), days, renderFieldError('requestedDays')]) : null,
-    modal.requestType === 'CORRECT_TO_PRO' ? el('div', { class: modalFieldClass('requestedExpiresAt') }, [el('label', { text: 'Requested expiry' }), expiry, renderFieldError('requestedExpiresAt')]) : null,
+    modal.requestType === 'CORRECT_TO_PRO' ? el('div', { class: modalFieldClass('requestedExpiresAt') }, [el('label', { text: 'Temporary entitlement expiry' }), expiry, el('small', { class: 'field-help', text: 'Set this to the verified paid entitlement end date or an approved temporary correction date.' }), renderFieldError('requestedExpiresAt')]) : null,
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Reason' }), reason, renderFieldError('reason')]),
     el('div', { class: 'field' }, [el('label', { text: 'Evidence note' }), evidence]),
   ], submitSubscriptionSupportRequestModal, true);
@@ -7497,6 +7863,13 @@ function renderSubscriptionSupportRequestModal() {
 
 async function submitSubscriptionSupportRequestModal() {
   const modal = state.modal;
+  const actionState = getSubscriptionSupportActionState(modal.summary || {}, state.data?.permissions || {});
+  const action = actionState.actions.find((item) => item.type === modal.requestType);
+  if (!action || !action.enabled) {
+    return validationError(action?.pending
+      ? 'A pending request for this same action already exists. Close this modal and refresh the page.'
+      : 'This action is no longer valid for the current subscription state. Close this modal and refresh the user.', 'reason');
+  }
   const reason = requireMaxLength(modal.reason, 'Reason', ADMIN_LIMITS.subscriptionSupportReasonMax, { required: true });
   if (!reason.ok) return validationError(reason.message, 'reason');
   const body = {
@@ -10492,7 +10865,14 @@ async function runGovernanceAction(successMessage, action) {
   state.message = '';
   render();
   try {
-    await action();
+    try {
+      await action();
+    } catch (error) {
+      if (!isCriticalActionProofError(error)) throw error;
+      const verified = await promptCriticalActionReauthentication('ADMIN_CRITICAL');
+      if (!verified) throw error;
+      await action();
+    }
     state.message = successMessage;
     state.error = '';
     if (!state.user) {
@@ -11138,7 +11518,7 @@ async function protectedOwnerTransferAction(transfer, actionName, path) {
   if (!reason) return;
   await runGovernanceAction(`${actionName} completed.`, async () => {
     await recordCurrentAdminReauthentication(password, `OWNER_TRANSFER_${actionName.toUpperCase().replaceAll(' ', '_')}`, mfaCode);
-    await api(path, { method: 'POST', body: { reason } });
+    await api(path, { method: 'POST', body: { reason, reauthToken: takeCriticalActionProofToken() } });
   });
 }
 
@@ -11146,11 +11526,7 @@ function renderOwnerTransferCard(transfer) {
   const actions = [];
   if (transfer.status === 'TARGET_VERIFIED') actions.push(el('button', { class: 'btn small', text: 'Verify current owner', onclick: () => protectedOwnerTransferAction(transfer, 'verify current owner', API_PATHS.admin.ownerVerifyCurrent(transfer.id)) }));
   if (transfer.status === 'READY_TO_COMMIT') actions.push(el('button', { class: 'btn small danger', text: 'Final atomic commit', onclick: () => protectedOwnerTransferAction(transfer, 'commit ownership transfer', API_PATHS.admin.ownerCommit(transfer.id)) }));
-  if (['PREPARED', 'TARGET_VERIFIED', 'READY_TO_COMMIT'].includes(transfer.status)) actions.push(el('button', { class: 'btn small ghost', text: 'Cancel', onclick: async () => {
-    const reason = governanceReason('cancel ownership transfer');
-    if (!reason) return;
-    await runGovernanceAction('Ownership transfer cancelled.', () => api(API_PATHS.admin.ownerCancel(transfer.id), { method: 'POST', body: { reason } }));
-  } }));
+  if (['PREPARED', 'TARGET_VERIFIED', 'READY_TO_COMMIT'].includes(transfer.status)) actions.push(el('button', { class: 'btn small ghost', text: 'Cancel', onclick: () => protectedOwnerTransferAction(transfer, 'cancel ownership transfer', API_PATHS.admin.ownerCancel(transfer.id)) }));
   return el('article', { class: 'card governance-account-card' }, [
     el('div', { class: 'section-title-row' }, [el('div', {}, [el('h3', { text: transfer.targetEmailMask || 'Protected target' }), el('p', { class: 'muted', text: transfer.correlationId || '-' })]), el('span', { class: getStatusClass(transfer.status), text: transfer.status })]),
     renderMetaGrid([['Requested', formatDate(transfer.requestedAt)], ['Expires', formatDate(transfer.expiresAt)], ['Target verified', formatDate(transfer.targetVerifiedAt)], ['Completed', formatDate(transfer.completedAt)]]),
@@ -11182,7 +11558,7 @@ function renderSystemOwnershipPage() {
     event.preventDefault();
     await runGovernanceAction('Ownership transfer prepared and target verification email sent.', async () => {
       await recordCurrentAdminReauthentication(password.value, 'OWNER_TRANSFER_PREPARE', mfaCode.value);
-      await api(API_PATHS.admin.ownerPrepare, { method: 'POST', body: { targetEmail: targetEmail.value, requestId: requestId.value, approvalCode: approvalCode.value, reason: reason.value } });
+      await api(API_PATHS.admin.ownerPrepare, { method: 'POST', body: { targetEmail: targetEmail.value, requestId: requestId.value, approvalCode: approvalCode.value, reason: reason.value, reauthToken: takeCriticalActionProofToken() } });
     });
   });
   return el('div', { class: 'governance-page' }, [
@@ -11285,19 +11661,32 @@ function renderAdminControlPage() {
     children.push(renderControlList(items, renderUsageItem, 'Search a user or feature to view usage counters.'));
     children.push(renderUsageEvents(state.data?.events || []));
   } else if (state.activeTab === 'subscriptionSupport') {
-    children.push(renderAdminControlHero('Subscription Support', 'Request and approve user entitlement corrections.', 'Support admins create requests and need a separate approver/super admin. Super admins can open and approve their own emergency correction. Every applied change is audited.'));
-    children.push(renderSubscriptionSupportToolbar());
-    children.push(el('div', { class: 'privacy-note' }, [
-      el('span', { text: 'How to use: search user email \u2192 create request \u2192 approver opens pending request \u2192 Approve & apply. To cancel a user subscription, create \u201CRequest cancel / Free\u201D; to cancel an unapproved request, use \u201CCancel request\u201D.' }),
-    ]));
-    if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
-    children.push(renderSubscriptionSupportSummary(state.data?.userSummary, state.data?.permissions || {}));
-    children.push(el('h2', { text: 'Subscription users' }));
-    children.push(el('p', { class: 'muted section-helper', text: 'This list reads users subscription fields directly. Support requests below are only approval records, so an active Pro user will not appear in requests until an admin creates a request.' }));
-    children.push(renderSubscriptionUserList(state.data?.subscriptionUsers || []));
-    children.push(el('h2', { text: 'Support requests' }));
-    children.push(renderStats(items));
-    children.push(renderControlList(items, renderSubscriptionSupportRequestItem, 'No subscription support requests found.'));
+    const activeView = state.subscriptionSupport.activeView || 'users';
+    children.push(renderAdminControlHero('Subscription Support', 'Separate effective user entitlement from admin approval requests.', 'User subscriptions and approval requests now have independent views, filters, guidance, and actions. Every applied entitlement change remains audited.'));
+    children.push(renderSubscriptionSupportViewTabs());
+    children.push(renderSubscriptionSupportToolbar(activeView));
+    if (activeView === 'users') {
+      children.push(el('div', { class: 'privacy-note' }, [
+        el('span', { text: 'User view: verify the effective Free / Pro state first. Free users never show an end-Pro button; active Pro users never show a Pro-fix button. Pending duplicate actions are disabled automatically.' }),
+      ]));
+      if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
+      children.push(renderSubscriptionSupportSummary(state.data?.userSummary, state.data?.permissions || {}));
+      children.push(el('div', { class: 'section-title-row subscription-section-title' }, [
+        el('div', {}, [el('h2', { text: 'User subscriptions' }), el('p', { class: 'muted section-helper', text: 'Effective entitlement records from the subscription user source of truth.' })]),
+        el('span', { class: 'badge neutral', text: String(state.data?.subscriptionUsers?.length || 0) }),
+      ]));
+      children.push(renderSubscriptionUserList(state.data?.subscriptionUsers || []));
+    } else {
+      children.push(el('div', { class: 'privacy-note' }, [
+        el('span', { text: 'Requests view: these are approval workflow records, not the normal subscription user list. “Cancel request” only withdraws an unapproved admin request; it does not cancel a user subscription.' }),
+      ]));
+      children.push(el('div', { class: 'section-title-row subscription-section-title' }, [
+        el('div', {}, [el('h2', { text: 'Approval requests' }), el('p', { class: 'muted section-helper', text: 'Review request status, evidence, before/after values, and approval actions without mixing in normal users.' })]),
+        el('span', { class: 'badge neutral', text: String(items.length) }),
+      ]));
+      children.push(renderStats(items));
+      children.push(renderControlList(items, renderSubscriptionSupportRequestItem, 'No subscription support requests match the selected filters.'));
+    }
   } else if (state.activeTab === 'featureAnalytics') {
     children.push(renderAdminControlHero('Feature Analytics', 'Privacy-safe product interaction summaries for UI/UX decisions.', 'The app uploads daily aggregated counts only. It must not upload click-by-click raw events, transaction text, notification text, OCR text, payee, merchant, or expense note.'));
     children.push(renderFeatureAnalyticsToolbar());
@@ -11626,17 +12015,25 @@ function render() {
 
 function validateConfig() {
   const missing = [];
+  const invalid = [];
   if (!coreApiBaseUrl) missing.push('coreApiBaseUrl');
   ['apiKey', 'authDomain', 'projectId', 'appId'].forEach((key) => {
     if (!firebaseConfig[key]) missing.push(`firebase.${key}`);
   });
-  return missing;
+  invalid.push(...validateAdminApiBaseUrl('coreApiBaseUrl', coreApiBaseUrl, { required: true }));
+  invalid.push(...validateAdminApiBaseUrl('collaborationApiBaseUrl', collaborationApiBaseUrl, { required: false }));
+  return { missing, invalid };
 }
 
 async function boot() {
-  const missing = validateConfig();
-  if (missing.length) {
-    state.error = `Missing config.js value(s): ${missing.join(', ')}`;
+  const configValidation = validateConfig();
+  if (configValidation.missing.length || configValidation.invalid.length) {
+    const messages = [];
+    if (configValidation.missing.length) {
+      messages.push(`Missing config.js value(s): ${configValidation.missing.join(', ')}`);
+    }
+    messages.push(...configValidation.invalid);
+    state.error = messages.join(' ');
     render();
     return;
   }

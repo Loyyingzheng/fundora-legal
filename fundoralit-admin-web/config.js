@@ -2,6 +2,8 @@
 // Firebase web config is public client config, not a service account secret.
 // NEVER put Supabase service role keys, Google service account keys, backend internal secrets, or database credentials here.
 window.FUNDORALIT_ADMIN_CONFIG = {
+  environment: 'production',
+  allowLocalhostApi: false,
   coreApiBaseUrl: 'https://fundora-app-t1jp.onrender.com',
   // Optional. Required only for Emergency Console collaboration cache clearing.
   // Example: 'https://fundora-collaboration-backend.onrender.com'
