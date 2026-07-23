@@ -28,6 +28,7 @@ let lastAdminActivityWriteAt = 0;
 let adminSessionMonitorId = null;
 let sessionExpiryHandling = false;
 let adminAuthStorageQueue = Promise.resolve();
+const adminApiReadInflight = new Map();
 
 // Centralized admin API path presets.
 // Keep all backend route links here so future backend changes only need one small update.
@@ -583,7 +584,12 @@ function setScopedData(data, request) {
   if (!isLoadRequestCurrent(request)) return false;
   state.data = data;
   state.dataScope = request.tab;
-  state.activeDataCacheMeta = { cachedAt: Date.now(), stale: false, heavy: ADMIN_TAB_CACHE_HEAVY_TABS.has(request.tab) };
+  state.activeDataCacheMeta = {
+    cachedAt: Date.now(),
+    stale: false,
+    heavy: ADMIN_TAB_CACHE_HEAVY_TABS.has(request.tab),
+    cacheKey: request.cacheKey,
+  };
   rememberAdminTabData(request.tab, data, request);
   return true;
 }
@@ -661,9 +667,18 @@ function isAdminTabCacheFresh(entry) {
   return Boolean(
     entry
     && entry.version === ADMIN_TAB_CACHE_VERSION
+    && entry.userEmail === normalizedTrim(state.user?.email || '').toLowerCase()
     && entry.mutationVersion === state.adminDataMutationVersion
     && Date.now() - Number(entry.cachedAt || 0) <= ADMIN_TAB_CACHE_TTL_MS
   );
+}
+
+function isAdminTabCacheUsable(entry, { allowStale = false } = {}) {
+  if (!entry || entry.version !== ADMIN_TAB_CACHE_VERSION) return false;
+  if (entry.userEmail !== normalizedTrim(state.user?.email || '').toLowerCase()) return false;
+  if (entry.mutationVersion !== state.adminDataMutationVersion) return false;
+  const age = Date.now() - Number(entry.cachedAt || 0);
+  return age >= 0 && age <= (allowStale ? ADMIN_TAB_CACHE_STALE_TTL_MS : ADMIN_TAB_CACHE_TTL_MS);
 }
 
 function getAdminTabCacheEntry(tab = state.activeTab) {
@@ -679,6 +694,7 @@ function rememberAdminTabData(tab, data, request) {
     data,
     cachedAt: Date.now(),
     mutationVersion: state.adminDataMutationVersion,
+    userEmail: normalizedTrim(state.user?.email || '').toLowerCase(),
   };
   const keys = Object.keys(state.tabDataCache);
   if (keys.length > ADMIN_TAB_CACHE_MAX_ENTRIES) {
@@ -688,17 +704,24 @@ function rememberAdminTabData(tab, data, request) {
       .slice(0, keys.length - ADMIN_TAB_CACHE_MAX_ENTRIES)
       .forEach(([key]) => delete state.tabDataCache[key]);
   }
+  persistAdminTabDataCache();
 }
 
 function restoreAdminTabCache(tab = state.activeTab, { allowStale = false } = {}) {
   const entry = getAdminTabCacheEntry(tab);
-  if (!entry || (!allowStale && !isAdminTabCacheFresh(entry))) return false;
+  if (!isAdminTabCacheUsable(entry, { allowStale })) return false;
   state.data = entry.data;
   state.dataScope = tab;
+  if (tab === 'analytics' && entry.data?.analyticsData) {
+    state.analyticsData = entry.data.analyticsData;
+    state.analyticsError = entry.data.analyticsError || '';
+    state.analyticsRangeNotice = entry.data.analyticsRangeNotice || '';
+  }
   state.activeDataCacheMeta = {
     cachedAt: entry.cachedAt,
     stale: !isAdminTabCacheFresh(entry),
     heavy: ADMIN_TAB_CACHE_HEAVY_TABS.has(tab),
+    cacheKey: buildAdminTabCacheKey(tab),
   };
   return true;
 }
@@ -706,7 +729,9 @@ function restoreAdminTabCache(tab = state.activeTab, { allowStale = false } = {}
 function clearAdminTabDataCache({ preserveMutationVersion = false } = {}) {
   state.tabDataCache = {};
   state.activeDataCacheMeta = null;
+  adminApiReadInflight.clear();
   if (!preserveMutationVersion) state.adminDataMutationVersion = Number(state.adminDataMutationVersion || 0) + 1;
+  persistAdminTabDataCache();
 }
 
 function invalidateAdminTabDataCache() {
@@ -719,15 +744,74 @@ async function forceLoadData() {
 
 function renderDataCacheStatus() {
   const meta = state.activeDataCacheMeta;
-  if (!meta?.cachedAt || state.loading) return null;
+  if (!meta?.cachedAt) return null;
   const seconds = Math.max(0, Math.round((Date.now() - Number(meta.cachedAt || 0)) / 1000));
-  const copy = meta.stale
-    ? 'Showing cached data while checking for updates.'
-    : `Cached ${seconds}s ago. Use Refresh to force-check backend.`;
+  const copy = state.loading
+    ? 'Showing existing data while the latest update loads in the background.'
+    : meta.stale
+      ? 'Showing cached data. Refresh is checking for a newer version when needed.'
+      : `Cached ${seconds}s ago. Use Refresh to force-check backend.`;
   return el('div', { class: 'compact-help-row cache-status-row' }, [
-    el('span', { class: 'badge success', text: meta.heavy ? 'Smart cache' : 'Cached' }),
+    el('span', { class: 'badge success', text: state.loading ? 'Refreshing' : (meta.heavy ? 'Smart cache' : 'Cached') }),
     el('span', { class: 'muted', text: copy }),
   ]);
+}
+
+function adminTabCacheStorageKey(email = state.user?.email || '') {
+  const normalizedEmail = normalizedTrim(email).toLowerCase();
+  if (!normalizedEmail) return '';
+  return `${ADMIN_TAB_CACHE_STORAGE_PREFIX}:${firebaseConfig.projectId || 'unknown'}:${normalizedEmail}`;
+}
+
+function persistAdminTabDataCache() {
+  const key = adminTabCacheStorageKey();
+  if (!key || typeof sessionStorage === 'undefined') return;
+  try {
+    const entries = Object.fromEntries(
+      Object.entries(state.tabDataCache || {})
+        .filter(([, entry]) => isAdminTabCacheUsable(entry, { allowStale: true }))
+        .sort((left, right) => Number(right[1]?.cachedAt || 0) - Number(left[1]?.cachedAt || 0))
+        .slice(0, ADMIN_TAB_CACHE_MAX_ENTRIES)
+    );
+    const storage = sessionStorage;
+    storage.setItem(key, JSON.stringify({
+      version: ADMIN_TAB_CACHE_VERSION,
+      mutationVersion: state.adminDataMutationVersion,
+      entries,
+    }));
+  } catch (_) {
+    // Cache persistence is best-effort. Quota/privacy restrictions must never
+    // block the Admin portal from loading live backend data.
+  }
+}
+
+function hydrateAdminTabDataCache() {
+  const key = adminTabCacheStorageKey();
+  if (!key || typeof sessionStorage === 'undefined') return;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return;
+    const payload = JSON.parse(raw);
+    if (payload?.version !== ADMIN_TAB_CACHE_VERSION || !payload.entries || typeof payload.entries !== 'object') {
+      sessionStorage.removeItem(key);
+      return;
+    }
+    state.adminDataMutationVersion = Number(payload.mutationVersion || 0);
+    state.tabDataCache = Object.fromEntries(
+      Object.entries(payload.entries)
+        .filter(([, entry]) => isAdminTabCacheUsable(entry, { allowStale: true }))
+        .sort((left, right) => Number(right[1]?.cachedAt || 0) - Number(left[1]?.cachedAt || 0))
+        .slice(0, ADMIN_TAB_CACHE_MAX_ENTRIES)
+    );
+  } catch (_) {
+    try { sessionStorage.removeItem(key); } catch (_) {}
+  }
+}
+
+function clearPersistedAdminTabDataCache(email = state.user?.email || state.loginEmail || '') {
+  const key = adminTabCacheStorageKey(email);
+  if (!key || typeof sessionStorage === 'undefined') return;
+  try { sessionStorage.removeItem(key); } catch (_) {}
 }
 
 
@@ -1460,9 +1544,11 @@ const LEARNING_HOUSEKEEPING_CONTRACT = {
   autoLoadJobHistoryHeavyEndpoint: false,
 };
 
-const ADMIN_TAB_CACHE_VERSION = '20260706-tab-delta-v1';
-const ADMIN_TAB_CACHE_TTL_MS = 2 * 60 * 1000;
+const ADMIN_TAB_CACHE_VERSION = '20260723-tab-swr-v2';
+const ADMIN_TAB_CACHE_TTL_MS = 5 * 60 * 1000;
+const ADMIN_TAB_CACHE_STALE_TTL_MS = 30 * 60 * 1000;
 const ADMIN_TAB_CACHE_MAX_ENTRIES = 24;
+const ADMIN_TAB_CACHE_STORAGE_PREFIX = 'fundoralit-admin-tab-cache';
 const ADMIN_TAB_CACHE_HEAVY_TABS = new Set(['analytics', 'learningHousekeeping', 'smartCaptureRules', 'templateFamilies', 'auditLogs']);
 
 const NAV_GROUPS = [
@@ -2186,6 +2272,7 @@ function applyAuthSession(session) {
   saveAuthSession(session);
   resetAdminActivityClock();
   state.user = createFirebaseRestUser(memoryAuthSession);
+  hydrateAdminTabDataCache();
   startAdminSessionMonitor();
   return state.user;
 }
@@ -2720,6 +2807,7 @@ async function getFirebaseRestIdToken(forceRefresh = false) {
 
 function signOutAdmin({ notice = '', isError = false, loginEmail = '' } = {}) {
   const rememberedEmail = normalizedTrim(loginEmail || state.user?.email || state.loginEmail);
+  clearPersistedAdminTabDataCache(rememberedEmail);
   stopAdminSessionMonitor();
   clearAuthSession();
   resetAdminActivityClock();
@@ -2921,7 +3009,34 @@ async function publicApi(path, options = {}) {
   return json && Object.prototype.hasOwnProperty.call(json, 'data') ? json.data : json;
 }
 
+function buildAdminApiInflightKey(path, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  if (method !== 'GET' || options.dedupe === false) return '';
+  const service = options.service || 'core';
+  const baseUrl = service === 'collaboration' ? collaborationApiBaseUrl : coreApiBaseUrl;
+  if (!baseUrl) return '';
+  const url = new URL(`${baseUrl}${path}`);
+  Object.entries(options.params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    url.searchParams.set(key, String(value));
+  });
+  return `${normalizedTrim(state.user?.email || '').toLowerCase()}|${service}|${url.toString()}`;
+}
+
 async function api(path, options = {}) {
+  const inflightKey = buildAdminApiInflightKey(path, options);
+  if (!inflightKey) return executeApiRequest(path, options);
+  const existing = adminApiReadInflight.get(inflightKey);
+  if (existing) return existing;
+
+  const request = executeApiRequest(path, options).finally(() => {
+    if (adminApiReadInflight.get(inflightKey) === request) adminApiReadInflight.delete(inflightKey);
+  });
+  adminApiReadInflight.set(inflightKey, request);
+  return request;
+}
+
+async function executeApiRequest(path, options = {}) {
   const service = options.service || 'core';
   const baseUrl = service === 'collaboration' ? collaborationApiBaseUrl : coreApiBaseUrl;
   if (!baseUrl) {
@@ -3210,6 +3325,7 @@ async function loadData(options = {}) {
     return;
   }
 
+  const hadVisibleData = Boolean(getScopedData());
   const hadStaleCache = !force && restoreAdminTabCache(state.activeTab, { allowStale: true });
   const loadRequest = beginLoadRequest(state.activeTab);
   if (state.activeTab === 'feedback') {
@@ -3217,7 +3333,7 @@ async function loadData(options = {}) {
   }
   state.loading = true;
   state.error = '';
-  if (!hadStaleCache) clearScopedData(state.activeTab);
+  if (!hadStaleCache && !hadVisibleData) clearScopedData(state.activeTab);
   render();
 
   try {
@@ -3254,7 +3370,9 @@ async function loadData(options = {}) {
     }
   } catch (error) {
     if (!isLoadRequestCurrent(loadRequest)) return;
-    clearScopedData(loadRequest.tab);
+    // A failed background/forced refresh must not erase data the Admin was
+    // already reading. Only show an empty error state when no usable data exists.
+    if (!getScopedData()) clearScopedData(loadRequest.tab);
     setMessage(toFriendlyErrorMessage(error, 'Failed to load admin data.'), true);
   } finally {
     const finished = finishLoadRequest(loadRequest);
@@ -3273,27 +3391,67 @@ async function loadFeedbackOptions() {
   return state.feedbackOptions;
 }
 
+function normalizeAnalyticsSectionFailure(key, error) {
+  return { key, error: toFriendlyErrorMessage(error, 'Failed to load section.') };
+}
+
+function analyticsPartialFailureMessage(failures) {
+  if (!Array.isArray(failures) || !failures.length) return '';
+  const details = failures
+    .slice(0, 2)
+    .map((failure) => `${failure.key}: ${failure.error}`)
+    .join(' · ');
+  const remaining = failures.length > 2 ? ` · +${failures.length - 2} more` : '';
+  return `Some analytics sections could not be loaded. Available data is still shown. ${details}${remaining}`;
+}
+
 async function loadAnalyticsData(loadRequest = null) {
   if (!state.user) return;
   const ownsRequest = !loadRequest;
   const request = loadRequest || beginLoadRequest('analytics');
   if (state.activeTab !== 'analytics') return;
+
+  const clampedRange = clampAnalyticsRange(state.analyticsDateRange);
+  state.analyticsDateRange = { from: clampedRange.from, to: clampedRange.to };
+  state.analyticsRangeNotice = clampedRange.notice || '';
+
+  const emptyData = {
+    overview: null,
+    retention: null,
+    funnel: null,
+    features: null,
+    invites: null,
+    smartCapture: null,
+    conversion: null,
+    inviteLinks: null,
+  };
+  const sameCacheScope = state.activeDataCacheMeta?.cacheKey === request.cacheKey;
+  const nextData = sameCacheScope ? { ...state.analyticsData } : { ...emptyData };
+  state.analyticsData = nextData;
   state.loading = true;
   state.analyticsLoading = true;
   state.analyticsError = '';
   state.error = '';
   render();
 
-  const clampedRange = clampAnalyticsRange(state.analyticsDateRange);
-  state.analyticsDateRange = { from: clampedRange.from, to: clampedRange.to };
-  state.analyticsRangeNotice = clampedRange.notice || '';
-
   const params = {
     from: state.analyticsDateRange.from,
     to: state.analyticsDateRange.to,
   };
+  const failedSections = [];
+  let progressRenderScheduled = false;
+  const scheduleProgressRender = () => {
+    if (progressRenderScheduled || !isLoadRequestCurrent(request)) return;
+    progressRenderScheduled = true;
+    const callback = () => {
+      progressRenderScheduled = false;
+      if (isLoadRequestCurrent(request)) render();
+    };
+    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(callback);
+    else window.setTimeout(callback, 0);
+  };
 
-  const requests = [
+  const sectionRequests = [
     ['overview', API_PATHS.analytics.overview],
     ['retention', API_PATHS.analytics.retention],
     ['funnel', API_PATHS.analytics.funnel],
@@ -3305,36 +3463,33 @@ async function loadAnalyticsData(loadRequest = null) {
   ].map(async ([key, path]) => {
     try {
       const response = await api(path, { params });
-      return { key, data: normalizeAnalyticsResponse(response) };
+      if (!isLoadRequestCurrent(request)) return;
+      nextData[key] = normalizeAnalyticsResponse(response);
+      state.analyticsData = { ...nextData };
+      scheduleProgressRender();
     } catch (error) {
-      return { key, error: toFriendlyErrorMessage(error, 'Failed to load section.') };
+      if (!isLoadRequestCurrent(request)) return;
+      failedSections.push(normalizeAnalyticsSectionFailure(key, error));
+      state.analyticsError = analyticsPartialFailureMessage(failedSections);
+      scheduleProgressRender();
     }
   });
 
-  const results = await Promise.allSettled(requests);
+  await Promise.all(sectionRequests);
   if (!isLoadRequestCurrent(request)) return;
 
-  const failedSections = [];
-  const nextData = { overview: null, retention: null, funnel: null, features: null, invites: null, smartCapture: null, conversion: null, inviteLinks: null };
-
-  results.forEach((result) => {
-    if (result.status !== 'fulfilled' || !result.value) {
-      return;
-    }
-    const { key, data, error } = result.value;
-    if (error) {
-      failedSections.push(key);
-    } else {
-      nextData[key] = data;
-    }
-  });
-
-  state.analyticsData = nextData;
-  if (failedSections.length) {
-    state.analyticsError = 'Some analytics sections could not be loaded. The dashboard is showing available data only.';
-  }
-
+  state.analyticsData = { ...nextData };
   state.analyticsLoading = false;
+  if (failedSections.length) {
+    state.analyticsError = analyticsPartialFailureMessage(failedSections);
+  }
+  setScopedData({
+    content: [],
+    analyticsData: state.analyticsData,
+    analyticsError: state.analyticsError,
+    analyticsRangeNotice: state.analyticsRangeNotice,
+    failedSections,
+  }, request);
   if (ownsRequest) finishLoadRequest(request);
 }
 
@@ -4989,7 +5144,7 @@ function setAnalyticsPreset(preset) {
   const range = clampAnalyticsRange(getAnalyticsPresetRange(preset));
   state.analyticsDateRange = { from: range.from, to: range.to };
   state.analyticsRangeNotice = range.notice || '';
-  loadAnalyticsData();
+  loadData();
 }
 
 function updateAnalyticsCustomRange(field, value) {
@@ -5046,7 +5201,7 @@ function renderAnalyticsToolbar() {
         el('button', {
           class: 'btn',
           text: 'Refresh',
-          onclick: () => loadAnalyticsData(),
+          onclick: () => loadData({ force: true }),
         }),
         el('button', {
           class: 'btn ghost',
@@ -5383,7 +5538,7 @@ function renderAnalyticsDashboard() {
   ]);
 
   const anyData = Object.values(state.analyticsData).some((segment) => segment && (Array.isArray(segment) ? segment.length > 0 : Object.keys(segment).length > 0));
-  if (state.analyticsLoading) {
+  if (state.analyticsLoading && !anyData) {
     return el('div', {}, [renderAnalyticsHero(), renderLoadingState('Loading analytics data...', 'Please wait while all dashboard sections finish loading.')]);
   }
 
@@ -5393,6 +5548,10 @@ function renderAnalyticsDashboard() {
 
   return el('div', {}, [
     renderAnalyticsHero(),
+    state.analyticsLoading ? el('div', { class: 'compact-help-row cache-status-row', role: 'status', 'aria-live': 'polite' }, [
+      el('span', { class: 'badge success', text: 'Loading sections' }),
+      el('span', { class: 'muted', text: 'Available analytics are shown now; slower sections will appear automatically.' }),
+    ]) : null,
     renderAnalyticsSection('Executive Summary', 'Quick reads for retention, monetization and conversion health.', [
       el('div', { class: 'analytics-grid' }, overviewCards),
     ]),
@@ -12025,6 +12184,25 @@ function validateConfig() {
   return { missing, invalid };
 }
 
+function warmAdminBackend(baseUrl) {
+  if (!baseUrl) return;
+  fetch(`${baseUrl}/health`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  }).catch(() => {});
+}
+
+function startAdminBackendWarmup() {
+  // Start Render wake-up while encrypted session restoration is still running.
+  // This overlaps cold-start time with local IndexedDB work instead of making
+  // the first visible module wait for both operations one after another.
+  warmAdminBackend(coreApiBaseUrl);
+  if (collaborationApiBaseUrl && collaborationApiBaseUrl !== coreApiBaseUrl) {
+    warmAdminBackend(collaborationApiBaseUrl);
+  }
+}
+
 async function boot() {
   const configValidation = validateConfig();
   if (configValidation.missing.length || configValidation.invalid.length) {
@@ -12037,6 +12215,8 @@ async function boot() {
     render();
     return;
   }
+
+  startAdminBackendWarmup();
 
   state.auth = { mode: 'firebase-rest', apiKeyPresent: Boolean(getFirebaseApiKey()) };
   state.governanceLink = readGovernanceLinkFromLocation();
