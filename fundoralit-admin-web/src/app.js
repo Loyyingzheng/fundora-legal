@@ -174,6 +174,10 @@ const API_PATHS = {
     status: '/api/admin/collaboration-policy/cache/status',
     clearCache: '/api/admin/collaboration-policy/cache/clear',
   },
+  collaborationTombstones: {
+    overview: '/api/admin/collaboration-tombstones/overview',
+    run: '/api/admin/collaboration-tombstones/run',
+  },
   smartCaptureRules: {
     candidates: '/api/admin/smart-capture/global-rules/candidates',
     active: '/api/smart-capture/global-rules/active',
@@ -4001,6 +4005,107 @@ function extractEmailFromDebugJson(debugJson) {
   }
 }
 
+function parseFeedbackDebugJson(debugJson) {
+  if (!debugJson) return {};
+  if (typeof debugJson === 'object') return debugJson;
+  try {
+    const parsed = JSON.parse(debugJson);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function extractFeedbackTechnicalDiagnostics(item) {
+  const parsed = parseFeedbackDebugJson(item?.debugJson);
+  const autoFeedback = parseFeedbackDebugJson(parsed.autoFeedback);
+  const nestedDebug = parseFeedbackDebugJson(parsed.debugJson);
+  const technicalRoot = Object.keys(autoFeedback).length
+    ? autoFeedback
+    : (Object.keys(nestedDebug).length ? nestedDebug : parsed);
+  const summary = technicalRoot.technicalSummary && typeof technicalRoot.technicalSummary === 'object'
+    ? technicalRoot.technicalSummary
+    : (nestedDebug.technicalSummary && typeof nestedDebug.technicalSummary === 'object'
+      ? nestedDebug.technicalSummary
+      : {});
+  const metadata = technicalRoot.metadata && typeof technicalRoot.metadata === 'object'
+    ? technicalRoot.metadata
+    : (nestedDebug.metadata && typeof nestedDebug.metadata === 'object' ? nestedDebug.metadata : {});
+
+  return {
+    autoDetected: Boolean(parsed.autoDetected || autoFeedback.autoDetected || nestedDebug.autoDetected),
+    source: summary.source || technicalRoot.autoFeedbackSource || parsed.autoFeedbackSource || '',
+    reasonCode: summary.reasonCode || technicalRoot.reasonCode || '',
+    action: summary.action || '',
+    module: summary.module || technicalRoot.module || item?.module || '',
+    affectedScreen: technicalRoot.affectedScreen || parsed.currentScreen || item?.currentScreen || '',
+    endpoint: summary.endpoint || '',
+    statusCode: summary.statusCode || '',
+    errorName: summary.errorName || '',
+    errorCode: summary.errorCode || '',
+    errorMessage: summary.errorMessage || '',
+    stackHash: summary.stackHash || '',
+    stackTop: summary.stackTop || '',
+    fingerprint: technicalRoot.fingerprint || parsed.fingerprint || '',
+    occurrenceCount: technicalRoot.occurrenceCount || '',
+    occurrencesThisSession: technicalRoot.occurrencesThisSession || '',
+    appSessionId: technicalRoot.appSessionId || '',
+    componentStack: metadata.componentStack || '',
+    breadcrumbs: Array.isArray(metadata.breadcrumbs) ? metadata.breadcrumbs : [],
+  };
+}
+
+function renderFeedbackTechnicalDiagnostics(item) {
+  const detail = extractFeedbackTechnicalDiagnostics(item);
+  const hasTechnicalDetail = Boolean(
+    detail.autoDetected || detail.source || detail.reasonCode || detail.errorName ||
+    detail.errorCode || detail.errorMessage || detail.stackTop || detail.componentStack ||
+    detail.breadcrumbs.length
+  );
+  if (!hasTechnicalDetail) return null;
+
+  const endpoint = detail.endpoint
+    ? `${detail.endpoint}${detail.statusCode ? ` (${detail.statusCode})` : ''}`
+    : '-';
+
+  return el('details', { class: 'nested-details technical-diagnostics' }, [
+    el('summary', { text: 'Technical diagnostics' }),
+    el('div', { class: 'compact-guidance' }, [
+      el('strong', { text: detail.autoDetected ? 'Auto-detected report' : 'Attached diagnostics' }),
+      renderInfoHint('This section is visible to developers/admins only. The mobile feedback form keeps these implementation details hidden from the user.', { compact: true, label: 'Technical diagnostics visibility' }),
+    ]),
+    renderMetaGrid([
+      ['Source', detail.source],
+      ['Reason code', detail.reasonCode],
+      ['Action', detail.action],
+      ['Module', detail.module],
+      ['Affected screen', detail.affectedScreen],
+      ['Endpoint', endpoint],
+      ['Error name', detail.errorName],
+      ['Error code', detail.errorCode],
+      ['Error message', detail.errorMessage],
+      ['Stack hash', detail.stackHash],
+      ['Stack top', detail.stackTop],
+      ['Fingerprint', detail.fingerprint],
+      ['Occurrences', detail.occurrenceCount],
+      ['Occurrences this session', detail.occurrencesThisSession],
+      ['App session', detail.appSessionId],
+    ]),
+    detail.componentStack
+      ? el('details', { class: 'nested-details' }, [
+          el('summary', { text: 'Component stack' }),
+          el('pre', { text: detail.componentStack }),
+        ])
+      : null,
+    detail.breadcrumbs.length
+      ? el('details', { class: 'nested-details' }, [
+          el('summary', { text: `Diagnostic breadcrumbs (${detail.breadcrumbs.length})` }),
+          el('pre', { text: safeJson(detail.breadcrumbs) }),
+        ])
+      : null,
+  ]);
+}
+
 function buildDefaultCloseMessage(kind, item) {
   const target = kind === 'rewardSurvey' ? 'feedback reward review' : 'feedback report';
   const issue = item.issue || item.futureUsageIntent || item.module || 'your submission';
@@ -4815,13 +4920,30 @@ function validateEmergencyPolicyJsonForAdmin(valueJson) {
   return { ok: true };
 }
 
-async function reauthenticateAdminForCriticalAction(password) {
+async function reauthenticateAdminForCriticalAction(password, context = 'ADMIN_CRITICAL') {
   const cleanPassword = normalizedTrim(password);
   if (!cleanPassword) throw new Error('Admin password is required for this critical operation.');
   if (cleanPassword.length > ADMIN_LIMITS.adminPasswordMax) throw new Error(`Admin password must be ${ADMIN_LIMITS.adminPasswordMax} characters or less.`);
   if (!state.user?.email) throw new Error('Cannot verify admin password because the current Firebase user email is missing. Sign in again and retry.');
-  const session = await signInAdminWithPassword(state.user.email, cleanPassword, { persist: false });
+
+  let session;
+  try {
+    session = await signInAdminWithPassword(state.user.email, cleanPassword, { persist: false });
+  } catch (error) {
+    if (error.code !== 'MFA_REQUIRED') throw error;
+    const mfaCode = window.prompt('Enter the current TOTP authenticator code for this critical action:') || '';
+    session = await finalizeAdminMfaSignIn({
+      pendingCredential: error.pendingCredential,
+      enrollment: error.enrollment,
+      email: error.email,
+    }, mfaCode, { persist: false });
+  }
   applyAuthSession(session);
+  return storeCriticalActionProofFromResponse(await api(API_PATHS.admin.reauthenticated, {
+    method: 'POST',
+    body: { context },
+    forceTokenRefresh: true,
+  }));
 }
 
 function openEmergencyActionModal(module, nextEnabled) {
@@ -4863,6 +4985,19 @@ function openEmergencyRuleActionModal(rule, action) {
   render();
 }
 
+
+async function loadCollaborationTombstoneOverview() {
+  if (!collaborationApiBaseUrl) {
+    return {
+      skipped: true,
+      status: 'not_configured',
+      policySource: 'admin_web_not_configured',
+      loadError: 'Collaboration API base URL is not configured. Core policy can still be edited, but runtime counts and last-run status are unavailable.',
+    };
+  }
+  const overview = await api(API_PATHS.collaborationTombstones.overview, { service: 'collaboration' });
+  return normalizeAdminObjectResponse(overview);
+}
 
 async function loadCollaborationPolicyCacheStatus() {
   if (!collaborationApiBaseUrl) {
@@ -5991,7 +6126,8 @@ function renderFeedbackItem(item) {
         ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
       ]),
       renderFeedbackScreenshot(item),
-      el('details', { class: 'nested-details' }, [el('summary', { text: 'Debug JSON' }), el('pre', { text: debugText })]),
+      renderFeedbackTechnicalDiagnostics(item),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Raw debug JSON' }), el('pre', { text: debugText })]),
       state.actionLoadingKey ? el('div', { class: 'notice inline-notice', text: `Admin action running: ${state.actionLoadingMessage || 'Please wait...'}` }) : null,
       el('div', { class: 'actions feedback-actions' }, [
         isClosed
@@ -6094,6 +6230,7 @@ function renderAdminModal() {
   if (state.modal.kind === 'reviewPromptPolicyEdit') return renderReviewPromptPolicyModal();
   if (state.modal.kind === 'rateLimitOverrideEdit') return renderRateLimitOverrideModal();
   if (state.modal.kind === 'rateLimitOverrideDelete') return renderRateLimitOverrideDeleteModal();
+  if (state.modal.kind === 'collaborationTombstoneSettings') return renderCollaborationTombstoneSettingsModal();
   return renderCloseModal();
 }
 
@@ -7495,7 +7632,7 @@ function renderProductPolicyItem(item) {
 function getProductPolicyHint(key) {
   const normalized = String(key || '').toLowerCase();
   if (normalized.includes('smart_capture')) return 'Controls Smart Capture parser thresholds, review policy, internal transfer handling, and future provider profile versions. Do not store raw notification text here.';
-  if (normalized.includes('housekeeping')) return 'Controls production retention days used by System Housekeeping. Runtime cleanup reads this policy first and falls back to env only if the row is absent or invalid.';
+  if (normalized.includes('housekeeping')) return 'Controls production retention and cleanup schedules from one Core policy. Collaboration tombstone settings are edited here in human-readable fields and delivered through the existing Core policy cache; Render business env values are not required.';
   if (normalized.includes('collaboration_plan')) return 'Controls group event and group goal plan behavior. Keep Free at 2 events, 5 members, 30 expenses, 0 receipt uploads, 15 day retention, and 1 active group goal with 3 members unless intentionally changing the product policy.';
   if (normalized.includes('cloud')) return 'Controls backup/recovery kill switches and safe restore defaults. Use carefully because restore behavior affects user data safety.';
   if (normalized.includes('group')) return 'Controls cloud collaboration limits such as participants, expenses, receipt uploads, retention, and invite behavior.';
@@ -9977,11 +10114,12 @@ async function loadLearningHousekeepingData(loadRequest = null) {
   state.learningHousekeeping.error = '';
   state.systemHousekeeping.error = '';
   try {
-    const [domainsResult, runsResult, overviewResult, policiesResult] = await Promise.allSettled([
+    const [domainsResult, runsResult, overviewResult, policiesResult, collaborationTombstoneResult] = await Promise.allSettled([
       api(API_PATHS.learningHousekeeping.domains),
       api(API_PATHS.learningHousekeeping.runs, { params: { limit: 20 } }),
       api(API_PATHS.housekeeping.overview),
       api(API_PATHS.productPolicies.list),
+      loadCollaborationTombstoneOverview(),
     ]);
     if (!isLoadRequestCurrent(request)) return;
     if (domainsResult.status === 'rejected' && overviewResult.status === 'rejected') {
@@ -9992,20 +10130,24 @@ async function loadLearningHousekeepingData(loadRequest = null) {
     const overview = overviewResult.status === 'fulfilled' ? (overviewResult.value || null) : null;
     const policies = policiesResult.status === 'fulfilled' ? normalizeAdminListResponse(policiesResult.value) : [];
     const systemHousekeepingPolicy = policies.find((policy) => getPolicyKey(policy) === 'housekeeping_policy') || null;
+    const collaborationTombstoneOverview = collaborationTombstoneResult.status === 'fulfilled'
+      ? normalizeAdminObjectResponse(collaborationTombstoneResult.value)
+      : null;
     const warnings = [];
     if (domainsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(domainsResult.reason, 'Learning housekeeping domains failed to load.'));
     if (runsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(runsResult.reason, 'Learning housekeeping run history failed to load.'));
     if (overviewResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(overviewResult.reason, 'System housekeeping overview failed to load.'));
     if (policiesResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(policiesResult.reason, 'Housekeeping product policy failed to load. Retention editing will open Product Policy instead.'));
+    if (collaborationTombstoneResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(collaborationTombstoneResult.reason, 'Collaboration tombstone runtime status failed to load. Core policy settings are still available.'));
     state.learningHousekeeping.error = warnings.join(' ');
     state.systemHousekeeping.error = warnings.join(' ');
-    setScopedData({ content: domains, runs, systemOverview: overview, systemHousekeepingPolicy, loadError: warnings.join(' ') }, request);
+    setScopedData({ content: domains, runs, systemOverview: overview, systemHousekeepingPolicy, collaborationTombstoneOverview, loadError: warnings.join(' ') }, request);
   } catch (error) {
     if (!isLoadRequestCurrent(request)) return;
     const friendly = toFriendlyErrorMessage(error, 'Failed to load System Housekeeping data.');
     state.learningHousekeeping.error = friendly;
     state.systemHousekeeping.error = friendly;
-    setScopedData({ content: [], runs: [], systemOverview: null, loadError: friendly }, request);
+    setScopedData({ content: [], runs: [], systemOverview: null, collaborationTombstoneOverview: null, loadError: friendly }, request);
   }
 }
 
@@ -10193,6 +10335,25 @@ const HOUSEKEEPING_POLICY_FIELD_RANGES = {
   learningProtectedLatestRuleVersions: { min: 1, max: 50, unit: 'versions' },
 };
 
+const COLLABORATION_TOMBSTONE_POLICY_RANGES = {
+  cleanupBatchSize: { field: 'collaborationTombstoneCleanupBatchSize', label: 'Cleanup batch size', min: 1, max: 5000 },
+  groupEventDays: { field: 'collaborationTombstoneGroupEventDays', label: 'Group Event retention days', min: 1, max: 3650 },
+  groupEventExpenseDays: { field: 'collaborationTombstoneGroupEventExpenseDays', label: 'Group Event expense retention days', min: 1, max: 3650 },
+  groupGoalDays: { field: 'collaborationTombstoneGroupGoalDays', label: 'Group Goal retention days', min: 1, max: 3650 },
+  groupGoalContributionDays: { field: 'collaborationTombstoneGroupGoalContributionDays', label: 'Group Goal contribution retention days', min: 1, max: 3650 },
+};
+
+const COLLABORATION_TOMBSTONE_DEFAULTS = {
+  cleanupEnabled: true,
+  cleanupHour: 3,
+  cleanupMinute: 45,
+  cleanupBatchSize: 200,
+  groupEventDays: 180,
+  groupEventExpenseDays: 180,
+  groupGoalDays: 3650,
+  groupGoalContributionDays: 3650,
+};
+
 function getHousekeepingProductPolicy() {
   const scoped = getScopedData() || {};
   return scoped.systemHousekeepingPolicy || null;
@@ -10250,10 +10411,13 @@ async function updateHousekeepingRetentionSetting(setting) {
     setMessage('Housekeeping retention update cancelled because confirmation phrase did not match.', true);
     return;
   }
+  const password = window.prompt('Enter admin password to update this housekeeping retention value.') || '';
+  if (!password) return;
   const nextValue = { ...currentPolicyValue, version: Math.max(2, Number(currentPolicyValue.version || 1)), [field]: parsed.value };
   state.systemHousekeeping.actionLoading = `POLICY:${field}`;
   render();
   try {
+    await reauthenticateAdminForCriticalAction(password, 'UPDATE_HOUSEKEEPING_RETENTION');
     await api(API_PATHS.productPolicies.update(getItemId(policy)), {
       method: 'PATCH',
       body: {
@@ -10348,7 +10512,7 @@ function promptSystemHousekeepingCritical(target) {
     setMessage('Housekeeping action cancelled because confirmation phrase did not match.', true);
     return null;
   }
-  return criticalActionFields(reason.trim(), confirmPhrase, `system_housekeeping_${String(target || 'all').toLowerCase()}`);
+  return { reason: reason.trim(), confirmPhrase };
 }
 
 function promptSystemHousekeepingScheduleCritical(target) {
@@ -10362,7 +10526,7 @@ function promptSystemHousekeepingScheduleCritical(target) {
     setMessage('Schedule update cancelled because confirmation phrase did not match.', true);
     return null;
   }
-  return criticalActionFields(reason.trim(), confirmPhrase, `system_housekeeping_schedule_${String(target || 'job').toLowerCase()}`);
+  return { reason: reason.trim(), confirmPhrase };
 }
 
 function parseHousekeepingTimeInput(raw) {
@@ -10395,12 +10559,21 @@ async function updateSystemHousekeepingSchedule(job) {
   const enabled = String(enabledRaw || '').trim().toUpperCase() !== 'NO';
   const critical = promptSystemHousekeepingScheduleCritical(target);
   if (!critical) return;
+  const password = window.prompt('Enter admin password to update the housekeeping schedule.') || '';
+  if (!password) return;
   state.systemHousekeeping.actionLoading = target;
   render();
   try {
+    await reauthenticateAdminForCriticalAction(password, 'UPDATE_SYSTEM_HOUSEKEEPING_SCHEDULE');
     const result = await api(API_PATHS.housekeeping.schedule, {
       method: 'PATCH',
-      body: { target, enabled, hour: parsed.hour, minute: parsed.minute, ...critical },
+      body: {
+        target,
+        enabled,
+        hour: parsed.hour,
+        minute: parsed.minute,
+        ...criticalActionFields(critical.reason, critical.confirmPhrase, `system_housekeeping_schedule_${String(target || 'job').toLowerCase()}`),
+      },
       forceTokenRefresh: true,
     });
     setMessage(`${target} housekeeping schedule updated to ${result?.scheduleSummary || rawTime}.`);
@@ -10418,12 +10591,18 @@ async function runSystemHousekeepingAction(target) {
   if (!cleanTarget || state.systemHousekeeping.actionLoading) return;
   const critical = promptSystemHousekeepingCritical(cleanTarget);
   if (!critical) return;
+  const password = window.prompt('Enter admin password to run this housekeeping action.') || '';
+  if (!password) return;
   state.systemHousekeeping.actionLoading = cleanTarget;
   render();
   try {
+    await reauthenticateAdminForCriticalAction(password, 'RUN_SYSTEM_HOUSEKEEPING');
     const result = await api(API_PATHS.housekeeping.run, {
       method: 'POST',
-      body: { target: cleanTarget, ...critical },
+      body: {
+        target: cleanTarget,
+        ...criticalActionFields(critical.reason, critical.confirmPhrase, `system_housekeeping_${String(cleanTarget || 'all').toLowerCase()}`),
+      },
       forceTokenRefresh: true,
     });
     state.systemHousekeeping.lastRun = result || null;
@@ -10435,6 +10614,298 @@ async function runSystemHousekeepingAction(target) {
     state.systemHousekeeping.actionLoading = '';
     render();
   }
+}
+
+
+function collaborationTombstonePolicyModel() {
+  const policy = getHousekeepingProductPolicy();
+  const value = housekeepingPolicyValue(policy);
+  const scoped = getScopedData() || {};
+  const runtime = scoped.collaborationTombstoneOverview || {};
+  const readInt = (field, runtimeField, fallback) => {
+    const candidate = value[field] ?? runtime[runtimeField] ?? fallback;
+    const number = Number(candidate);
+    return Number.isInteger(number) ? number : fallback;
+  };
+  return {
+    policy,
+    value,
+    runtime,
+    cleanupEnabled: value.collaborationTombstoneCleanupEnabled ?? runtime.cleanupEnabled ?? COLLABORATION_TOMBSTONE_DEFAULTS.cleanupEnabled,
+    cleanupHour: readInt('collaborationTombstoneCleanupHour', 'cleanupHour', COLLABORATION_TOMBSTONE_DEFAULTS.cleanupHour),
+    cleanupMinute: readInt('collaborationTombstoneCleanupMinute', 'cleanupMinute', COLLABORATION_TOMBSTONE_DEFAULTS.cleanupMinute),
+    cleanupBatchSize: readInt('collaborationTombstoneCleanupBatchSize', 'cleanupBatchSize', COLLABORATION_TOMBSTONE_DEFAULTS.cleanupBatchSize),
+    groupEventDays: readInt('collaborationTombstoneGroupEventDays', 'groupEventDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupEventDays),
+    groupEventExpenseDays: readInt('collaborationTombstoneGroupEventExpenseDays', 'groupEventExpenseDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupEventExpenseDays),
+    groupGoalDays: readInt('collaborationTombstoneGroupGoalDays', 'groupGoalDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupGoalDays),
+    groupGoalContributionDays: readInt('collaborationTombstoneGroupGoalContributionDays', 'groupGoalContributionDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupGoalContributionDays),
+  };
+}
+
+function openCollaborationTombstoneSettingsModal() {
+  const model = collaborationTombstonePolicyModel();
+  if (!model.policy || !getItemId(model.policy)) {
+    setMessage('housekeeping_policy is not loaded. Refresh System Housekeeping or open Product Policy.', true);
+    return;
+  }
+  if (!state.adminSession?.superAdmin) {
+    setMessage('Only Super Admin can change Collaboration tombstone housekeeping settings.', true);
+    return;
+  }
+  state.modal = {
+    kind: 'collaborationTombstoneSettings',
+    policy: model.policy,
+    cleanupEnabled: Boolean(model.cleanupEnabled),
+    cleanupTime: `${String(model.cleanupHour).padStart(2, '0')}:${String(model.cleanupMinute).padStart(2, '0')}`,
+    cleanupBatchSize: String(model.cleanupBatchSize),
+    groupEventDays: String(model.groupEventDays),
+    groupEventExpenseDays: String(model.groupEventExpenseDays),
+    groupGoalDays: String(model.groupGoalDays),
+    groupGoalContributionDays: String(model.groupGoalContributionDays),
+    reason: '',
+    password: '',
+    confirmPhrase: '',
+    expectedPhrase: 'UPDATE PRODUCT POLICY',
+    submitLabel: 'Save tombstone settings',
+    loadingLabel: 'Saving settings...',
+  };
+  render();
+}
+
+function renderCollaborationTombstoneSettingsModal() {
+  const modal = state.modal;
+  const enabled = el('input', { type: 'checkbox' });
+  enabled.checked = Boolean(modal.cleanupEnabled);
+  enabled.addEventListener('change', () => { modal.cleanupEnabled = enabled.checked; });
+
+  const time = el('input', { type: 'time', value: modal.cleanupTime || '03:45', 'data-field-key': 'cleanupTime' });
+  time.addEventListener('input', () => { modal.cleanupTime = time.value; });
+  const numericInput = (field, min, max) => {
+    const input = el('input', { type: 'number', min: String(min), max: String(max), step: '1', value: modal[field], 'data-field-key': field });
+    input.addEventListener('input', () => { modal[field] = input.value; });
+    return input;
+  };
+  const batch = numericInput('cleanupBatchSize', 1, 5000);
+  const eventDays = numericInput('groupEventDays', 1, 3650);
+  const expenseDays = numericInput('groupEventExpenseDays', 1, 3650);
+  const goalDays = numericInput('groupGoalDays', 1, 3650);
+  const contributionDays = numericInput('groupGoalContributionDays', 1, 3650);
+  const reason = el('textarea', { rows: '3', placeholder: 'Explain why this retention or schedule change is needed.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const password = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Admin password', 'data-field-key': 'password' });
+  password.value = modal.password || '';
+  password.addEventListener('input', () => { modal.password = password.value; });
+  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
+  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
+
+  return renderControlModal('Collaboration deletion safety', 'System Housekeeping', [
+    el('div', { class: 'compact-guidance' }, [
+      el('strong', { text: 'Human-readable Core policy' }),
+      renderInfoHint('These values are stored in Core housekeeping_policy and delivered to Collaboration through the existing policy cache. No Render business environment variables or redeploy are required. Tombstones prevent offline devices from recreating records that were already deleted.', { compact: true, label: 'Tombstone policy details' }),
+    ]),
+    el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enable scheduled tombstone cleanup' })]),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: modalFieldClass('cleanupTime') }, [el('label', { text: 'Daily cleanup time (MYT)' }), time, renderFieldError('cleanupTime'), el('small', { class: 'field-help', text: 'Uses a 24-hour clock. Example: 03:45.' })]),
+      el('div', { class: modalFieldClass('cleanupBatchSize') }, [el('label', { text: 'Rows per cleanup batch' }), batch, renderFieldError('cleanupBatchSize')]),
+      el('div', { class: modalFieldClass('groupEventDays') }, [el('label', { text: 'Group Event tombstones (days)' }), eventDays, renderFieldError('groupEventDays')]),
+      el('div', { class: modalFieldClass('groupEventExpenseDays') }, [el('label', { text: 'Group expense tombstones (days)' }), expenseDays, renderFieldError('groupEventExpenseDays')]),
+      el('div', { class: modalFieldClass('groupGoalDays') }, [el('label', { text: 'Group Goal tombstones (days)' }), goalDays, renderFieldError('groupGoalDays')]),
+      el('div', { class: modalFieldClass('groupGoalContributionDays') }, [el('label', { text: 'Goal contribution tombstones (days)' }), contributionDays, renderFieldError('groupGoalContributionDays')]),
+    ]),
+    el('div', { class: 'compact-guidance warning' }, [
+      el('strong', { text: 'Deletion safety warning' }),
+      renderInfoHint('Shortening retention changes the effective expiry of existing tombstones too. Keep enough time for offline devices and delayed retries to reconnect before markers are removed.', { compact: true, label: 'Retention safety details' }),
+    ]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password' }), password, renderFieldError('password')]),
+    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: `Type ${modal.expectedPhrase}` }), phrase, renderFieldError('confirmPhrase')]),
+  ], submitCollaborationTombstoneSettingsModal, true);
+}
+
+async function submitCollaborationTombstoneSettingsModal() {
+  const modal = state.modal;
+  const parsedTime = parseHousekeepingTimeInput(modal.cleanupTime);
+  if (!parsedTime) return validationError('Cleanup time must use 24-hour HH:mm format.', 'cleanupTime');
+  const parsed = {};
+  for (const [modalField, rule] of Object.entries(COLLABORATION_TOMBSTONE_POLICY_RANGES)) {
+    const result = parseWholeNumber(modal[modalField], rule.label, { min: rule.min, max: rule.max });
+    if (!result.ok) return validationError(result.message, modalField);
+    parsed[rule.field] = result.value;
+  }
+  const reason = requireAuditReason(modal.reason, 'this Collaboration tombstone policy update');
+  if (!reason.ok) return validationError(reason.message, 'reason');
+  const password = requireMaxLength(modal.password, 'Admin password', ADMIN_LIMITS.adminPasswordMax, { required: true });
+  if (!password.ok) return validationError(password.message, 'password');
+  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
+  const policy = modal.policy;
+  const policyId = getItemId(policy);
+  if (!policyId) return validationError('housekeeping_policy id is missing. Refresh the page and retry.', 'confirmPhrase');
+
+  modal.loading = true;
+  modal.error = '';
+  render();
+  try {
+    await reauthenticateAdminForCriticalAction(password.value, 'UPDATE_COLLABORATION_TOMBSTONE_POLICY');
+    const current = housekeepingPolicyValue(policy);
+    const nextValue = {
+      ...current,
+      version: Math.max(3, Number(current.version || 1)),
+      collaborationTombstoneCleanupEnabled: Boolean(modal.cleanupEnabled),
+      collaborationTombstoneCleanupHour: parsedTime.hour,
+      collaborationTombstoneCleanupMinute: parsedTime.minute,
+      ...parsed,
+    };
+    await api(API_PATHS.productPolicies.update(policyId), {
+      method: 'PATCH',
+      body: {
+        enabled: policy.enabled !== false,
+        platform: policy.platform || 'SERVER',
+        minAppVersion: policy.minAppVersion || policy.min_app_version || null,
+        value: nextValue,
+        ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_collaboration_tombstone_policy'),
+      },
+      forceTokenRefresh: true,
+    });
+    closeModal();
+    setMessage('Collaboration tombstone settings saved in Core. Refresh the Collaboration runtime cache below to apply them immediately; otherwise the existing policy TTL will refresh them automatically.');
+    await loadLearningHousekeepingData();
+  } catch (error) {
+    modal.loading = false;
+    modal.error = toFriendlyErrorMessage(error, 'Unable to update Collaboration tombstone settings.');
+    render();
+  }
+}
+
+async function refreshCollaborationTombstoneRuntime() {
+  if (!collaborationApiBaseUrl) {
+    setMessage('Collaboration API base URL is not configured in Admin Web.', true);
+    return;
+  }
+  const password = window.prompt('Enter admin password to refresh the Collaboration runtime policy cache.') || '';
+  state.systemHousekeeping.actionLoading = 'COLLABORATION_TOMBSTONES_REFRESH';
+  render();
+  try {
+    await reauthenticateAdminForCriticalAction(password, 'REFRESH_COLLABORATION_TOMBSTONE_POLICY');
+    const result = await clearCollaborationPolicyCache('Refresh Collaboration tombstone policy after System Housekeeping change.', { forceTokenRefresh: true });
+    setMessage(result.message || 'Collaboration runtime policy refreshed.');
+    await loadLearningHousekeepingData();
+  } catch (error) {
+    setMessage(toFriendlyErrorMessage(error, 'Collaboration runtime policy refresh failed.'), true);
+  } finally {
+    state.systemHousekeeping.actionLoading = '';
+    render();
+  }
+}
+
+async function runCollaborationTombstoneCleanupNow() {
+  if (!collaborationApiBaseUrl) {
+    setMessage('Collaboration API base URL is not configured in Admin Web.', true);
+    return;
+  }
+  const reason = window.prompt('Reason for running Collaboration tombstone cleanup now?', 'Manual safety cleanup from System Housekeeping') || '';
+  const reasonCheck = requireAuditReason(reason, 'this manual tombstone cleanup');
+  if (!reasonCheck.ok) {
+    setMessage(reasonCheck.message, true);
+    return;
+  }
+  const phrase = window.prompt('Type RUN COLLABORATION TOMBSTONE CLEANUP to continue.') || '';
+  if (phrase !== 'RUN COLLABORATION TOMBSTONE CLEANUP') {
+    setMessage('Manual cleanup cancelled because the confirmation phrase did not match.', true);
+    return;
+  }
+  const password = window.prompt('Enter admin password to run Collaboration tombstone cleanup.') || '';
+  state.systemHousekeeping.actionLoading = 'COLLABORATION_TOMBSTONES_RUN';
+  render();
+  try {
+    await reauthenticateAdminForCriticalAction(password, 'RUN_COLLABORATION_TOMBSTONE_CLEANUP');
+    const result = await api(API_PATHS.collaborationTombstones.run, {
+      service: 'collaboration',
+      method: 'POST',
+      body: criticalActionFields(reasonCheck.value, phrase, 'run_collaboration_tombstone_cleanup'),
+      forceTokenRefresh: true,
+    });
+    setMessage(`Collaboration tombstone cleanup completed: ${Number(result?.deleted || 0)} deleted, ${Number(result?.remainingEligible || 0)} still eligible.`);
+    await loadLearningHousekeepingData();
+  } catch (error) {
+    setMessage(toFriendlyErrorMessage(error, 'Collaboration tombstone cleanup failed.'), true);
+  } finally {
+    state.systemHousekeeping.actionLoading = '';
+    render();
+  }
+}
+
+function renderCollaborationTombstoneHousekeepingSection() {
+  const model = collaborationTombstonePolicyModel();
+  const runtime = model.runtime || {};
+  const lastRun = runtime.lastRun || {};
+  const notConfigured = runtime.skipped === true || runtime.status === 'not_configured';
+  const policyFallback = runtime.policySource === 'compiled_safe_defaults';
+  const destructiveCleanupAllowed = runtime.destructiveCleanupAllowed === true;
+  const statusText = notConfigured
+    ? 'Runtime unavailable'
+    : !model.cleanupEnabled
+      ? 'Cleanup disabled'
+      : !destructiveCleanupAllowed
+        ? 'Waiting for fresh Core policy'
+        : (policyFallback ? 'Safe defaults' : 'Core managed');
+  const statusTone = notConfigured || policyFallback || (model.cleanupEnabled && !destructiveCleanupAllowed)
+    ? 'warn'
+    : model.cleanupEnabled ? 'success' : 'danger';
+  const schedule = runtime.scheduleSummary || (model.cleanupEnabled
+    ? `Daily at ${String(model.cleanupHour).padStart(2, '0')}:${String(model.cleanupMinute).padStart(2, '0')} MYT`
+    : 'Disabled by Core housekeeping policy');
+  const actionLoading = state.systemHousekeeping.actionLoading;
+
+  return el('section', { class: 'card collaboration-tombstone-housekeeping-card' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Collaboration deletion safety' }),
+        el('h3', { text: 'Tombstone retention and cleanup' }),
+      ]),
+      el('span', { class: `badge ${statusTone}`, text: statusText }),
+    ]),
+    el('p', { class: 'muted section-helper', text: 'Tombstones stop offline Group Event and Group Goal data from being recreated after deletion. Business values are stored in Core housekeeping_policy, shown here in human-readable fields, and consumed by Collaboration through the existing policy cache.' }),
+    runtime.loadError ? el('div', { class: 'notice warning inline-notice', text: runtime.loadError }) : null,
+    renderLearningOpsMetricRows([
+      ['Schedule', schedule, 'Asia/Kuala_Lumpur'],
+      ['Rows per batch', String(model.cleanupBatchSize), 'Maximum 20 batches per run'],
+      ['Group Event', `${model.groupEventDays} days`, 'Deletion marker retention'],
+      ['Group expense', `${model.groupEventExpenseDays} days`, 'Expense deletion marker retention'],
+      ['Group Goal', `${model.groupGoalDays} days`, 'Archive/deletion marker retention'],
+      ['Goal contribution', `${model.groupGoalContributionDays} days`, 'Contribution deletion marker retention'],
+      ['Runtime policy source', runtime.policySource || 'Awaiting Collaboration status'],
+      ['Destructive cleanup', destructiveCleanupAllowed ? 'Allowed' : 'Paused until Core policy is fresh', 'Stale/default policy never deletes tombstones'],
+      ['Policy revision', runtime.policyRevision || '-'],
+      ['Policy fetched', formatDate(runtime.policyFetchedAt)],
+      ['Next run', formatDate(runtime.nextRunAt)],
+      ['Stored tombstones', runtime.totalTombstones === undefined ? '-' : String(runtime.totalTombstones)],
+      ['Eligible now', Number(runtime.eligibleForCleanup) < 0 ? 'Paused' : runtime.eligibleForCleanup === undefined ? '-' : String(runtime.eligibleForCleanup), 'Rows older than the fresh per-resource Core policy'],
+      ['Last run', lastRun.status || 'NEVER_RUN', lastRun.lastFinishedAt ? formatDate(lastRun.lastFinishedAt) : 'No completed run yet', String(lastRun.status || '').toUpperCase() === 'FAILED'],
+      ['Last deleted', lastRun.deletedCount === undefined ? '-' : String(lastRun.deletedCount)],
+    ]),
+    lastRun.lastError ? el('div', { class: 'notice warning inline-notice', text: `Last cleanup error: ${lastRun.lastError}` }) : null,
+    el('div', { class: 'actions wrap' }, [
+      el('button', {
+        class: 'btn secondary small',
+        text: 'Edit human-readable settings',
+        disabled: !state.adminSession?.superAdmin || !model.policy || Boolean(actionLoading),
+        onclick: openCollaborationTombstoneSettingsModal,
+      }),
+      el('button', {
+        class: 'btn ghost small',
+        text: actionLoading === 'COLLABORATION_TOMBSTONES_REFRESH' ? 'Refreshing runtime...' : 'Refresh Collaboration runtime',
+        disabled: !collaborationApiBaseUrl || Boolean(actionLoading),
+        onclick: refreshCollaborationTombstoneRuntime,
+      }),
+      el('button', {
+        class: 'btn danger small',
+        text: actionLoading === 'COLLABORATION_TOMBSTONES_RUN' ? 'Running cleanup...' : 'Run cleanup now',
+        disabled: !collaborationApiBaseUrl || !destructiveCleanupAllowed || Boolean(actionLoading),
+        onclick: runCollaborationTombstoneCleanupNow,
+      }),
+    ]),
+  ]);
 }
 
 function renderSystemHousekeepingLastRun(run) {
@@ -10452,15 +10923,17 @@ function renderSystemHousekeepingLastRun(run) {
 
 function renderSystemHousekeepingOverview() {
   const overview = normalizeHousekeepingOverview();
-  const settings = Array.isArray(overview.retentionSettings) ? overview.retentionSettings : [];
-  const jobs = Array.isArray(overview.cleanupJobs) ? overview.cleanupJobs : [];
+  const settings = (Array.isArray(overview.retentionSettings) ? overview.retentionSettings : [])
+    .filter((setting) => !String(setting?.key || '').startsWith('collaborationTombstone'));
+  const jobs = (Array.isArray(overview.cleanupJobs) ? overview.cleanupJobs : [])
+    .filter((job) => String(job?.target || '').toUpperCase() !== 'COLLABORATION_TOMBSTONES');
   return el('div', { class: 'system-housekeeping-overview' }, [
     el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'System housekeeping contract' }), el('h3', { text: 'Single retention control surface' })]),
         el('span', { class: overview.globalEnabled === false ? 'status-pill danger' : 'status-pill success', text: overview.globalEnabled === false ? 'Global disabled' : 'Global enabled' }),
       ]),
-      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values are runtime-backed by Product Policy housekeeping_policy with safe env fallback. Schedule time can be overridden by Super Admin from this page and is used by the dynamic backend scheduler.' }),
+      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values are runtime-backed by Product Policy housekeeping_policy. Core-owned schedules are editable here, and Collaboration tombstone business settings are delivered through the existing policy cache without Render env edits or redeploys.' }),
       renderLearningOpsMetricRows([
         ['Timezone', overview.timezone || 'Asia/Kuala_Lumpur'],
         ['Data retention schedule', (jobs.find((job) => job.target === 'DATA_RETENTION') || {}).schedule || 'Daily at 03:30 MYT'],
@@ -10479,10 +10952,11 @@ function renderSystemHousekeepingOverview() {
       ]),
       settings.length ? el('div', { class: 'control-dashboard-grid' }, settings.map(renderSystemHousekeepingSettingCard)) : renderEmptyState('No retention settings returned.', 'Check the backend /api/admin/housekeeping/overview endpoint.'),
     ]),
+    renderCollaborationTombstoneHousekeepingSection(),
     el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Cleanup jobs' }), el('h3', { text: 'Schedulers and manual controls' })]),
-        el('button', { class: 'btn danger small', text: state.systemHousekeeping.actionLoading === 'ALL_SAFE' ? 'Running...' : 'Run all safe cleanup', disabled: Boolean(state.systemHousekeeping.actionLoading), onclick: () => runSystemHousekeepingAction('ALL_SAFE') }),
+        el('button', { class: 'btn danger small', text: state.systemHousekeeping.actionLoading === 'ALL_SAFE' ? 'Running...' : 'Run all Core cleanup', disabled: Boolean(state.systemHousekeeping.actionLoading), onclick: () => runSystemHousekeepingAction('ALL_SAFE') }),
       ]),
       jobs.length ? el('div', { class: 'control-dashboard-grid' }, jobs.map(renderSystemHousekeepingJobCard)) : renderEmptyState('No housekeeping jobs returned.'),
     ]),
