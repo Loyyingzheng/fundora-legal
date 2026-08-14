@@ -69,6 +69,8 @@ const API_PATHS = {
   feedback: {
     list: '/api/feedback/admin',
     options: '/api/feedback/admin/options',
+    queueCounts: '/api/feedback/admin/queue-counts',
+    detail: (id) => `/api/feedback/admin/${encodeURIComponent(id)}`,
     review: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/review`,
     serviceCredit: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/service-credit`,
     serviceCredits: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/service-credits`,
@@ -173,10 +175,6 @@ const API_PATHS = {
   collaborationPolicy: {
     status: '/api/admin/collaboration-policy/cache/status',
     clearCache: '/api/admin/collaboration-policy/cache/clear',
-  },
-  collaborationTombstones: {
-    overview: '/api/admin/collaboration-tombstones/overview',
-    run: '/api/admin/collaboration-tombstones/run',
   },
   smartCaptureRules: {
     candidates: '/api/admin/smart-capture/global-rules/candidates',
@@ -446,8 +444,12 @@ const state = {
   activeTab: 'feedback',
   page: 0,
   size: 30,
+  feedbackPageSize: 15,
+  feedbackQueue: 'ACTION_REQUIRED',
   feedbackFilters: { status: '', module: '', type: '' },
   feedbackOptions: null,
+  feedbackQueueCounts: null,
+  feedbackDetails: {},
   feedbackScreenshotPreviews: {},
   feedbackScreenshotAutoLoadScheduled: false,
   feedbackScreenshotAutoLoading: false,
@@ -632,7 +634,7 @@ function stableStringifyForCache(value) {
 }
 
 function getAdminTabCacheFilters(tab = state.activeTab) {
-  if (tab === 'feedback') return { feedbackFilters: state.feedbackFilters, page: state.page, size: state.size };
+  if (tab === 'feedback') return { feedbackQueue: state.feedbackQueue, feedbackFilters: state.feedbackFilters, page: state.page, size: state.feedbackPageSize };
   if (tab === 'analytics') return { analyticsDateRange: state.analyticsDateRange, analyticsPreset: state.analyticsPreset };
   if (tab === 'premium' || tab === 'review') return { page: state.page, size: 50 };
   if (tab === 'auditLogs') return { action: state.adminFilters.action, targetType: state.adminFilters.targetType, page: state.page, size: state.size };
@@ -831,8 +833,8 @@ const ADMIN_ENUMS = {
   announcementTargetPlatforms: ['ALL', 'ANDROID', 'IOS', 'WEB'],
   subscriptionRequestStatuses: ['', 'PENDING', 'APPROVED', 'REJECTED', 'CANCELLED', 'APPLY_FAILED'],
   subscriptionUserTiers: ['', 'FREE', 'PRO'],
-  subscriptionUserStatuses: ['', 'ACTIVE', 'TRIAL', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'CANCELLED', 'EXPIRED', 'EMPTY'],
-  subscriptionRequestTypes: ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS', 'CORRECT_TO_PRO', 'CORRECT_TO_FREE'],
+  subscriptionUserStatuses: ['', 'ACTIVE', 'TRIAL', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'SERVICE_CREDIT', 'ADMIN_OVERRIDE_PRO', 'ADMIN_OVERRIDE_FREE', 'CANCELLED', 'EXPIRED', 'EMPTY'],
+  subscriptionRequestTypes: ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS', 'CORRECT_TO_PRO', 'CORRECT_TO_FREE', 'CLEAR_ADMIN_OVERRIDE'],
   policyVersionTargetTypes: ['', 'FEATURE_FLAG', 'FEATURE_LIMIT', 'PRODUCT_POLICY', 'ANNOUNCEMENT', 'REVIEW_PROMPT_POLICY', 'RATE_LIMIT_OVERRIDE', 'SMART_CAPTURE_GLOBAL_RULE', 'OCR_RECEIPT_GLOBAL_RULE'],
 };
 
@@ -2149,6 +2151,8 @@ function resetSignedInRuntimeState() {
   state.analyticsError = '';
   state.analyticsRangeNotice = '';
   state.feedbackOptions = null;
+  state.feedbackQueueCounts = null;
+  state.feedbackDetails = {};
   clearFeedbackScreenshotPreviews();
   state.feedbackScreenshotAutoLoadScheduled = false;
   state.feedbackScreenshotAutoLoading = false;
@@ -3153,7 +3157,7 @@ function clearFeedbackScreenshotPreviews() {
 }
 
 function feedbackItemHasScreenshot(item) {
-  return Boolean(item?.screenshotStoragePath || item?.screenshotUrl);
+  return Boolean(item?.hasScreenshot || item?.screenshotStoragePath || item?.screenshotUrl);
 }
 
 function revokeFeedbackPreviewUrl(url) {
@@ -3318,14 +3322,10 @@ async function loadData(options = {}) {
     render();
     return;
   }
-  let shouldAutoLoadFeedbackScreenshots = false;
   if (!force && restoreAdminTabCache(state.activeTab)) {
     state.loading = false;
     state.error = '';
     render();
-    if (state.activeTab === 'feedback' && (getScopedData()?.content || []).some(feedbackItemHasScreenshot)) {
-      scheduleFeedbackScreenshotAutoLoad();
-    }
     return;
   }
 
@@ -3334,6 +3334,7 @@ async function loadData(options = {}) {
   const loadRequest = beginLoadRequest(state.activeTab);
   if (state.activeTab === 'feedback') {
     loadFeedbackOptions(loadRequest).catch(() => {});
+    loadFeedbackQueueCounts(loadRequest).catch(() => {});
   }
   state.loading = true;
   state.error = '';
@@ -3355,7 +3356,8 @@ async function loadData(options = {}) {
       response = await api(API_PATHS.feedback.list, {
         params: {
           page: state.page,
-          size: state.size,
+          size: state.feedbackPageSize,
+          queue: state.feedbackQueue,
           ...state.feedbackFilters,
         },
       });
@@ -3369,9 +3371,7 @@ async function loadData(options = {}) {
       });
     }
     const pageData = unwrapPage(response);
-    if (setScopedData(pageData, loadRequest) && state.activeTab === 'feedback') {
-      shouldAutoLoadFeedbackScreenshots = pageData.content.some(feedbackItemHasScreenshot);
-    }
+    setScopedData(pageData, loadRequest);
   } catch (error) {
     if (!isLoadRequestCurrent(loadRequest)) return;
     // A failed background/forced refresh must not erase data the Admin was
@@ -3379,8 +3379,7 @@ async function loadData(options = {}) {
     if (!getScopedData()) clearScopedData(loadRequest.tab);
     setMessage(toFriendlyErrorMessage(error, 'Failed to load admin data.'), true);
   } finally {
-    const finished = finishLoadRequest(loadRequest);
-    if (finished && shouldAutoLoadFeedbackScreenshots) scheduleFeedbackScreenshotAutoLoad();
+    finishLoadRequest(loadRequest);
   }
 }
 
@@ -3393,6 +3392,81 @@ async function loadFeedbackOptions() {
     state.feedbackOptions = null;
   }
   return state.feedbackOptions;
+}
+
+async function loadFeedbackQueueCounts(loadRequest = null) {
+  if (!state.user || state.activeTab !== 'feedback') return state.feedbackQueueCounts;
+  try {
+    const response = await api(API_PATHS.feedback.queueCounts);
+    if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
+      state.feedbackQueueCounts = response || null;
+      render();
+    }
+  } catch (_) {
+    if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
+      state.feedbackQueueCounts = state.feedbackQueueCounts || null;
+    }
+  }
+  return state.feedbackQueueCounts;
+}
+
+async function loadFeedbackDetail(feedbackId, { force = false, renderAfter = true } = {}) {
+  if (!feedbackId || !state.user) return null;
+  const current = state.feedbackDetails?.[feedbackId];
+  if (!force && current?.data) return current.data;
+  if (current?.loading) return current.promise || null;
+
+  const entry = { ...(current || {}), loading: true, error: '', data: current?.data || null };
+  state.feedbackDetails = { ...(state.feedbackDetails || {}), [feedbackId]: entry };
+  if (renderAfter) render();
+
+  const promise = api(API_PATHS.feedback.detail(feedbackId))
+    .then((response) => {
+      state.feedbackDetails = {
+        ...(state.feedbackDetails || {}),
+        [feedbackId]: { loading: false, error: '', data: response || null, promise: null },
+      };
+      if (renderAfter) render();
+      return response || null;
+    })
+    .catch((error) => {
+      state.feedbackDetails = {
+        ...(state.feedbackDetails || {}),
+        [feedbackId]: {
+          loading: false,
+          error: toFriendlyErrorMessage(error, 'Feedback details could not be loaded.'),
+          data: current?.data || null,
+          promise: null,
+        },
+      };
+      if (renderAfter) render();
+      throw error;
+    });
+
+  state.feedbackDetails[feedbackId].promise = promise;
+  return promise;
+}
+
+async function withFeedbackDetail(item, handler) {
+  const id = item?.id;
+  if (!id) return handler(item);
+  try {
+    const detail = await loadFeedbackDetail(id, { renderAfter: true });
+    return handler(detail || item);
+  } catch (_) {
+    return handler(item);
+  }
+}
+
+function mergeFeedbackDetailIntoList(detail) {
+  if (!detail?.id) return;
+  state.feedbackDetails = {
+    ...(state.feedbackDetails || {}),
+    [detail.id]: { loading: false, error: '', data: detail, promise: null },
+  };
+  const scoped = getScopedData();
+  if (!scoped?.content) return;
+  scoped.content = scoped.content.map((item) => item.id === detail.id ? { ...item, ...detail } : item);
 }
 
 function normalizeAnalyticsSectionFailure(key, error) {
@@ -3909,6 +3983,13 @@ async function refreshAfterAdminMutation(successMessage) {
   state.modal = null;
   state.actionLoadingKey = '';
   state.actionLoadingMessage = '';
+  if (state.activeTab === 'feedback') {
+    state.feedbackQueueCounts = null;
+    // A mutation can move a record between Action needed, Critical and Closed.
+    // Do not leave the moved record visible under the previous queue while the
+    // authoritative page is loading.
+    clearScopedData('feedback');
+  }
   state.loading = true;
   render();
   await loadData({ force: true });
@@ -3928,7 +4009,10 @@ async function performPatchAction(path, successMessage, body) {
   }
   render();
   try {
-    await api(path, { method: 'PATCH', ...(body !== undefined ? { body } : {}) });
+    const result = await api(path, { method: 'PATCH', ...(body !== undefined ? { body } : {}) });
+    if (String(path || '').startsWith('/api/feedback/admin/') && result?.id) {
+      mergeFeedbackDetailIntoList(result);
+    }
     await refreshAfterAdminMutation(successMessage || 'Updated successfully.');
   } catch (error) {
     if (modalRequest && state.modal) {
@@ -4017,6 +4101,7 @@ function parseFeedbackDebugJson(debugJson) {
 }
 
 function extractFeedbackTechnicalDiagnostics(item) {
+  const normalized = parseFeedbackDebugJson(item?.technicalDiagnostics);
   const parsed = parseFeedbackDebugJson(item?.debugJson);
   const autoFeedback = parseFeedbackDebugJson(parsed.autoFeedback);
   const nestedDebug = parseFeedbackDebugJson(parsed.debugJson);
@@ -4030,12 +4115,38 @@ function extractFeedbackTechnicalDiagnostics(item) {
       : {});
   const metadata = technicalRoot.metadata && typeof technicalRoot.metadata === 'object'
     ? technicalRoot.metadata
-    : (nestedDebug.metadata && typeof nestedDebug.metadata === 'object' ? nestedDebug.metadata : {});
+      : (nestedDebug.metadata && typeof nestedDebug.metadata === 'object' ? nestedDebug.metadata : {});
+
+  if (Object.keys(normalized).length) {
+    return {
+      autoDetected: item?.autoDetected !== false,
+      source: normalized.source || '',
+      reasonCode: normalized.reasonCode || '',
+      diagnosisCode: normalized.diagnosisCode || '',
+      action: normalized.action || '',
+      module: normalized.module || item?.module || '',
+      affectedScreen: normalized.affectedScreen || item?.currentScreen || '',
+      endpoint: normalized.endpoint || '',
+      statusCode: normalized.statusCode || '',
+      errorName: normalized.errorName || '',
+      errorCode: normalized.errorCode || '',
+      errorMessage: normalized.errorMessage || '',
+      stackHash: normalized.stackHash || '',
+      stackTop: normalized.stackTop || '',
+      fingerprint: normalized.fingerprint || '',
+      occurrenceCount: normalized.occurrenceCount || '',
+      occurrencesThisSession: normalized.occurrencesThisSession || '',
+      appSessionId: normalized.appSessionId || '',
+      componentStack: normalized.componentStack || '',
+      breadcrumbs: Array.isArray(normalized.breadcrumbs) ? normalized.breadcrumbs : [],
+    };
+  }
 
   return {
     autoDetected: Boolean(parsed.autoDetected || autoFeedback.autoDetected || nestedDebug.autoDetected),
     source: summary.source || technicalRoot.autoFeedbackSource || parsed.autoFeedbackSource || '',
     reasonCode: summary.reasonCode || technicalRoot.reasonCode || '',
+    diagnosisCode: summary.diagnosisCode || technicalRoot.diagnosisCode || '',
     action: summary.action || '',
     module: summary.module || technicalRoot.module || item?.module || '',
     affectedScreen: technicalRoot.affectedScreen || parsed.currentScreen || item?.currentScreen || '',
@@ -4077,6 +4188,7 @@ function renderFeedbackTechnicalDiagnostics(item) {
     renderMetaGrid([
       ['Source', detail.source],
       ['Reason code', detail.reasonCode],
+      ['Diagnosis code', detail.diagnosisCode],
       ['Action', detail.action],
       ['Module', detail.module],
       ['Affected screen', detail.affectedScreen],
@@ -4120,16 +4232,54 @@ function buildDefaultCloseMessage(kind, item) {
 async function submitCloseModal() {
   if (!state.modal?.id) return;
   const kind = state.modal.kind;
+  const feedbackId = state.modal.id;
   const path = kind === 'rewardSurvey'
-    ? API_PATHS.rewardSurvey.close(state.modal.id)
-    : API_PATHS.feedback.close(state.modal.id);
+    ? API_PATHS.rewardSurvey.close(feedbackId)
+    : API_PATHS.feedback.close(feedbackId);
   const body = {
     notifyUser: Boolean(state.modal.notifyUser),
     adminReplyMessage: String(state.modal.adminReplyMessage || '').trim() || null,
     notificationCtaLabel: String(state.modal.notificationCtaLabel || '').trim() || null,
     notificationCtaAction: String(state.modal.notificationCtaAction || '').trim() || null,
   };
-  await performPatchAction(path, kind === 'rewardSurvey' ? 'Reward survey closed.' : 'Feedback closed.', body);
+
+  if (kind === 'rewardSurvey') {
+    await performPatchAction(path, 'Reward survey closed.', body);
+    return;
+  }
+
+  state.modal.loading = true;
+  state.modal.error = '';
+  state.modal.message = '';
+  state.modal.fieldErrors = {};
+  render();
+
+  try {
+    const result = await api(path, { method: 'PATCH', body });
+    if (result?.id) mergeFeedbackDetailIntoList(result);
+    state.feedbackQueueCounts = null;
+    await refreshAfterAdminMutation('Feedback closed.');
+  } catch (error) {
+    // A close request can commit successfully and still lose the HTTP response
+    // during rolling deploys or optional notification enrichment. Verify the
+    // authoritative record before telling the admin that the action failed.
+    try {
+      const verified = await api(API_PATHS.feedback.detail(feedbackId), { params: { reconcile: Date.now() } });
+      if (String(verified?.status || '').toUpperCase() === 'CLOSED') {
+        mergeFeedbackDetailIntoList(verified);
+        state.feedbackQueueCounts = null;
+        await refreshAfterAdminMutation('Feedback closed. The server confirmed the committed result after the original response failed.');
+        return;
+      }
+    } catch (_) {
+      // Preserve the original close error because it contains the request ID.
+    }
+
+    if (state.modal) {
+      state.modal.loading = false;
+      setModalError(error, '');
+    }
+  }
 }
 
 
@@ -4920,30 +5070,13 @@ function validateEmergencyPolicyJsonForAdmin(valueJson) {
   return { ok: true };
 }
 
-async function reauthenticateAdminForCriticalAction(password, context = 'ADMIN_CRITICAL') {
+async function reauthenticateAdminForCriticalAction(password) {
   const cleanPassword = normalizedTrim(password);
   if (!cleanPassword) throw new Error('Admin password is required for this critical operation.');
   if (cleanPassword.length > ADMIN_LIMITS.adminPasswordMax) throw new Error(`Admin password must be ${ADMIN_LIMITS.adminPasswordMax} characters or less.`);
   if (!state.user?.email) throw new Error('Cannot verify admin password because the current Firebase user email is missing. Sign in again and retry.');
-
-  let session;
-  try {
-    session = await signInAdminWithPassword(state.user.email, cleanPassword, { persist: false });
-  } catch (error) {
-    if (error.code !== 'MFA_REQUIRED') throw error;
-    const mfaCode = window.prompt('Enter the current TOTP authenticator code for this critical action:') || '';
-    session = await finalizeAdminMfaSignIn({
-      pendingCredential: error.pendingCredential,
-      enrollment: error.enrollment,
-      email: error.email,
-    }, mfaCode, { persist: false });
-  }
+  const session = await signInAdminWithPassword(state.user.email, cleanPassword, { persist: false });
   applyAuthSession(session);
-  return storeCriticalActionProofFromResponse(await api(API_PATHS.admin.reauthenticated, {
-    method: 'POST',
-    body: { context },
-    forceTokenRefresh: true,
-  }));
 }
 
 function openEmergencyActionModal(module, nextEnabled) {
@@ -4985,19 +5118,6 @@ function openEmergencyRuleActionModal(rule, action) {
   render();
 }
 
-
-async function loadCollaborationTombstoneOverview() {
-  if (!collaborationApiBaseUrl) {
-    return {
-      skipped: true,
-      status: 'not_configured',
-      policySource: 'admin_web_not_configured',
-      loadError: 'Collaboration API base URL is not configured. Core policy can still be edited, but runtime counts and last-run status are unavailable.',
-    };
-  }
-  const overview = await api(API_PATHS.collaborationTombstones.overview, { service: 'collaboration' });
-  return normalizeAdminObjectResponse(overview);
-}
 
 async function loadCollaborationPolicyCacheStatus() {
   if (!collaborationApiBaseUrl) {
@@ -5705,6 +5825,20 @@ function renderAnalyticsDashboard() {
 
 function renderStats(items) {
   const total = state.data?.totalElements ?? items.length;
+  if (state.activeTab === 'feedback') {
+    const queueLabel = {
+      ACTION_REQUIRED: 'Action needed',
+      CRITICAL: 'Critical',
+      CLOSED: 'Closed',
+    }[state.feedbackQueue] || 'Action needed';
+    return el('div', { class: 'stats-grid' }, [
+      stat(`${queueLabel} records`, total),
+      stat('Loaded on page', items.length),
+      stat('Current page', (state.data?.page ?? state.page) + 1),
+      stat('Page size', state.feedbackPageSize),
+    ]);
+  }
+
   const open = items.filter((item) => String(item.status || 'OPEN').toUpperCase() !== 'CLOSED').length;
   const closed = items.filter((item) => String(item.status || '').toUpperCase() === 'CLOSED').length;
   return el('div', { class: 'stats-grid' }, [
@@ -5725,20 +5859,62 @@ function stat(label, value) {
 
 
 function renderFeedbackToolbar() {
-  const statuses = ['', ...FEEDBACK_STATUS_OPTIONS];
-  const status = select(statuses, state.feedbackFilters.status, (value) => { state.feedbackFilters.status = value; });
+  const counts = state.feedbackQueueCounts || {};
+  const queueOptions = [
+    ['ACTION_REQUIRED', 'Action needed', counts.actionRequired],
+    ['CRITICAL', 'Critical', counts.critical],
+    ['CLOSED', 'Closed', counts.closed],
+  ];
+  const queueTabs = el('div', { class: 'feedback-queue-tabs wide', role: 'tablist', 'aria-label': 'Feedback queues' },
+    queueOptions.map(([value, label, count]) => el('button', {
+      class: `feedback-queue-tab ${state.feedbackQueue === value ? 'active' : ''}`.trim(),
+      type: 'button',
+      role: 'tab',
+      'aria-selected': state.feedbackQueue === value ? 'true' : 'false',
+      text: Number.isFinite(Number(count)) ? `${label} (${count})` : label,
+      onclick: () => {
+        if (state.feedbackQueue === value) return;
+        state.feedbackQueue = value;
+        state.feedbackFilters.status = '';
+        state.page = 0;
+        // Queue contents are mutually exclusive. Clear the previous queue first
+        // so Critical records are never temporarily shown under Action needed,
+        // and Closed records never remain visible under an open queue.
+        clearScopedData('feedback');
+        loadData();
+      },
+    }))
+  );
+
+  const openStatuses = FEEDBACK_STATUS_OPTIONS.filter((value) => value !== 'CLOSED');
+  const statuses = state.feedbackQueue === 'CLOSED' ? ['CLOSED'] : ['', ...openStatuses];
+  const selectedStatus = state.feedbackQueue === 'CLOSED' ? 'CLOSED' : state.feedbackFilters.status;
+  const status = select(statuses, selectedStatus, (value) => {
+    state.feedbackFilters.status = state.feedbackQueue === 'CLOSED' ? '' : value;
+  });
+  if (state.feedbackQueue === 'CLOSED') status.disabled = true;
+
   const module = select(['', 'BILLS', 'BUCKETS', 'GOALS', 'GROUP_EVENT', 'PROFILE', 'SMART_CAPTURE', 'WALLET', 'NOT_SURE'], state.feedbackFilters.module, (value) => { state.feedbackFilters.module = value; });
   const type = select(['', 'BUG', 'SUGGESTION', 'UI_FEEDBACK', 'OTHER'], state.feedbackFilters.type, (value) => { state.feedbackFilters.type = value; });
+  const pageSize = select(['10', '15', '30'], String(state.feedbackPageSize), (value) => {
+    state.feedbackPageSize = Math.max(5, Math.min(50, Number(value) || 15));
+    state.page = 0;
+    clearScopedData('feedback');
+    loadData();
+  });
+
   return el('div', { class: 'toolbar feedback-toolbar' }, [
-    el('div', {}, [el('label', { text: 'Status' }), status]),
+    queueTabs,
+    el('div', {}, [el('label', { text: 'Status in queue' }), status]),
     el('div', {}, [el('label', { text: 'Module' }), module]),
     el('div', {}, [el('label', { text: 'Type' }), type]),
+    el('div', {}, [el('label', { text: 'Rows per page' }), pageSize]),
     el('div', { class: 'toolbar-context wide' }, [
-      el('span', { text: 'Service credit workflow' }),
-      renderInfoHint('Review \u2192 select bug level \u2192 backend suggests credit \u2192 admin confirms. Different statuses trigger different user-friendly backend messages.', { compact: true, label: 'Service credit workflow details' }),
+      el('span', { text: 'Fast triage view' }),
+      renderInfoHint('Action needed, critical, and closed feedback are loaded from separate backend queues. The first page contains lightweight summaries only; technical details and screenshots load after you expand a record.', { compact: true, label: 'Feedback loading and queue details' }),
     ]),
-    el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; loadData(); } }),
-    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
+    el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; clearScopedData('feedback'); loadData(); } }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => { state.feedbackQueueCounts = null; loadData({ force: true }); } }),
   ]);
 }
 
@@ -5798,13 +5974,16 @@ function renderItemSummary({ title, subtitle, statusNode }) {
   ]);
 }
 
-function renderCollapsibleItem({ title, subtitle, statusNode, children, scope = '', itemId = '' }) {
+function renderCollapsibleItem({ title, subtitle, statusNode, children, scope = '', itemId = '', onToggle = null }) {
   const details = el('details', { class: 'item-dropdown' }, [
     renderItemSummary({ title, subtitle, statusNode }),
     el('div', { class: 'item-body' }, children),
   ]);
   if (isItemExpanded(scope, itemId)) details.open = true;
-  details.addEventListener('toggle', () => setItemExpanded(scope, itemId, details.open));
+  details.addEventListener('toggle', () => {
+    setItemExpanded(scope, itemId, details.open);
+    if (typeof onToggle === 'function') onToggle(details.open);
+  });
   return el('article', { class: 'item collapsible-item' }, [details]);
 }
 
@@ -6081,63 +6260,94 @@ async function submitFeedbackCreditModal() {
 
 
 function renderFeedbackItem(item) {
-  const status = String(item.status || 'OPEN').toUpperCase();
+  const detailState = state.feedbackDetails?.[item.id] || {};
+  const fullItem = detailState.data || item;
+  const status = String(fullItem.status || item.status || 'OPEN').toUpperCase();
   const isClosed = status === 'CLOSED';
-  const isCreditApplied = status === 'CREDIT_APPLIED' || getProviderActionStatus(item) === 'GOOGLE_PLAY_DEFER_APPLIED';
-  const debugText = safeJson(item.debugJson);
-  const suggestedCredit = getItemSuggestedCreditDays(item);
-  const providerStatus = getProviderActionStatus(item);
-  const userNotification = getUserNotificationSnapshot(item);
+  const isCreditApplied = status === 'CREDIT_APPLIED' || getProviderActionStatus(fullItem) === 'GOOGLE_PLAY_DEFER_APPLIED';
+  const suggestedCredit = getItemSuggestedCreditDays(fullItem);
+  const providerStatus = getProviderActionStatus(fullItem);
+  const userNotification = getUserNotificationSnapshot(fullItem);
   const canGrantCredit = isPositiveCreditStatus(status) && !isCreditApplied;
-  const hasUnresolvedCreditAction = feedbackHasUnresolvedCreditAction(item);
+  const hasUnresolvedCreditAction = fullItem.unresolvedCreditAction !== undefined
+    ? Boolean(fullItem.unresolvedCreditAction)
+    : feedbackHasUnresolvedCreditAction(fullItem);
   const statusHelper = STATUS_COPY[status]?.helper || '';
   const decisionChips = [
-    item.bugLevel || item.severity ? `Level: ${item.bugLevel || item.severity}` : null,
-    item.affectedArea ? `Area: ${item.affectedArea}` : null,
-    item.affectsProFeature !== undefined ? `Affects Pro: ${asBoolean(item.affectsProFeature) ? 'Yes' : 'No'}` : null,
+    fullItem.autoDetected || fullItem.hasTechnicalDiagnostics ? 'Auto-detected diagnostic' : null,
+    fullItem.bugLevel || fullItem.severity ? `Level: ${fullItem.bugLevel || fullItem.severity}` : null,
+    fullItem.affectedArea ? `Area: ${fullItem.affectedArea}` : null,
+    fullItem.affectsProFeature !== undefined ? `Affects Pro: ${asBoolean(fullItem.affectsProFeature) ? 'Yes' : 'No'}` : null,
     suggestedCredit ? `Suggested credit: ${suggestedCredit} day(s)` : null,
     providerStatus ? `Provider: ${providerStatus}` : null,
   ].filter(Boolean);
 
+  const detailChildren = [];
+  if (detailState.loading && !detailState.data) {
+    detailChildren.push(renderLoadingState('Loading feedback details...', 'The list stays fast because technical diagnostics and notification history load only for the record you opened.'));
+  } else if (detailState.error && !detailState.data) {
+    detailChildren.push(el('div', { class: 'notice warning inline-notice' }, [
+      el('strong', { text: 'Feedback details could not be loaded.' }),
+      el('span', { text: detailState.error }),
+      el('button', {
+        class: 'btn ghost small',
+        text: 'Retry details',
+        onclick: (event) => runFeedbackAction(event, () => loadFeedbackDetail(item.id, { force: true })),
+      }),
+    ]));
+  } else if (detailState.data) {
+    const debugText = safeJson(fullItem.debugJson);
+    detailChildren.push(
+      el('p', { class: 'item-desc', text: fullItem.description || fullItem.descriptionPreview || '-' }),
+      renderMetaGrid([
+        ['ID', fullItem.id], ['User ID', fullItem.userId], ['User Email', fullItem.userEmail || extractEmailFromDebugJson(fullItem.debugJson)], ['Type', fullItem.type],
+        ['Module', fullItem.module], ['Original Severity', fullItem.severity], ['Bug Level', fullItem.bugLevel], ['Affected Area', fullItem.affectedArea],
+        ['Affects Pro Feature', fullItem.affectsProFeature === undefined ? '-' : (asBoolean(fullItem.affectsProFeature) ? 'Yes' : 'No')],
+        ['Eligible For Credit', fullItem.eligibleForCredit === undefined ? '-' : (asBoolean(fullItem.eligibleForCredit) ? 'Yes' : 'No')],
+        ['Suggested Credit Days', fullItem.suggestedCreditDays ?? suggestedCredit], ['Final Credit Days', fullItem.finalCreditDays], ['Credit Policy', safeJson(fullItem.creditPolicy)],
+        ['Provider Action', providerStatus || '-'], ['Provider Error', fullItem.providerActionError], ['Service Credit Expires', formatDate(fullItem.serviceCreditExpiresAt)],
+        ['User Notification Status', userNotification.status], ['User Notification Created', formatDate(userNotification.createdAt)],
+        ['User Notification Read', formatDate(userNotification.readAt)], ['User Notification Dismissed', formatDate(userNotification.dismissedAt)],
+        ['Review Reason', fullItem.reviewReason], ['Review Evidence', fullItem.reviewEvidence], ['Created', formatDate(fullItem.createdAt)], ['Updated', formatDate(fullItem.updatedAt)], ['Closed', formatDate(fullItem.closedAt)],
+        ['Closed By Email', fullItem.closedByEmail], ['Closed By User ID', fullItem.closedByUserId], ['Storage Path', fullItem.screenshotStoragePath],
+      ]),
+      renderFeedbackScreenshot(fullItem),
+      renderFeedbackTechnicalDiagnostics(fullItem),
+      el('details', { class: 'nested-details' }, [el('summary', { text: 'Raw debug JSON' }), el('pre', { text: debugText })]),
+    );
+  } else {
+    detailChildren.push(el('p', { class: 'item-desc', text: fullItem.descriptionPreview || 'Expand this record to load the full report.' }));
+  }
+
   return renderCollapsibleItem({
     scope: 'feedback',
     itemId: item.id,
-    title: `${item.type || '-'} \u00B7 ${item.module || '-'}`,
-    subtitle: item.issue || item.userEmail || extractEmailFromDebugJson(item.debugJson) || 'Feedback report',
+    title: `${fullItem.type || '-'} · ${fullItem.module || '-'}`,
+    subtitle: fullItem.issue || fullItem.userEmail || extractEmailFromDebugJson(fullItem.debugJson) || 'Feedback report',
     statusNode: el('span', { class: getStatusClass(status), text: getStatusLabel(status) }),
+    onToggle: (expanded) => {
+      if (expanded && !state.feedbackDetails?.[item.id]?.data && !state.feedbackDetails?.[item.id]?.loading) {
+        loadFeedbackDetail(item.id).catch(() => {});
+      }
+    },
     children: [
       el('div', { class: 'compact-guidance' }, [
         el('strong', { text: getStatusLabel(status) }),
-        renderInfoHint(`${statusHelper || 'Review this report and choose the next action.'} ${getCreditStatusHint(item)}`, { compact: true, label: 'Status and credit guidance' }),
+        renderInfoHint(`${statusHelper || 'Review this report and choose the next action.'} ${getCreditStatusHint(fullItem)}`, { compact: true, label: 'Status and credit guidance' }),
       ]),
       decisionChips.length ? el('div', { class: 'chip-row' }, decisionChips.map((text) => el('span', { class: 'chip', text }))) : null,
-      hasUnresolvedCreditAction ? el('div', { class: 'notice warning inline-notice', text: 'Service credit is not fully resolved yet. Do not close this feedback until Google Play defer is applied or the credit issue is resolved.' }) : null,
-      el('p', { class: 'item-desc', text: item.description || '-' }),
-      renderMetaGrid([
-        ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail || extractEmailFromDebugJson(item.debugJson)], ['Type', item.type],
-        ['Module', item.module], ['Original Severity', item.severity], ['Bug Level', item.bugLevel], ['Affected Area', item.affectedArea],
-        ['Affects Pro Feature', item.affectsProFeature === undefined ? '-' : (asBoolean(item.affectsProFeature) ? 'Yes' : 'No')],
-        ['Eligible For Credit', item.eligibleForCredit === undefined ? '-' : (asBoolean(item.eligibleForCredit) ? 'Yes' : 'No')],
-        ['Suggested Credit Days', item.suggestedCreditDays ?? suggestedCredit], ['Final Credit Days', item.finalCreditDays], ['Credit Policy', item.creditPolicy],
-        ['Provider Action', providerStatus || '-'], ['Provider Error', item.providerActionError], ['Service Credit Expires', formatDate(item.serviceCreditExpiresAt)],
-        ['User Notification Status', userNotification.status], ['User Notification Created', formatDate(userNotification.createdAt)],
-        ['User Notification Read', formatDate(userNotification.readAt)], ['User Notification Dismissed', formatDate(userNotification.dismissedAt)],
-        ['Review Reason', item.reviewReason], ['Review Evidence', item.reviewEvidence], ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
-        ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId], ['Storage Path', item.screenshotStoragePath],
-      ]),
-      renderFeedbackScreenshot(item),
-      renderFeedbackTechnicalDiagnostics(item),
-      el('details', { class: 'nested-details' }, [el('summary', { text: 'Raw debug JSON' }), el('pre', { text: debugText })]),
+      hasUnresolvedCreditAction ? el('div', { class: 'notice warning inline-notice', text: 'Service credit is not fully resolved yet. Resolve the credit action before closing this feedback.' }) : null,
+      ...detailChildren,
       state.actionLoadingKey ? el('div', { class: 'notice inline-notice', text: `Admin action running: ${state.actionLoadingMessage || 'Please wait...'}` }) : null,
       el('div', { class: 'actions feedback-actions' }, [
         isClosed
           ? el('button', { class: 'btn success small', text: isActionBusy(API_PATHS.feedback.reopen(item.id)) ? 'Reopening...' : 'Reopen', disabled: isActionBusy(API_PATHS.feedback.reopen(item.id)), onclick: (event) => runFeedbackAction(event, () => patchAction(API_PATHS.feedback.reopen(item.id), 'Feedback reopened.')) })
-          : el('button', { class: 'btn small', text: status === 'OPEN' ? 'Start review' : 'Review decision', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, status === 'OPEN' ? 'REVIEWING' : status)) }),
-        !isClosed ? el('button', { class: 'btn success small', text: 'Verify issue', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, 'VERIFIED')) }) : null,
-        !isClosed ? el('button', { class: 'btn ghost small', text: 'Need info', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, 'NEED_MORE_INFO')) }) : null,
-        !isClosed ? el('button', { class: 'btn ghost small', text: 'Reject / Duplicate', onclick: (event) => runFeedbackAction(event, () => openFeedbackReviewModal(item, 'REJECTED_NOT_REPRODUCIBLE')) }) : null,
-        canGrantCredit ? el('button', { class: 'btn secondary small', text: 'Grant credit', onclick: (event) => runFeedbackAction(event, () => openFeedbackCreditModal(item)) }) : null,
-        !isClosed ? el('button', { class: 'btn danger small', text: hasUnresolvedCreditAction ? 'Close locked' : 'Close final', disabled: hasUnresolvedCreditAction, title: hasUnresolvedCreditAction ? 'Resolve service credit before closing this feedback.' : '', onclick: (event) => runFeedbackAction(event, () => openCloseModal('feedback', item)) }) : null,
+          : el('button', { class: 'btn small', text: status === 'OPEN' ? 'Start review' : 'Review decision', onclick: (event) => runFeedbackAction(event, () => withFeedbackDetail(fullItem, (detail) => openFeedbackReviewModal(detail, status === 'OPEN' ? 'REVIEWING' : status))) }),
+        !isClosed ? el('button', { class: 'btn success small', text: 'Verify issue', onclick: (event) => runFeedbackAction(event, () => withFeedbackDetail(fullItem, (detail) => openFeedbackReviewModal(detail, 'VERIFIED'))) }) : null,
+        !isClosed ? el('button', { class: 'btn ghost small', text: 'Need info', onclick: (event) => runFeedbackAction(event, () => withFeedbackDetail(fullItem, (detail) => openFeedbackReviewModal(detail, 'NEED_MORE_INFO'))) }) : null,
+        !isClosed ? el('button', { class: 'btn ghost small', text: 'Reject / Duplicate', onclick: (event) => runFeedbackAction(event, () => withFeedbackDetail(fullItem, (detail) => openFeedbackReviewModal(detail, 'REJECTED_NOT_REPRODUCIBLE'))) }) : null,
+        canGrantCredit ? el('button', { class: 'btn secondary small', text: 'Grant credit', onclick: (event) => runFeedbackAction(event, () => withFeedbackDetail(fullItem, (detail) => openFeedbackCreditModal(detail))) }) : null,
+        !isClosed ? el('button', { class: 'btn danger small', text: hasUnresolvedCreditAction ? 'Close locked' : 'Close final', disabled: hasUnresolvedCreditAction, title: hasUnresolvedCreditAction ? 'Resolve service credit before closing this feedback.' : '', onclick: (event) => runFeedbackAction(event, () => openCloseModal('feedback', fullItem)) }) : null,
       ]),
     ],
   });
@@ -6230,7 +6440,6 @@ function renderAdminModal() {
   if (state.modal.kind === 'reviewPromptPolicyEdit') return renderReviewPromptPolicyModal();
   if (state.modal.kind === 'rateLimitOverrideEdit') return renderRateLimitOverrideModal();
   if (state.modal.kind === 'rateLimitOverrideDelete') return renderRateLimitOverrideDeleteModal();
-  if (state.modal.kind === 'collaborationTombstoneSettings') return renderCollaborationTombstoneSettingsModal();
   return renderCloseModal();
 }
 
@@ -7632,7 +7841,7 @@ function renderProductPolicyItem(item) {
 function getProductPolicyHint(key) {
   const normalized = String(key || '').toLowerCase();
   if (normalized.includes('smart_capture')) return 'Controls Smart Capture parser thresholds, review policy, internal transfer handling, and future provider profile versions. Do not store raw notification text here.';
-  if (normalized.includes('housekeeping')) return 'Controls production retention and cleanup schedules from one Core policy. Collaboration tombstone settings are edited here in human-readable fields and delivered through the existing Core policy cache; Render business env values are not required.';
+  if (normalized.includes('housekeeping')) return 'Controls production retention days used by System Housekeeping. Runtime cleanup reads this policy first and falls back to env only if the row is absent or invalid.';
   if (normalized.includes('collaboration_plan')) return 'Controls group event and group goal plan behavior. Keep Free at 2 events, 5 members, 30 expenses, 0 receipt uploads, 15 day retention, and 1 active group goal with 3 members unless intentionally changing the product policy.';
   if (normalized.includes('cloud')) return 'Controls backup/recovery kill switches and safe restore defaults. Use carefully because restore behavior affects user data safety.';
   if (normalized.includes('group')) return 'Controls cloud collaboration limits such as participants, expenses, receipt uploads, retention, and invite behavior.';
@@ -7757,6 +7966,22 @@ function normalizeSubscriptionUserSummary(item = {}) {
     trialExpiresAt: firstPresent(item.trialExpiresAt, item.trial_expires_at),
     feedbackTrialUsed: asBoolean(firstPresent(item.feedbackTrialUsed, item.feedback_trial_used), false),
     feedbackTrialExpiresAt: firstPresent(item.feedbackTrialExpiresAt, item.feedback_trial_expires_at),
+    effectiveEntitlementSource: firstPresent(item.effectiveEntitlementSource, item.effective_entitlement_source),
+    baseTier: firstPresent(item.baseTier, item.base_tier),
+    baseStatus: firstPresent(item.baseStatus, item.base_status),
+    baseBillingCycle: firstPresent(item.baseBillingCycle, item.base_billing_cycle),
+    baseExpiresAt: firstPresent(item.baseExpiresAt, item.base_expires_at),
+    baseProvider: firstPresent(item.baseProvider, item.base_provider),
+    serviceCreditActive: asBoolean(firstPresent(item.serviceCreditActive, item.service_credit_active), false),
+    serviceCreditExpiresAt: firstPresent(item.serviceCreditExpiresAt, item.service_credit_expires_at),
+    serviceCreditReason: firstPresent(item.serviceCreditReason, item.service_credit_reason),
+    underlyingServiceCreditActive: asBoolean(firstPresent(item.underlyingServiceCreditActive, item.underlying_service_credit_active), false),
+    underlyingServiceCreditExpiresAt: firstPresent(item.underlyingServiceCreditExpiresAt, item.underlying_service_credit_expires_at),
+    adminOverrideMode: String(firstPresent(item.adminOverrideMode, item.admin_override_mode, 'NONE') || 'NONE').toUpperCase(),
+    adminOverrideExpiresAt: firstPresent(item.adminOverrideExpiresAt, item.admin_override_expires_at),
+    adminOverrideReason: firstPresent(item.adminOverrideReason, item.admin_override_reason),
+    adminOverrideUpdatedAt: firstPresent(item.adminOverrideUpdatedAt, item.admin_override_updated_at),
+    adminOverrideUpdatedByEmail: firstPresent(item.adminOverrideUpdatedByEmail, item.admin_override_updated_by_email),
   };
 }
 
@@ -7772,19 +7997,24 @@ const SUBSCRIPTION_REQUEST_COPY = Object.freeze({
     description: 'Extend an active Pro entitlement after a verified service issue or approved support case.',
   },
   CORRECT_TO_PRO: {
-    label: 'Request Pro entitlement fix',
-    shortLabel: 'Restore Pro access',
-    description: 'Use only after verifying a paid purchase or entitlement-sync mismatch. This is not a complimentary manual upgrade.',
+    label: 'Request Force Pro override',
+    shortLabel: 'Force Pro',
+    description: 'Apply a temporary administrator override after verification. Underlying provider and service-credit records remain preserved for audit.',
   },
   CORRECT_TO_FREE: {
-    label: 'Request end Pro access',
-    shortLabel: 'End Pro access',
-    description: 'Use only while Pro access is effectively active and no cancellation is already scheduled.',
+    label: 'Request Force Free override',
+    shortLabel: 'Force Free',
+    description: 'Apply the highest-priority Free override. Paid, trial, and service-credit sources remain stored but cannot grant Pro until the override is cleared.',
+  },
+  CLEAR_ADMIN_OVERRIDE: {
+    label: 'Request clear admin override',
+    shortLabel: 'Clear override',
+    description: 'Return entitlement control to the normal provider, trial, and service-credit resolver.',
   },
 });
 
-const EFFECTIVE_PRO_SUBSCRIPTION_STATUSES = new Set(['ACTIVE', 'TRIAL', 'TRIALING', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'PAST_DUE']);
-const TERMINAL_SUBSCRIPTION_STATUSES = new Set(['CANCELLED', 'CANCELED', 'EXPIRED', 'EMPTY', 'NONE', 'INACTIVE']);
+const EFFECTIVE_PRO_SUBSCRIPTION_STATUSES = new Set(['ACTIVE', 'TRIAL', 'TRIALING', 'FEEDBACK_TRIAL', 'GRACE_PERIOD', 'PAST_DUE', 'SERVICE_CREDIT', 'ADMIN_OVERRIDE_PRO']);
+const TERMINAL_SUBSCRIPTION_STATUSES = new Set(['CANCELLED', 'CANCELED', 'EXPIRED', 'EMPTY', 'NONE', 'INACTIVE', 'ADMIN_OVERRIDE_FREE']);
 
 function subscriptionRequestLabel(requestType, fallback = 'Subscription support request') {
   return SUBSCRIPTION_REQUEST_COPY[String(requestType || '').toUpperCase()]?.label || fallback;
@@ -7864,7 +8094,14 @@ function getSubscriptionSupportActionState(summary, permissions = {}) {
     });
   };
 
-  if (effectivePro) {
+  const overrideMode = String(normalizedSummary.adminOverrideMode || 'NONE').toUpperCase();
+  const hasAdminOverride = overrideMode === 'FORCE_FREE' || overrideMode === 'FORCE_PRO';
+
+  if (hasAdminOverride) {
+    if (overrideMode === 'FORCE_FREE') addAction('CORRECT_TO_PRO', 'primary');
+    else addAction('CORRECT_TO_FREE', 'danger');
+    addAction('CLEAR_ADMIN_OVERRIDE', 'secondary');
+  } else if (effectivePro) {
     addAction('GRANT_COMPENSATION_DAYS', 'secondary');
     if (!cancellationScheduled) addAction('CORRECT_TO_FREE', 'danger');
   } else {
@@ -7875,7 +8112,11 @@ function getSubscriptionSupportActionState(summary, permissions = {}) {
   let title;
   let message;
   let tone;
-  if (effectivePro && cancellationScheduled) {
+  if (hasAdminOverride) {
+    title = `${effectivePro ? 'Pro' : 'Free'} · administrator override`;
+    message = `${overrideMode} is the current highest-priority decision. Underlying subscription and service-credit sources are preserved but suppressed until this override is replaced, expires, or is cleared.`;
+    tone = effectivePro ? 'pro' : 'free';
+  } else if (effectivePro && cancellationScheduled) {
     title = 'Pro access · cancellation already scheduled';
     message = `The end-Pro action is hidden because a cancellation is already recorded${normalizedSummary.cancellationEffectiveAt ? ` for ${formatDate(normalizedSummary.cancellationEffectiveAt)}` : ''}. Do not submit a duplicate cancellation request.`;
     tone = 'scheduled';
@@ -8004,13 +8245,16 @@ function renderSubscriptionUserItem(summary) {
   const title = normalizedSummary?.email || normalizedSummary?.userId || 'Subscription user';
   return renderCollapsibleItem({
     title,
-    subtitle: `${normalizedSubscriptionTier(normalizedSummary)} / ${status} · provider ${normalizedSummary?.provider || '-'}`,
+    subtitle: `${normalizedSubscriptionTier(normalizedSummary)} / ${status} · source ${normalizedSummary?.effectiveEntitlementSource || normalizedSummary?.provider || '-'}`,
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
       renderMetaGrid([
-        ['User ID', normalizedSummary?.userId], ['Email', normalizedSummary?.email], ['Tier', normalizedSubscriptionTier(normalizedSummary)], ['Status', status],
-        ['Billing Cycle', normalizedSummary?.billingCycle], ['Provider', normalizedSummary?.provider], ['Provider Customer', normalizedSummary?.providerCustomerId],
-        ['Provider Entitlement', normalizedSummary?.providerEntitlementId ? 'Stored' : '-'], ['Expires At', formatDate(normalizedSummary?.expiresAt)], ['Updated', formatDate(normalizedSummary?.updatedAt)],
+        ['User ID', normalizedSummary?.userId], ['Email', normalizedSummary?.email], ['Effective Tier', normalizedSubscriptionTier(normalizedSummary)], ['Effective Status', status],
+        ['Effective Source', normalizedSummary?.effectiveEntitlementSource], ['Effective Provider', normalizedSummary?.provider], ['Effective Expiry', formatDate(normalizedSummary?.expiresAt)],
+        ['Admin Override', normalizedSummary?.adminOverrideMode || 'NONE'], ['Override Expiry', formatDate(normalizedSummary?.adminOverrideExpiresAt)], ['Override Updated By', normalizedSummary?.adminOverrideUpdatedByEmail],
+        ['Base Tier', normalizedSummary?.baseTier], ['Base Status', normalizedSummary?.baseStatus], ['Base Billing', normalizedSummary?.baseBillingCycle], ['Base Expiry', formatDate(normalizedSummary?.baseExpiresAt)], ['Base Provider', normalizedSummary?.baseProvider],
+        ['Underlying Service Credit', normalizedSummary?.underlyingServiceCreditActive ? `Active until ${formatDate(normalizedSummary?.underlyingServiceCreditExpiresAt)}` : 'Inactive'],
+        ['Provider Customer', normalizedSummary?.providerCustomerId], ['Provider Entitlement', normalizedSummary?.providerEntitlementId ? 'Stored' : '-'], ['Updated', formatDate(normalizedSummary?.updatedAt)],
         ['Cancelled At', formatDate(normalizedSummary?.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary?.cancellationEffectiveAt)],
         ['Trial Used', normalizedSummary?.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary?.trialExpiresAt)],
         ['Feedback Trial Used', normalizedSummary?.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(normalizedSummary?.feedbackTrialExpiresAt)],
@@ -8046,12 +8290,15 @@ function renderSubscriptionSupportSummary(summary, permissions = {}) {
     el('div', {}, [
       el('p', { class: 'eyebrow', text: 'Exact user entitlement' }),
       el('h2', { text: normalizedSummary.email || 'Subscription user' }),
-      el('p', { class: 'muted', text: `Effective state: ${normalizedSubscriptionTier(normalizedSummary)} / ${normalizedSubscriptionStatus(normalizedSummary)} · Provider ${normalizedSummary.provider || '-'}` }),
+      el('p', { class: 'muted', text: `Effective state: ${normalizedSubscriptionTier(normalizedSummary)} / ${normalizedSubscriptionStatus(normalizedSummary)} · Source ${normalizedSummary.effectiveEntitlementSource || normalizedSummary.provider || '-'}` }),
     ]),
     renderMetaGrid([
-      ['User ID', normalizedSummary.userId], ['Tier', normalizedSubscriptionTier(normalizedSummary)], ['Status', normalizedSubscriptionStatus(normalizedSummary)], ['Billing Cycle', normalizedSummary.billingCycle],
-      ['Provider', normalizedSummary.provider], ['Provider Customer', normalizedSummary.providerCustomerId], ['Provider Entitlement', normalizedSummary.providerEntitlementId ? 'Stored' : '-'],
-      ['Expires At', formatDate(normalizedSummary.expiresAt)], ['Updated', formatDate(normalizedSummary.updatedAt)],
+      ['User ID', normalizedSummary.userId], ['Effective Tier', normalizedSubscriptionTier(normalizedSummary)], ['Effective Status', normalizedSubscriptionStatus(normalizedSummary)], ['Effective Source', normalizedSummary.effectiveEntitlementSource],
+      ['Effective Provider', normalizedSummary.provider], ['Effective Expiry', formatDate(normalizedSummary.expiresAt)],
+      ['Admin Override', normalizedSummary.adminOverrideMode || 'NONE'], ['Override Expiry', formatDate(normalizedSummary.adminOverrideExpiresAt)], ['Override Reason', normalizedSummary.adminOverrideReason], ['Override Updated By', normalizedSummary.adminOverrideUpdatedByEmail],
+      ['Base Tier', normalizedSummary.baseTier], ['Base Status', normalizedSummary.baseStatus], ['Base Billing', normalizedSummary.baseBillingCycle], ['Base Expiry', formatDate(normalizedSummary.baseExpiresAt)], ['Base Provider', normalizedSummary.baseProvider],
+      ['Underlying Service Credit', normalizedSummary.underlyingServiceCreditActive ? `Active until ${formatDate(normalizedSummary.underlyingServiceCreditExpiresAt)}` : 'Inactive'],
+      ['Provider Customer', normalizedSummary.providerCustomerId], ['Provider Entitlement', normalizedSummary.providerEntitlementId ? 'Stored' : '-'], ['Updated', formatDate(normalizedSummary.updatedAt)],
       ['Cancelled At', formatDate(normalizedSummary.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary.cancellationEffectiveAt)],
       ['Trial Used', normalizedSummary.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary.trialExpiresAt)],
       ['Feedback Trial Used', normalizedSummary.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(normalizedSummary.feedbackTrialExpiresAt)],
@@ -8140,8 +8387,10 @@ function renderSubscriptionSupportRequestModal() {
   evidence.value = modal.evidenceNote || ''; evidence.addEventListener('input', () => { modal.evidenceNote = evidence.value; });
   const copy = SUBSCRIPTION_REQUEST_COPY[modal.requestType] || {};
   const riskNote = modal.requestType === 'CORRECT_TO_FREE'
-    ? 'Verify the provider or support cancellation state before applying this entitlement correction. Ending app access does not itself prove a provider refund or billing cancellation.'
-    : copy.description || 'This creates a request only and does not change entitlement until approval.';
+    ? 'This highest-priority override immediately suppresses every lower entitlement source after approval. It does not cancel or refund the external provider subscription.'
+    : modal.requestType === 'CLEAR_ADMIN_OVERRIDE'
+      ? 'Clearing the override can immediately reactivate an underlying paid subscription, trial, or service credit that is still valid.'
+      : copy.description || 'This creates a request only and does not change entitlement until approval.';
   return renderControlModal(subscriptionRequestLabel(modal.requestType), 'Entitlement Support', [
     renderPolicySafetyNote('This creates an approval request only. The selected action is locked to the user current entitlement state to prevent accidental Free / Pro reversals.'),
     el('div', { class: 'subscription-request-type-card' }, [
@@ -10114,12 +10363,11 @@ async function loadLearningHousekeepingData(loadRequest = null) {
   state.learningHousekeeping.error = '';
   state.systemHousekeeping.error = '';
   try {
-    const [domainsResult, runsResult, overviewResult, policiesResult, collaborationTombstoneResult] = await Promise.allSettled([
+    const [domainsResult, runsResult, overviewResult, policiesResult] = await Promise.allSettled([
       api(API_PATHS.learningHousekeeping.domains),
       api(API_PATHS.learningHousekeeping.runs, { params: { limit: 20 } }),
       api(API_PATHS.housekeeping.overview),
       api(API_PATHS.productPolicies.list),
-      loadCollaborationTombstoneOverview(),
     ]);
     if (!isLoadRequestCurrent(request)) return;
     if (domainsResult.status === 'rejected' && overviewResult.status === 'rejected') {
@@ -10130,24 +10378,20 @@ async function loadLearningHousekeepingData(loadRequest = null) {
     const overview = overviewResult.status === 'fulfilled' ? (overviewResult.value || null) : null;
     const policies = policiesResult.status === 'fulfilled' ? normalizeAdminListResponse(policiesResult.value) : [];
     const systemHousekeepingPolicy = policies.find((policy) => getPolicyKey(policy) === 'housekeeping_policy') || null;
-    const collaborationTombstoneOverview = collaborationTombstoneResult.status === 'fulfilled'
-      ? normalizeAdminObjectResponse(collaborationTombstoneResult.value)
-      : null;
     const warnings = [];
     if (domainsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(domainsResult.reason, 'Learning housekeeping domains failed to load.'));
     if (runsResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(runsResult.reason, 'Learning housekeeping run history failed to load.'));
     if (overviewResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(overviewResult.reason, 'System housekeeping overview failed to load.'));
     if (policiesResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(policiesResult.reason, 'Housekeeping product policy failed to load. Retention editing will open Product Policy instead.'));
-    if (collaborationTombstoneResult.status === 'rejected') warnings.push(toFriendlyErrorMessage(collaborationTombstoneResult.reason, 'Collaboration tombstone runtime status failed to load. Core policy settings are still available.'));
     state.learningHousekeeping.error = warnings.join(' ');
     state.systemHousekeeping.error = warnings.join(' ');
-    setScopedData({ content: domains, runs, systemOverview: overview, systemHousekeepingPolicy, collaborationTombstoneOverview, loadError: warnings.join(' ') }, request);
+    setScopedData({ content: domains, runs, systemOverview: overview, systemHousekeepingPolicy, loadError: warnings.join(' ') }, request);
   } catch (error) {
     if (!isLoadRequestCurrent(request)) return;
     const friendly = toFriendlyErrorMessage(error, 'Failed to load System Housekeeping data.');
     state.learningHousekeeping.error = friendly;
     state.systemHousekeeping.error = friendly;
-    setScopedData({ content: [], runs: [], systemOverview: null, collaborationTombstoneOverview: null, loadError: friendly }, request);
+    setScopedData({ content: [], runs: [], systemOverview: null, loadError: friendly }, request);
   }
 }
 
@@ -10335,25 +10579,6 @@ const HOUSEKEEPING_POLICY_FIELD_RANGES = {
   learningProtectedLatestRuleVersions: { min: 1, max: 50, unit: 'versions' },
 };
 
-const COLLABORATION_TOMBSTONE_POLICY_RANGES = {
-  cleanupBatchSize: { field: 'collaborationTombstoneCleanupBatchSize', label: 'Cleanup batch size', min: 1, max: 5000 },
-  groupEventDays: { field: 'collaborationTombstoneGroupEventDays', label: 'Group Event retention days', min: 1, max: 3650 },
-  groupEventExpenseDays: { field: 'collaborationTombstoneGroupEventExpenseDays', label: 'Group Event expense retention days', min: 1, max: 3650 },
-  groupGoalDays: { field: 'collaborationTombstoneGroupGoalDays', label: 'Group Goal retention days', min: 1, max: 3650 },
-  groupGoalContributionDays: { field: 'collaborationTombstoneGroupGoalContributionDays', label: 'Group Goal contribution retention days', min: 1, max: 3650 },
-};
-
-const COLLABORATION_TOMBSTONE_DEFAULTS = {
-  cleanupEnabled: true,
-  cleanupHour: 3,
-  cleanupMinute: 45,
-  cleanupBatchSize: 200,
-  groupEventDays: 180,
-  groupEventExpenseDays: 180,
-  groupGoalDays: 3650,
-  groupGoalContributionDays: 3650,
-};
-
 function getHousekeepingProductPolicy() {
   const scoped = getScopedData() || {};
   return scoped.systemHousekeepingPolicy || null;
@@ -10411,13 +10636,10 @@ async function updateHousekeepingRetentionSetting(setting) {
     setMessage('Housekeeping retention update cancelled because confirmation phrase did not match.', true);
     return;
   }
-  const password = window.prompt('Enter admin password to update this housekeeping retention value.') || '';
-  if (!password) return;
   const nextValue = { ...currentPolicyValue, version: Math.max(2, Number(currentPolicyValue.version || 1)), [field]: parsed.value };
   state.systemHousekeeping.actionLoading = `POLICY:${field}`;
   render();
   try {
-    await reauthenticateAdminForCriticalAction(password, 'UPDATE_HOUSEKEEPING_RETENTION');
     await api(API_PATHS.productPolicies.update(getItemId(policy)), {
       method: 'PATCH',
       body: {
@@ -10512,7 +10734,7 @@ function promptSystemHousekeepingCritical(target) {
     setMessage('Housekeeping action cancelled because confirmation phrase did not match.', true);
     return null;
   }
-  return { reason: reason.trim(), confirmPhrase };
+  return criticalActionFields(reason.trim(), confirmPhrase, `system_housekeeping_${String(target || 'all').toLowerCase()}`);
 }
 
 function promptSystemHousekeepingScheduleCritical(target) {
@@ -10526,7 +10748,7 @@ function promptSystemHousekeepingScheduleCritical(target) {
     setMessage('Schedule update cancelled because confirmation phrase did not match.', true);
     return null;
   }
-  return { reason: reason.trim(), confirmPhrase };
+  return criticalActionFields(reason.trim(), confirmPhrase, `system_housekeeping_schedule_${String(target || 'job').toLowerCase()}`);
 }
 
 function parseHousekeepingTimeInput(raw) {
@@ -10559,21 +10781,12 @@ async function updateSystemHousekeepingSchedule(job) {
   const enabled = String(enabledRaw || '').trim().toUpperCase() !== 'NO';
   const critical = promptSystemHousekeepingScheduleCritical(target);
   if (!critical) return;
-  const password = window.prompt('Enter admin password to update the housekeeping schedule.') || '';
-  if (!password) return;
   state.systemHousekeeping.actionLoading = target;
   render();
   try {
-    await reauthenticateAdminForCriticalAction(password, 'UPDATE_SYSTEM_HOUSEKEEPING_SCHEDULE');
     const result = await api(API_PATHS.housekeeping.schedule, {
       method: 'PATCH',
-      body: {
-        target,
-        enabled,
-        hour: parsed.hour,
-        minute: parsed.minute,
-        ...criticalActionFields(critical.reason, critical.confirmPhrase, `system_housekeeping_schedule_${String(target || 'job').toLowerCase()}`),
-      },
+      body: { target, enabled, hour: parsed.hour, minute: parsed.minute, ...critical },
       forceTokenRefresh: true,
     });
     setMessage(`${target} housekeeping schedule updated to ${result?.scheduleSummary || rawTime}.`);
@@ -10591,18 +10804,12 @@ async function runSystemHousekeepingAction(target) {
   if (!cleanTarget || state.systemHousekeeping.actionLoading) return;
   const critical = promptSystemHousekeepingCritical(cleanTarget);
   if (!critical) return;
-  const password = window.prompt('Enter admin password to run this housekeeping action.') || '';
-  if (!password) return;
   state.systemHousekeeping.actionLoading = cleanTarget;
   render();
   try {
-    await reauthenticateAdminForCriticalAction(password, 'RUN_SYSTEM_HOUSEKEEPING');
     const result = await api(API_PATHS.housekeeping.run, {
       method: 'POST',
-      body: {
-        target: cleanTarget,
-        ...criticalActionFields(critical.reason, critical.confirmPhrase, `system_housekeeping_${String(cleanTarget || 'all').toLowerCase()}`),
-      },
+      body: { target: cleanTarget, ...critical },
       forceTokenRefresh: true,
     });
     state.systemHousekeeping.lastRun = result || null;
@@ -10614,298 +10821,6 @@ async function runSystemHousekeepingAction(target) {
     state.systemHousekeeping.actionLoading = '';
     render();
   }
-}
-
-
-function collaborationTombstonePolicyModel() {
-  const policy = getHousekeepingProductPolicy();
-  const value = housekeepingPolicyValue(policy);
-  const scoped = getScopedData() || {};
-  const runtime = scoped.collaborationTombstoneOverview || {};
-  const readInt = (field, runtimeField, fallback) => {
-    const candidate = value[field] ?? runtime[runtimeField] ?? fallback;
-    const number = Number(candidate);
-    return Number.isInteger(number) ? number : fallback;
-  };
-  return {
-    policy,
-    value,
-    runtime,
-    cleanupEnabled: value.collaborationTombstoneCleanupEnabled ?? runtime.cleanupEnabled ?? COLLABORATION_TOMBSTONE_DEFAULTS.cleanupEnabled,
-    cleanupHour: readInt('collaborationTombstoneCleanupHour', 'cleanupHour', COLLABORATION_TOMBSTONE_DEFAULTS.cleanupHour),
-    cleanupMinute: readInt('collaborationTombstoneCleanupMinute', 'cleanupMinute', COLLABORATION_TOMBSTONE_DEFAULTS.cleanupMinute),
-    cleanupBatchSize: readInt('collaborationTombstoneCleanupBatchSize', 'cleanupBatchSize', COLLABORATION_TOMBSTONE_DEFAULTS.cleanupBatchSize),
-    groupEventDays: readInt('collaborationTombstoneGroupEventDays', 'groupEventDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupEventDays),
-    groupEventExpenseDays: readInt('collaborationTombstoneGroupEventExpenseDays', 'groupEventExpenseDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupEventExpenseDays),
-    groupGoalDays: readInt('collaborationTombstoneGroupGoalDays', 'groupGoalDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupGoalDays),
-    groupGoalContributionDays: readInt('collaborationTombstoneGroupGoalContributionDays', 'groupGoalContributionDays', COLLABORATION_TOMBSTONE_DEFAULTS.groupGoalContributionDays),
-  };
-}
-
-function openCollaborationTombstoneSettingsModal() {
-  const model = collaborationTombstonePolicyModel();
-  if (!model.policy || !getItemId(model.policy)) {
-    setMessage('housekeeping_policy is not loaded. Refresh System Housekeeping or open Product Policy.', true);
-    return;
-  }
-  if (!state.adminSession?.superAdmin) {
-    setMessage('Only Super Admin can change Collaboration tombstone housekeeping settings.', true);
-    return;
-  }
-  state.modal = {
-    kind: 'collaborationTombstoneSettings',
-    policy: model.policy,
-    cleanupEnabled: Boolean(model.cleanupEnabled),
-    cleanupTime: `${String(model.cleanupHour).padStart(2, '0')}:${String(model.cleanupMinute).padStart(2, '0')}`,
-    cleanupBatchSize: String(model.cleanupBatchSize),
-    groupEventDays: String(model.groupEventDays),
-    groupEventExpenseDays: String(model.groupEventExpenseDays),
-    groupGoalDays: String(model.groupGoalDays),
-    groupGoalContributionDays: String(model.groupGoalContributionDays),
-    reason: '',
-    password: '',
-    confirmPhrase: '',
-    expectedPhrase: 'UPDATE PRODUCT POLICY',
-    submitLabel: 'Save tombstone settings',
-    loadingLabel: 'Saving settings...',
-  };
-  render();
-}
-
-function renderCollaborationTombstoneSettingsModal() {
-  const modal = state.modal;
-  const enabled = el('input', { type: 'checkbox' });
-  enabled.checked = Boolean(modal.cleanupEnabled);
-  enabled.addEventListener('change', () => { modal.cleanupEnabled = enabled.checked; });
-
-  const time = el('input', { type: 'time', value: modal.cleanupTime || '03:45', 'data-field-key': 'cleanupTime' });
-  time.addEventListener('input', () => { modal.cleanupTime = time.value; });
-  const numericInput = (field, min, max) => {
-    const input = el('input', { type: 'number', min: String(min), max: String(max), step: '1', value: modal[field], 'data-field-key': field });
-    input.addEventListener('input', () => { modal[field] = input.value; });
-    return input;
-  };
-  const batch = numericInput('cleanupBatchSize', 1, 5000);
-  const eventDays = numericInput('groupEventDays', 1, 3650);
-  const expenseDays = numericInput('groupEventExpenseDays', 1, 3650);
-  const goalDays = numericInput('groupGoalDays', 1, 3650);
-  const contributionDays = numericInput('groupGoalContributionDays', 1, 3650);
-  const reason = el('textarea', { rows: '3', placeholder: 'Explain why this retention or schedule change is needed.', 'data-field-key': 'reason' });
-  reason.value = modal.reason || '';
-  reason.addEventListener('input', () => { modal.reason = reason.value; });
-  const password = el('input', { type: 'password', autocomplete: 'current-password', placeholder: 'Admin password', 'data-field-key': 'password' });
-  password.value = modal.password || '';
-  password.addEventListener('input', () => { modal.password = password.value; });
-  const phrase = el('input', { placeholder: modal.expectedPhrase, value: modal.confirmPhrase || '', autocomplete: 'off', 'data-field-key': 'confirmPhrase' });
-  phrase.addEventListener('input', () => { modal.confirmPhrase = phrase.value; });
-
-  return renderControlModal('Collaboration deletion safety', 'System Housekeeping', [
-    el('div', { class: 'compact-guidance' }, [
-      el('strong', { text: 'Human-readable Core policy' }),
-      renderInfoHint('These values are stored in Core housekeeping_policy and delivered to Collaboration through the existing policy cache. No Render business environment variables or redeploy are required. Tombstones prevent offline devices from recreating records that were already deleted.', { compact: true, label: 'Tombstone policy details' }),
-    ]),
-    el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enable scheduled tombstone cleanup' })]),
-    el('div', { class: 'form-grid two' }, [
-      el('div', { class: modalFieldClass('cleanupTime') }, [el('label', { text: 'Daily cleanup time (MYT)' }), time, renderFieldError('cleanupTime'), el('small', { class: 'field-help', text: 'Uses a 24-hour clock. Example: 03:45.' })]),
-      el('div', { class: modalFieldClass('cleanupBatchSize') }, [el('label', { text: 'Rows per cleanup batch' }), batch, renderFieldError('cleanupBatchSize')]),
-      el('div', { class: modalFieldClass('groupEventDays') }, [el('label', { text: 'Group Event tombstones (days)' }), eventDays, renderFieldError('groupEventDays')]),
-      el('div', { class: modalFieldClass('groupEventExpenseDays') }, [el('label', { text: 'Group expense tombstones (days)' }), expenseDays, renderFieldError('groupEventExpenseDays')]),
-      el('div', { class: modalFieldClass('groupGoalDays') }, [el('label', { text: 'Group Goal tombstones (days)' }), goalDays, renderFieldError('groupGoalDays')]),
-      el('div', { class: modalFieldClass('groupGoalContributionDays') }, [el('label', { text: 'Goal contribution tombstones (days)' }), contributionDays, renderFieldError('groupGoalContributionDays')]),
-    ]),
-    el('div', { class: 'compact-guidance warning' }, [
-      el('strong', { text: 'Deletion safety warning' }),
-      renderInfoHint('Shortening retention changes the effective expiry of existing tombstones too. Keep enough time for offline devices and delayed retries to reconnect before markers are removed.', { compact: true, label: 'Retention safety details' }),
-    ]),
-    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
-    el('div', { class: modalFieldClass('password') }, [el('label', { text: 'Admin password' }), password, renderFieldError('password')]),
-    el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: `Type ${modal.expectedPhrase}` }), phrase, renderFieldError('confirmPhrase')]),
-  ], submitCollaborationTombstoneSettingsModal, true);
-}
-
-async function submitCollaborationTombstoneSettingsModal() {
-  const modal = state.modal;
-  const parsedTime = parseHousekeepingTimeInput(modal.cleanupTime);
-  if (!parsedTime) return validationError('Cleanup time must use 24-hour HH:mm format.', 'cleanupTime');
-  const parsed = {};
-  for (const [modalField, rule] of Object.entries(COLLABORATION_TOMBSTONE_POLICY_RANGES)) {
-    const result = parseWholeNumber(modal[modalField], rule.label, { min: rule.min, max: rule.max });
-    if (!result.ok) return validationError(result.message, modalField);
-    parsed[rule.field] = result.value;
-  }
-  const reason = requireAuditReason(modal.reason, 'this Collaboration tombstone policy update');
-  if (!reason.ok) return validationError(reason.message, 'reason');
-  const password = requireMaxLength(modal.password, 'Admin password', ADMIN_LIMITS.adminPasswordMax, { required: true });
-  if (!password.ok) return validationError(password.message, 'password');
-  if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
-  const policy = modal.policy;
-  const policyId = getItemId(policy);
-  if (!policyId) return validationError('housekeeping_policy id is missing. Refresh the page and retry.', 'confirmPhrase');
-
-  modal.loading = true;
-  modal.error = '';
-  render();
-  try {
-    await reauthenticateAdminForCriticalAction(password.value, 'UPDATE_COLLABORATION_TOMBSTONE_POLICY');
-    const current = housekeepingPolicyValue(policy);
-    const nextValue = {
-      ...current,
-      version: Math.max(3, Number(current.version || 1)),
-      collaborationTombstoneCleanupEnabled: Boolean(modal.cleanupEnabled),
-      collaborationTombstoneCleanupHour: parsedTime.hour,
-      collaborationTombstoneCleanupMinute: parsedTime.minute,
-      ...parsed,
-    };
-    await api(API_PATHS.productPolicies.update(policyId), {
-      method: 'PATCH',
-      body: {
-        enabled: policy.enabled !== false,
-        platform: policy.platform || 'SERVER',
-        minAppVersion: policy.minAppVersion || policy.min_app_version || null,
-        value: nextValue,
-        ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_collaboration_tombstone_policy'),
-      },
-      forceTokenRefresh: true,
-    });
-    closeModal();
-    setMessage('Collaboration tombstone settings saved in Core. Refresh the Collaboration runtime cache below to apply them immediately; otherwise the existing policy TTL will refresh them automatically.');
-    await loadLearningHousekeepingData();
-  } catch (error) {
-    modal.loading = false;
-    modal.error = toFriendlyErrorMessage(error, 'Unable to update Collaboration tombstone settings.');
-    render();
-  }
-}
-
-async function refreshCollaborationTombstoneRuntime() {
-  if (!collaborationApiBaseUrl) {
-    setMessage('Collaboration API base URL is not configured in Admin Web.', true);
-    return;
-  }
-  const password = window.prompt('Enter admin password to refresh the Collaboration runtime policy cache.') || '';
-  state.systemHousekeeping.actionLoading = 'COLLABORATION_TOMBSTONES_REFRESH';
-  render();
-  try {
-    await reauthenticateAdminForCriticalAction(password, 'REFRESH_COLLABORATION_TOMBSTONE_POLICY');
-    const result = await clearCollaborationPolicyCache('Refresh Collaboration tombstone policy after System Housekeeping change.', { forceTokenRefresh: true });
-    setMessage(result.message || 'Collaboration runtime policy refreshed.');
-    await loadLearningHousekeepingData();
-  } catch (error) {
-    setMessage(toFriendlyErrorMessage(error, 'Collaboration runtime policy refresh failed.'), true);
-  } finally {
-    state.systemHousekeeping.actionLoading = '';
-    render();
-  }
-}
-
-async function runCollaborationTombstoneCleanupNow() {
-  if (!collaborationApiBaseUrl) {
-    setMessage('Collaboration API base URL is not configured in Admin Web.', true);
-    return;
-  }
-  const reason = window.prompt('Reason for running Collaboration tombstone cleanup now?', 'Manual safety cleanup from System Housekeeping') || '';
-  const reasonCheck = requireAuditReason(reason, 'this manual tombstone cleanup');
-  if (!reasonCheck.ok) {
-    setMessage(reasonCheck.message, true);
-    return;
-  }
-  const phrase = window.prompt('Type RUN COLLABORATION TOMBSTONE CLEANUP to continue.') || '';
-  if (phrase !== 'RUN COLLABORATION TOMBSTONE CLEANUP') {
-    setMessage('Manual cleanup cancelled because the confirmation phrase did not match.', true);
-    return;
-  }
-  const password = window.prompt('Enter admin password to run Collaboration tombstone cleanup.') || '';
-  state.systemHousekeeping.actionLoading = 'COLLABORATION_TOMBSTONES_RUN';
-  render();
-  try {
-    await reauthenticateAdminForCriticalAction(password, 'RUN_COLLABORATION_TOMBSTONE_CLEANUP');
-    const result = await api(API_PATHS.collaborationTombstones.run, {
-      service: 'collaboration',
-      method: 'POST',
-      body: criticalActionFields(reasonCheck.value, phrase, 'run_collaboration_tombstone_cleanup'),
-      forceTokenRefresh: true,
-    });
-    setMessage(`Collaboration tombstone cleanup completed: ${Number(result?.deleted || 0)} deleted, ${Number(result?.remainingEligible || 0)} still eligible.`);
-    await loadLearningHousekeepingData();
-  } catch (error) {
-    setMessage(toFriendlyErrorMessage(error, 'Collaboration tombstone cleanup failed.'), true);
-  } finally {
-    state.systemHousekeeping.actionLoading = '';
-    render();
-  }
-}
-
-function renderCollaborationTombstoneHousekeepingSection() {
-  const model = collaborationTombstonePolicyModel();
-  const runtime = model.runtime || {};
-  const lastRun = runtime.lastRun || {};
-  const notConfigured = runtime.skipped === true || runtime.status === 'not_configured';
-  const policyFallback = runtime.policySource === 'compiled_safe_defaults';
-  const destructiveCleanupAllowed = runtime.destructiveCleanupAllowed === true;
-  const statusText = notConfigured
-    ? 'Runtime unavailable'
-    : !model.cleanupEnabled
-      ? 'Cleanup disabled'
-      : !destructiveCleanupAllowed
-        ? 'Waiting for fresh Core policy'
-        : (policyFallback ? 'Safe defaults' : 'Core managed');
-  const statusTone = notConfigured || policyFallback || (model.cleanupEnabled && !destructiveCleanupAllowed)
-    ? 'warn'
-    : model.cleanupEnabled ? 'success' : 'danger';
-  const schedule = runtime.scheduleSummary || (model.cleanupEnabled
-    ? `Daily at ${String(model.cleanupHour).padStart(2, '0')}:${String(model.cleanupMinute).padStart(2, '0')} MYT`
-    : 'Disabled by Core housekeeping policy');
-  const actionLoading = state.systemHousekeeping.actionLoading;
-
-  return el('section', { class: 'card collaboration-tombstone-housekeeping-card' }, [
-    el('div', { class: 'section-title-row' }, [
-      el('div', {}, [
-        el('p', { class: 'eyebrow', text: 'Collaboration deletion safety' }),
-        el('h3', { text: 'Tombstone retention and cleanup' }),
-      ]),
-      el('span', { class: `badge ${statusTone}`, text: statusText }),
-    ]),
-    el('p', { class: 'muted section-helper', text: 'Tombstones stop offline Group Event and Group Goal data from being recreated after deletion. Business values are stored in Core housekeeping_policy, shown here in human-readable fields, and consumed by Collaboration through the existing policy cache.' }),
-    runtime.loadError ? el('div', { class: 'notice warning inline-notice', text: runtime.loadError }) : null,
-    renderLearningOpsMetricRows([
-      ['Schedule', schedule, 'Asia/Kuala_Lumpur'],
-      ['Rows per batch', String(model.cleanupBatchSize), 'Maximum 20 batches per run'],
-      ['Group Event', `${model.groupEventDays} days`, 'Deletion marker retention'],
-      ['Group expense', `${model.groupEventExpenseDays} days`, 'Expense deletion marker retention'],
-      ['Group Goal', `${model.groupGoalDays} days`, 'Archive/deletion marker retention'],
-      ['Goal contribution', `${model.groupGoalContributionDays} days`, 'Contribution deletion marker retention'],
-      ['Runtime policy source', runtime.policySource || 'Awaiting Collaboration status'],
-      ['Destructive cleanup', destructiveCleanupAllowed ? 'Allowed' : 'Paused until Core policy is fresh', 'Stale/default policy never deletes tombstones'],
-      ['Policy revision', runtime.policyRevision || '-'],
-      ['Policy fetched', formatDate(runtime.policyFetchedAt)],
-      ['Next run', formatDate(runtime.nextRunAt)],
-      ['Stored tombstones', runtime.totalTombstones === undefined ? '-' : String(runtime.totalTombstones)],
-      ['Eligible now', Number(runtime.eligibleForCleanup) < 0 ? 'Paused' : runtime.eligibleForCleanup === undefined ? '-' : String(runtime.eligibleForCleanup), 'Rows older than the fresh per-resource Core policy'],
-      ['Last run', lastRun.status || 'NEVER_RUN', lastRun.lastFinishedAt ? formatDate(lastRun.lastFinishedAt) : 'No completed run yet', String(lastRun.status || '').toUpperCase() === 'FAILED'],
-      ['Last deleted', lastRun.deletedCount === undefined ? '-' : String(lastRun.deletedCount)],
-    ]),
-    lastRun.lastError ? el('div', { class: 'notice warning inline-notice', text: `Last cleanup error: ${lastRun.lastError}` }) : null,
-    el('div', { class: 'actions wrap' }, [
-      el('button', {
-        class: 'btn secondary small',
-        text: 'Edit human-readable settings',
-        disabled: !state.adminSession?.superAdmin || !model.policy || Boolean(actionLoading),
-        onclick: openCollaborationTombstoneSettingsModal,
-      }),
-      el('button', {
-        class: 'btn ghost small',
-        text: actionLoading === 'COLLABORATION_TOMBSTONES_REFRESH' ? 'Refreshing runtime...' : 'Refresh Collaboration runtime',
-        disabled: !collaborationApiBaseUrl || Boolean(actionLoading),
-        onclick: refreshCollaborationTombstoneRuntime,
-      }),
-      el('button', {
-        class: 'btn danger small',
-        text: actionLoading === 'COLLABORATION_TOMBSTONES_RUN' ? 'Running cleanup...' : 'Run cleanup now',
-        disabled: !collaborationApiBaseUrl || !destructiveCleanupAllowed || Boolean(actionLoading),
-        onclick: runCollaborationTombstoneCleanupNow,
-      }),
-    ]),
-  ]);
 }
 
 function renderSystemHousekeepingLastRun(run) {
@@ -10923,17 +10838,15 @@ function renderSystemHousekeepingLastRun(run) {
 
 function renderSystemHousekeepingOverview() {
   const overview = normalizeHousekeepingOverview();
-  const settings = (Array.isArray(overview.retentionSettings) ? overview.retentionSettings : [])
-    .filter((setting) => !String(setting?.key || '').startsWith('collaborationTombstone'));
-  const jobs = (Array.isArray(overview.cleanupJobs) ? overview.cleanupJobs : [])
-    .filter((job) => String(job?.target || '').toUpperCase() !== 'COLLABORATION_TOMBSTONES');
+  const settings = Array.isArray(overview.retentionSettings) ? overview.retentionSettings : [];
+  const jobs = Array.isArray(overview.cleanupJobs) ? overview.cleanupJobs : [];
   return el('div', { class: 'system-housekeeping-overview' }, [
     el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'System housekeeping contract' }), el('h3', { text: 'Single retention control surface' })]),
         el('span', { class: overview.globalEnabled === false ? 'status-pill danger' : 'status-pill success', text: overview.globalEnabled === false ? 'Global disabled' : 'Global enabled' }),
       ]),
-      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values are runtime-backed by Product Policy housekeeping_policy. Core-owned schedules are editable here, and Collaboration tombstone business settings are delivered through the existing policy cache without Render env edits or redeploys.' }),
+      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values are runtime-backed by Product Policy housekeeping_policy with safe env fallback. Schedule time can be overridden by Super Admin from this page and is used by the dynamic backend scheduler.' }),
       renderLearningOpsMetricRows([
         ['Timezone', overview.timezone || 'Asia/Kuala_Lumpur'],
         ['Data retention schedule', (jobs.find((job) => job.target === 'DATA_RETENTION') || {}).schedule || 'Daily at 03:30 MYT'],
@@ -10952,11 +10865,10 @@ function renderSystemHousekeepingOverview() {
       ]),
       settings.length ? el('div', { class: 'control-dashboard-grid' }, settings.map(renderSystemHousekeepingSettingCard)) : renderEmptyState('No retention settings returned.', 'Check the backend /api/admin/housekeeping/overview endpoint.'),
     ]),
-    renderCollaborationTombstoneHousekeepingSection(),
     el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: 'Cleanup jobs' }), el('h3', { text: 'Schedulers and manual controls' })]),
-        el('button', { class: 'btn danger small', text: state.systemHousekeeping.actionLoading === 'ALL_SAFE' ? 'Running...' : 'Run all Core cleanup', disabled: Boolean(state.systemHousekeeping.actionLoading), onclick: () => runSystemHousekeepingAction('ALL_SAFE') }),
+        el('button', { class: 'btn danger small', text: state.systemHousekeeping.actionLoading === 'ALL_SAFE' ? 'Running...' : 'Run all safe cleanup', disabled: Boolean(state.systemHousekeeping.actionLoading), onclick: () => runSystemHousekeepingAction('ALL_SAFE') }),
       ]),
       jobs.length ? el('div', { class: 'control-dashboard-grid' }, jobs.map(renderSystemHousekeepingJobCard)) : renderEmptyState('No housekeeping jobs returned.'),
     ]),

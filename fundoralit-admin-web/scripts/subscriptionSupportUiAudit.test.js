@@ -15,14 +15,16 @@ function assert(condition, message) {
 assert(app.includes("activeView: 'users'"), 'Subscription Support should default to the user entitlement view.');
 assert(app.includes("tab('users', 'User subscriptions'"), 'User subscriptions tab is missing.');
 assert(app.includes("tab('requests', 'Approval requests'"), 'Approval requests tab is missing.');
-assert(app.includes("if (effectivePro) {\n    addAction('GRANT_COMPENSATION_DAYS'"), 'Effective Pro action branch is missing.');
+assert(app.includes("} else if (effectivePro) {\n    addAction('GRANT_COMPENSATION_DAYS'"), 'Effective Pro action branch is missing.');
 assert(app.includes("if (!cancellationScheduled) addAction('CORRECT_TO_FREE'"), 'End-Pro action must be gated by cancellation state.');
 assert(app.includes("} else {\n    addAction('CORRECT_TO_PRO'"), 'Free/inactive action branch must expose Pro entitlement correction.');
+assert(app.includes("addAction('CLEAR_ADMIN_OVERRIDE'"), 'Admin override clear action is missing.');
 assert(!app.includes("text: 'Request cancel / Free'"), 'Legacy ambiguous cancel/Free button must not return.');
 assert(!app.includes('select(ADMIN_ENUMS.subscriptionRequestTypes, modal.requestType'), 'Request type must be locked after choosing a state-valid action.');
 assert(app.includes("status: 'PENDING'"), 'Pending request fetch is required for duplicate/conflict prevention.');
 assert(app.includes('pendingSubscriptionRequestsForUser'), 'Per-user conflicting pending request guard is missing.');
 assert(app.includes('Free users never receive an end-Pro or cancellation button.'), 'Free-state UX guard copy is missing.');
+assert(app.includes('administrator override'), 'Admin override guidance is missing.');
 assert(css.includes('.subscription-support-view-tabs'), 'Subscription Support tab styles are missing.');
 assert(css.includes('.subscription-action-panel'), 'State-driven subscription action styles are missing.');
 
@@ -55,6 +57,8 @@ assert(JSON.stringify(types({ userId: 'pro-1', email: 'pro@example.com', tier: '
 assert(JSON.stringify(types({ userId: 'pro-2', email: 'scheduled@example.com', tier: 'PRO', status: 'ACTIVE', cancellationEffectiveAt: '2999-01-01T00:00:00Z' })) === JSON.stringify(['GRANT_COMPENSATION_DAYS']), 'Scheduled cancellation must hide duplicate end-Pro action.');
 assert(types({ userId: 'pro-3', email: 'reactivated@example.com', tier: 'PRO', status: 'ACTIVE', cancelledAt: '2025-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' }).includes('CORRECT_TO_FREE'), 'Historical cancellation metadata must not block a reactivated Pro entitlement.');
 assert(!types({ userId: 'pro-4', email: 'expired@example.com', tier: 'PRO', status: 'EXPIRED' }).includes('CORRECT_TO_FREE'), 'Expired Pro must not show end-Pro/cancel action.');
+assert(JSON.stringify(types({ userId: 'override-free', email: 'override-free@example.com', tier: 'FREE', status: 'ADMIN_OVERRIDE_FREE', adminOverrideMode: 'FORCE_FREE' })) === JSON.stringify(['CORRECT_TO_PRO', 'CLEAR_ADMIN_OVERRIDE']), 'FORCE_FREE should only allow replacement or clear.');
+assert(JSON.stringify(types({ userId: 'override-pro', email: 'override-pro@example.com', tier: 'PRO', status: 'ADMIN_OVERRIDE_PRO', adminOverrideMode: 'FORCE_PRO' })) === JSON.stringify(['CORRECT_TO_FREE', 'CLEAR_ADMIN_OVERRIDE']), 'FORCE_PRO should only allow replacement or clear.');
 
 context.state.data.pendingRequests = [{ targetUserId: 'free-5', targetUserEmail: 'pending@example.com', requestType: 'CORRECT_TO_PRO', status: 'PENDING' }];
 const pendingState = getActionState({ userId: 'free-5', email: 'pending@example.com', tier: 'FREE', status: 'ACTIVE' }, { supportAdmin: true });

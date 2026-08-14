@@ -10,6 +10,8 @@ assert(app.includes('extractFeedbackTechnicalDiagnostics'), 'Admin feedback must
 assert(app.includes("text: 'Technical diagnostics'"), 'Admin feedback detail must expose a developer-only technical diagnostics section.');
 assert(app.includes('technicalSummary') && app.includes('componentStack') && app.includes('breadcrumbs'), 'Admin diagnostics must include the technical summary, component stack, and breadcrumbs.');
 assert(app.includes('renderFeedbackTechnicalDiagnostics(item)'), 'Feedback records must render the developer diagnostics section.');
+assert(app.includes('item?.technicalDiagnostics'), 'Admin detail must prefer the backend-normalized diagnostic contract.');
+assert(app.includes('Auto-detected diagnostic'), 'Auto-detected reports must be identifiable in the existing feedback queue.');
 assert(app.includes("text: 'Raw debug JSON'"), 'Raw debug JSON must remain available for deep developer inspection.');
 
 console.log('adminFeedbackTechnicalDiagnosticsAudit passed');

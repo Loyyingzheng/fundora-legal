@@ -1,0 +1,14 @@
+"use strict";
+const fs = require("fs");
+const path = require("path");
+const app = fs.readFileSync(path.join(__dirname, "..", "src", "app.js"), "utf8");
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+assert(app.includes("CLEAR_ADMIN_OVERRIDE"), "Admin UI must expose override clearing.");
+assert(app.includes("subscriptionRequestTypes: ['GRANT_TRIAL', 'GRANT_COMPENSATION_DAYS', 'CORRECT_TO_PRO', 'CORRECT_TO_FREE', 'CLEAR_ADMIN_OVERRIDE']"), "Admin request validation enum must allow CLEAR_ADMIN_OVERRIDE.");
+assert(app.includes("Request Force Free override"), "Force Free action copy is missing.");
+assert(app.includes("Request Force Pro override"), "Force Pro action copy is missing.");
+assert(app.includes("effectiveEntitlementSource"), "Admin UI must display the single effective entitlement source.");
+assert(app.includes("baseTier"), "Admin UI must keep underlying source details available for audit.");
+assert(app.includes("underlyingServiceCreditActive"), "Admin UI must show suppressed service-credit evidence.");
+assert(app.includes("administrator override"), "Override state guidance is missing.");
+console.log("[subscriptionAdminOverrideUiAudit] PASS");
