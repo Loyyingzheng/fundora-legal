@@ -16,6 +16,8 @@ const ADMIN_SECURITY_DB_NAME = 'fundoralit-admin-security-v1';
 const ADMIN_SECURITY_DB_VERSION = 1;
 const ADMIN_AUTH_RECORD_KEY = `firebase-auth:${firebaseConfig.projectId || 'unknown'}`;
 const ADMIN_DEVICE_RECORD_KEY = `trusted-device:${firebaseConfig.projectId || 'unknown'}`;
+let adminDeviceIdentityMemory = null;
+let adminDeviceIdentityLoadPromise = null;
 const ADMIN_STORAGE_KEY_NAME = `storage-key:${firebaseConfig.projectId || 'unknown'}`;
 const ADMIN_SESSION_MONITOR_INTERVAL_MS = 15 * 1000;
 const ADMIN_ACTIVITY_THROTTLE_MS = 5 * 1000;
@@ -94,7 +96,9 @@ const API_PATHS = {
     invites: '/api/analytics/admin/invites',
     smartCapture: '/api/analytics/admin/smart-capture',
     conversion: '/api/analytics/admin/conversion',
+    conversionView: '/api/analytics/admin/conversion-view',
     inviteLinks: '/api/analytics/admin/invite-links',
+    collaboration: '/api/analytics/admin/collaboration',
   },
   featureLimits: {
     list: '/api/admin/feature-limits',
@@ -229,6 +233,7 @@ const API_PATHS = {
   },
   learningOps: {
     overview: '/api/admin/learning-ops/overview',
+    console: '/api/admin/learning-ops/console',
     jobs: '/api/admin/learning-ops/jobs',
     runJob: '/api/admin/learning-ops/jobs',
   },
@@ -465,6 +470,7 @@ const state = {
   modal: null,
   analyticsDateRange: { ...initialAnalyticsDateRange },
   analyticsPreset: initialAnalyticsPreset,
+  analyticsView: 'overview',
   analyticsRangeNotice: '',
   analyticsData: {
     overview: null,
@@ -489,6 +495,7 @@ const state = {
     overviewError: '',
     jobsError: '',
   },
+  learningConsoleReadModel: null,
   learningHousekeeping: {
     actionLoading: '',
     lastPlan: null,
@@ -635,7 +642,7 @@ function stableStringifyForCache(value) {
 
 function getAdminTabCacheFilters(tab = state.activeTab) {
   if (tab === 'feedback') return { feedbackQueue: state.feedbackQueue, feedbackFilters: state.feedbackFilters, page: state.page, size: state.feedbackPageSize };
-  if (tab === 'analytics') return { analyticsDateRange: state.analyticsDateRange, analyticsPreset: state.analyticsPreset };
+  if (tab === 'analytics') return { analyticsDateRange: state.analyticsDateRange, analyticsPreset: state.analyticsPreset, analyticsView: state.analyticsView };
   if (tab === 'premium' || tab === 'review') return { page: state.page, size: 50 };
   if (tab === 'auditLogs') return { action: state.adminFilters.action, targetType: state.adminFilters.targetType, page: state.page, size: state.size };
   if (tab === 'usage') return { userEmail: state.adminFilters.userEmail, featureKey: state.adminFilters.featureKey, periodKey: state.adminFilters.periodKey };
@@ -2008,9 +2015,25 @@ function defaultAdminDeviceName() {
 }
 
 async function getAdminDeviceIdentity({ create = false } = {}) {
-  const existing = await adminSecurityDbGet('keys', ADMIN_DEVICE_RECORD_KEY);
-  if (existing?.privateKey && existing?.deviceKeyId && existing?.publicKeySpki) return existing;
-  if (!create) return null;
+  if (adminDeviceIdentityMemory?.privateKey && adminDeviceIdentityMemory?.deviceKeyId) {
+    return adminDeviceIdentityMemory;
+  }
+  if (adminDeviceIdentityLoadPromise) {
+    const loaded = await adminDeviceIdentityLoadPromise;
+    if (loaded || !create) return loaded;
+  }
+  adminDeviceIdentityLoadPromise = adminSecurityDbGet('keys', ADMIN_DEVICE_RECORD_KEY)
+    .then((existing) => {
+      if (existing?.privateKey && existing?.deviceKeyId && existing?.publicKeySpki) {
+        adminDeviceIdentityMemory = existing;
+        return existing;
+      }
+      return null;
+    })
+    .finally(() => { adminDeviceIdentityLoadPromise = null; });
+  const existing = await adminDeviceIdentityLoadPromise;
+  if (existing || !create) return existing;
+
   const keyPair = await crypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-256' },
     false,
@@ -2026,18 +2049,19 @@ async function getAdminDeviceIdentity({ create = false } = {}) {
     createdAt: Date.now(),
   };
   await adminSecurityDbPut('keys', identity);
+  adminDeviceIdentityMemory = identity;
   return identity;
 }
 
-async function signAdminDevicePayload(canonical) {
-  const identity = await getAdminDeviceIdentity({ create: false });
-  if (!identity?.privateKey) return null;
+async function signAdminDevicePayload(canonical, identity = null) {
+  const resolvedIdentity = identity || await getAdminDeviceIdentity({ create: false });
+  if (!resolvedIdentity?.privateKey) return null;
   const signature = await crypto.subtle.sign(
     { name: 'ECDSA', hash: 'SHA-256' },
-    identity.privateKey,
+    resolvedIdentity.privateKey,
     new TextEncoder().encode(canonical),
   );
-  return { identity, signature: bytesToBase64Url(signature) };
+  return { identity: resolvedIdentity, signature: bytesToBase64Url(signature) };
 }
 
 function resetAdminActivityClock(now = Date.now()) {
@@ -2195,6 +2219,7 @@ function resetSignedInRuntimeState() {
     invites: null,
     smartCapture: null,
     conversion: null,
+    inviteLinks: null,
   };
   try { closeAllInfoHints(); } catch (_) {}
 }
@@ -2942,7 +2967,7 @@ async function applyTrustedDeviceHeaders(headers, path, method, body) {
   const nonce = createAdminIdempotencyKey('admin_device_nonce');
   const bodyHash = await sha256Hex(typeof body === 'string' ? body : '');
   const canonical = `${String(method || 'GET').toUpperCase()}\n${String(path || '/')}\n${timestamp}\n${nonce}\n${bodyHash}`;
-  const signed = await signAdminDevicePayload(canonical);
+  const signed = await signAdminDevicePayload(canonical, identity);
   if (!signed?.signature) return headers;
   return {
     ...headers,
@@ -3315,6 +3340,7 @@ async function loadAdminSession({ renderAfter = false } = {}) {
 
 async function loadData(options = {}) {
   const force = options?.force === true;
+  const background = options?.background === true;
   if (!state.user) return;
   if (!adminTrustedDeviceReady() && state.activeTab !== 'myAccount') {
     state.activeTab = 'myAccount';
@@ -3336,10 +3362,10 @@ async function loadData(options = {}) {
     loadFeedbackOptions(loadRequest).catch(() => {});
     loadFeedbackQueueCounts(loadRequest).catch(() => {});
   }
-  state.loading = true;
+  state.loading = background ? false : true;
   state.error = '';
-  if (!hadStaleCache && !hadVisibleData) clearScopedData(state.activeTab);
-  render();
+  if (!background && !hadStaleCache && !hadVisibleData) clearScopedData(state.activeTab);
+  if (!background) render();
 
   try {
     if (state.activeTab === 'analytics') {
@@ -3469,6 +3495,81 @@ function mergeFeedbackDetailIntoList(detail) {
   scoped.content = scoped.content.map((item) => item.id === detail.id ? { ...item, ...detail } : item);
 }
 
+const ANALYTICS_VIEWS = {
+  overview: {
+    label: 'Overview',
+    helper: 'Executive product health',
+    sections: [['overview', API_PATHS.analytics.overview]],
+  },
+  retention: {
+    label: 'Retention',
+    helper: 'Cohort return behavior',
+    sections: [['retention', API_PATHS.analytics.retention]],
+  },
+  conversion: {
+    label: 'Conversion',
+    helper: 'Paywall, trial and limits',
+    sections: [['conversionView', API_PATHS.analytics.conversionView]],
+    dataKeys: ['funnel', 'conversion'],
+  },
+  features: {
+    label: 'Features',
+    helper: 'Module adoption',
+    sections: [['features', API_PATHS.analytics.features]],
+  },
+  collaboration: {
+    label: 'Collaboration',
+    helper: 'Invites and join funnel',
+    sections: [['collaboration', API_PATHS.analytics.collaboration]],
+    dataKeys: ['invites', 'inviteLinks'],
+  },
+  smartCapture: {
+    label: 'Smart Capture',
+    helper: 'Capture performance',
+    sections: [['smartCapture', API_PATHS.analytics.smartCapture]],
+  },
+};
+
+function currentAnalyticsView() {
+  return ANALYTICS_VIEWS[state.analyticsView] || ANALYTICS_VIEWS.overview;
+}
+
+function analyticsViewKeys(viewId = state.analyticsView) {
+  const view = ANALYTICS_VIEWS[viewId] || ANALYTICS_VIEWS.overview;
+  return Array.isArray(view.dataKeys) && view.dataKeys.length ? view.dataKeys : view.sections.map(([key]) => key);
+}
+
+function setAnalyticsView(viewId) {
+  if (!ANALYTICS_VIEWS[viewId] || state.analyticsView === viewId) return;
+  invalidateLoadRequests();
+  state.analyticsView = viewId;
+  state.analyticsError = '';
+  state.loading = false;
+  state.analyticsLoading = false;
+  state.activeDataCacheMeta = null;
+  const restored = restoreAdminTabCache('analytics', { allowStale: true });
+  if (!restored) {
+    state.data = null;
+    state.dataScope = 'analytics';
+  }
+  loadData();
+}
+
+function renderAnalyticsViewTabs() {
+  return el('div', { class: 'analytics-view-tabs', role: 'tablist', 'aria-label': 'Growth analytics sections' },
+    Object.entries(ANALYTICS_VIEWS).map(([id, view]) => el('button', {
+      type: 'button',
+      role: 'tab',
+      'aria-selected': state.analyticsView === id ? 'true' : 'false',
+      class: `analytics-view-tab ${state.analyticsView === id ? 'active' : ''}`,
+      onclick: () => setAnalyticsView(id),
+    }, [
+      el('span', { class: 'analytics-view-tab-label', text: view.label }),
+      el('span', { class: 'analytics-view-tab-helper', text: view.helper }),
+    ]))
+  );
+}
+
 function normalizeAnalyticsSectionFailure(key, error) {
   return { key, error: toFriendlyErrorMessage(error, 'Failed to load section.') };
 }
@@ -3517,53 +3618,47 @@ async function loadAnalyticsData(loadRequest = null) {
     to: state.analyticsDateRange.to,
   };
   const failedSections = [];
-  let progressRenderScheduled = false;
-  const scheduleProgressRender = () => {
-    if (progressRenderScheduled || !isLoadRequestCurrent(request)) return;
-    progressRenderScheduled = true;
-    const callback = () => {
-      progressRenderScheduled = false;
-      if (isLoadRequestCurrent(request)) render();
-    };
-    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(callback);
-    else window.setTimeout(callback, 0);
-  };
-
-  const sectionRequests = [
-    ['overview', API_PATHS.analytics.overview],
-    ['retention', API_PATHS.analytics.retention],
-    ['funnel', API_PATHS.analytics.funnel],
-    ['features', API_PATHS.analytics.features],
-    ['invites', API_PATHS.analytics.invites],
-    ['smartCapture', API_PATHS.analytics.smartCapture],
-    ['conversion', API_PATHS.analytics.conversion],
-    ['inviteLinks', API_PATHS.analytics.inviteLinks],
-  ].map(async ([key, path]) => {
+  const sectionRequests = currentAnalyticsView().sections.map(async ([key, path]) => {
     try {
       const response = await api(path, { params });
-      if (!isLoadRequestCurrent(request)) return;
-      nextData[key] = normalizeAnalyticsResponse(response);
-      state.analyticsData = { ...nextData };
-      scheduleProgressRender();
+      return [key, normalizeAnalyticsResponse(response), null];
     } catch (error) {
-      if (!isLoadRequestCurrent(request)) return;
-      failedSections.push(normalizeAnalyticsSectionFailure(key, error));
-      state.analyticsError = analyticsPartialFailureMessage(failedSections);
-      scheduleProgressRender();
+      return [key, null, normalizeAnalyticsSectionFailure(key, error)];
     }
   });
 
-  await Promise.all(sectionRequests);
+  // A view has at most two requests. Resolve the view as one render unit so a
+  // fast endpoint cannot repeatedly rebuild the full Admin page while its
+  // sibling request is still in flight.
+  const results = await Promise.all(sectionRequests);
   if (!isLoadRequestCurrent(request)) return;
 
+  results.forEach(([key, value, failure]) => {
+    if (failure) {
+      failedSections.push(failure);
+      return;
+    }
+    // Backend-prepared composite payloads keep each Admin sub-view to one HTTP
+    // request while preserving the existing render model.
+    if (key === 'conversionView') {
+      nextData.funnel = normalizeAnalyticsResponse(value?.funnel || {});
+      nextData.conversion = normalizeAnalyticsResponse(value?.conversion || {});
+      return;
+    }
+    if (key === 'collaboration') {
+      nextData.invites = normalizeAnalyticsResponse(value?.invites || {});
+      nextData.inviteLinks = normalizeAnalyticsResponse(value?.inviteLinks || {});
+      return;
+    }
+    nextData[key] = value;
+  });
   state.analyticsData = { ...nextData };
   state.analyticsLoading = false;
-  if (failedSections.length) {
-    state.analyticsError = analyticsPartialFailureMessage(failedSections);
-  }
+  state.analyticsError = analyticsPartialFailureMessage(failedSections);
   setScopedData({
     content: [],
     analyticsData: state.analyticsData,
+    analyticsView: state.analyticsView,
     analyticsError: state.analyticsError,
     analyticsRangeNotice: state.analyticsRangeNotice,
     failedSections,
@@ -3719,16 +3814,15 @@ async function loadAdminControlData(loadRequest) {
     return;
   }
   if (state.activeTab === 'smartCaptureRules') {
-    const [pending, active, ocrPending, ocrActive, statementPending, statementActive, templatePending, templateActive] = await Promise.all([
-      api(API_PATHS.smartCaptureRules.candidates, { params: { status: 'PENDING' } }),
-      api(API_PATHS.smartCaptureRules.active),
-      api(API_PATHS.ocrReceiptRules.candidates, { params: { status: 'PENDING' } }).catch(() => []),
-      api(API_PATHS.ocrReceiptRules.active).catch(() => ({ rules: [] })),
-      api(API_PATHS.statementImportRules.candidates, { params: { status: 'PENDING' } }).catch(() => []),
-      api(API_PATHS.statementImportRules.active).catch(() => ({ rules: [] })),
-      api(API_PATHS.ocrReceiptTemplates.candidates, { params: { status: 'PENDING' } }).catch(() => []),
-      api(API_PATHS.ocrReceiptTemplates.active).catch(() => ({ updatedRules: [] })),
-    ]);
+    const readModel = await loadLearningConsoleReadModel();
+    const pending = readModel.smartPending || [];
+    const active = readModel.smartActive || { rules: [] };
+    const ocrPending = readModel.ocrPending || [];
+    const ocrActive = readModel.ocrActive || { rules: [] };
+    const statementPending = readModel.statementPending || [];
+    const statementActive = readModel.statementActive || { rules: [] };
+    const templatePending = readModel.receiptTemplatePending || [];
+    const templateActive = readModel.receiptTemplateActive || { updatedRules: [] };
     const smartItems = normalizeAdminListResponse(pending).map((item) => ({
       ...item,
       sourceType: item.sourceType || item.source_type || 'smart_capture',
@@ -3978,21 +4072,45 @@ async function patchAction(path, successMessage, body) {
   await performPatchAction(path, successMessage, body);
 }
 
-async function refreshAfterAdminMutation(successMessage) {
+function applyFeedbackMutationResult(path, result) {
+  if (!String(path || '').startsWith('/api/feedback/admin/') || !result?.id) return;
+  const previousDetail = state.feedbackDetails?.[result.id]?.data || null;
+  const mergedDetail = previousDetail ? { ...previousDetail, ...result } : result;
+  mergeFeedbackDetailIntoList(mergedDetail);
+
+  const scoped = getScopedData();
+  if (!Array.isArray(scoped?.content)) return;
+  const isClose = String(path).endsWith('/close');
+  const isReopen = String(path).endsWith('/reopen');
+  const queue = String(state.feedbackQueue || '').toUpperCase();
+  if ((isClose && queue !== 'CLOSED') || (isReopen && queue === 'CLOSED')) {
+    scoped.content = scoped.content.filter((item) => item?.id !== result.id);
+    scoped.totalElements = Math.max(0, Number(scoped.totalElements || 0) - 1);
+  }
+}
+
+function refreshCurrentAdminViewInBackground() {
+  state.learningConsoleReadModel = null;
+  Promise.resolve().then(() => loadData({ force: true, background: true })).catch((error) => {
+    // Keep the committed success visible. A background refresh failure should not
+    // make a successful admin action look as if it failed.
+    console.warn('[Admin] background refresh after mutation failed', error);
+  });
+}
+
+async function refreshAfterAdminMutation(successMessage, { path = '', result = null } = {}) {
+  // The authoritative mutation has already committed on the server. Release the
+  // button/modal immediately and refresh the active tab in the background instead
+  // of making the user wait for a second full GET round-trip.
+  applyFeedbackMutationResult(path, result);
+  state.learningConsoleReadModel = null;
   setMessage(successMessage || 'Updated successfully.');
   state.modal = null;
   state.actionLoadingKey = '';
   state.actionLoadingMessage = '';
-  if (state.activeTab === 'feedback') {
-    state.feedbackQueueCounts = null;
-    // A mutation can move a record between Action needed, Critical and Closed.
-    // Do not leave the moved record visible under the previous queue while the
-    // authoritative page is loading.
-    clearScopedData('feedback');
-  }
-  state.loading = true;
+  state.loading = false;
   render();
-  await loadData({ force: true });
+  refreshCurrentAdminViewInBackground();
 }
 
 async function performPatchAction(path, successMessage, body) {
@@ -4011,9 +4129,10 @@ async function performPatchAction(path, successMessage, body) {
   try {
     const result = await api(path, { method: 'PATCH', ...(body !== undefined ? { body } : {}) });
     if (String(path || '').startsWith('/api/feedback/admin/') && result?.id) {
-      mergeFeedbackDetailIntoList(result);
+      const previous = state.feedbackDetails?.[result.id]?.data || null;
+      mergeFeedbackDetailIntoList(previous ? { ...previous, ...result } : result);
     }
-    await refreshAfterAdminMutation(successMessage || 'Updated successfully.');
+    await refreshAfterAdminMutation(successMessage || 'Updated successfully.', { path, result });
   } catch (error) {
     if (modalRequest && state.modal) {
       state.modal.loading = false;
@@ -4042,8 +4161,8 @@ async function performPostAction(path, successMessage, body) {
   }
   render();
   try {
-    await api(path, { method: 'POST', ...(body !== undefined ? { body } : {}) });
-    await refreshAfterAdminMutation(successMessage || 'Saved successfully.');
+    const result = await api(path, { method: 'POST', ...(body !== undefined ? { body } : {}) });
+    await refreshAfterAdminMutation(successMessage || 'Saved successfully.', { path, result });
   } catch (error) {
     if (modalRequest && state.modal) {
       state.modal.loading = false;
@@ -4258,7 +4377,7 @@ async function submitCloseModal() {
     const result = await api(path, { method: 'PATCH', body });
     if (result?.id) mergeFeedbackDetailIntoList(result);
     state.feedbackQueueCounts = null;
-    await refreshAfterAdminMutation('Feedback closed.');
+    await refreshAfterAdminMutation('Feedback closed.', { path, result });
   } catch (error) {
     // A close request can commit successfully and still lose the HTTP response
     // during rolling deploys or optional notification enrichment. Verify the
@@ -4268,7 +4387,7 @@ async function submitCloseModal() {
       if (String(verified?.status || '').toUpperCase() === 'CLOSED') {
         mergeFeedbackDetailIntoList(verified);
         state.feedbackQueueCounts = null;
-        await refreshAfterAdminMutation('Feedback closed. The server confirmed the committed result after the original response failed.');
+        await refreshAfterAdminMutation('Feedback closed. The server confirmed the committed result after the original response failed.', { path, result: verified });
         return;
       }
     } catch (_) {
@@ -5229,9 +5348,7 @@ async function submitEmergencyActionModal() {
       const cacheResult = await clearCollaborationPolicyCache(reason.value, { forceTokenRefresh: true });
       cacheMessage = cacheResult.message;
     }
-    setMessage(`${module.title} updated. ${cacheMessage}`.trim());
-    state.modal = null;
-    await loadData();
+    await refreshAfterAdminMutation(`${module.title} updated. ${cacheMessage}`.trim());
   } catch (error) {
     if (state.modal) {
       state.modal.loading = false;
@@ -5276,9 +5393,7 @@ async function submitEmergencyRuleActionModal() {
         ? 'DISABLE GLOBAL RULE'
         : 'ENABLE GLOBAL RULE';
     await api(paths.status(id, modal.action), { method: 'POST', body: criticalActionFields(reason.value, confirmPhrase, 'global_rule_action'), forceTokenRefresh: true });
-    setMessage(`${humanizeKey(rule.globalLearningKind)} rule ${modal.action.toLowerCase()} completed.`);
-    state.modal = null;
-    await loadData();
+    await refreshAfterAdminMutation(`${humanizeKey(rule.globalLearningKind)} rule ${modal.action.toLowerCase()} completed.`);
   } catch (error) {
     if (state.modal) {
       state.modal.loading = false;
@@ -5467,8 +5582,8 @@ function renderAnalyticsToolbar() {
     ]),
     state.analyticsRangeNotice ? el('p', { class: 'analytics-range-notice', text: state.analyticsRangeNotice }) : null,
     el('div', { class: 'compact-help-row' }, [
-      el('span', { class: 'muted', text: 'Date range applies to this dashboard.' }),
-      renderInfoHint('Selected range affects Active users, New users, feature adoption, funnel, invites, and Smart Capture sections. DAU, WAU, and MAU use today-based rolling windows.', { compact: true, label: 'Date range details' }),
+      el('span', { class: 'muted', text: `Date range applies to ${currentAnalyticsView().label}.` }),
+      renderInfoHint('Only the active analytics section is refreshed when the range changes. DAU, WAU, and MAU in Overview use today-based rolling windows.', { compact: true, label: 'Date range details' }),
     ]),
   ]);
 }
@@ -5484,6 +5599,7 @@ function renderAnalyticsHero() {
         ]),
       ]),
     ]),
+    renderAnalyticsViewTabs(),
     renderAnalyticsToolbar(),
     el('div', { class: 'privacy-note' }, [
       el('span', { text: 'Privacy-safe metrics only' }),
@@ -5622,22 +5738,20 @@ function renderAnalyticsDashboard() {
     ['DAU', formatMetricValue(getMetric(overview, ['dau'])), 'Daily active users today.'],
     ['WAU', formatMetricValue(getMetric(overview, ['wau'])), 'Weekly active users.'],
     ['MAU', formatMetricValue(getMetric(overview, ['mau'])), 'Monthly active users.'],
+    ['Active users', formatMetricValue(getMetric(overview, ['activeUsers'])), 'Active users in the selected range.'],
     ['New users', formatMetricValue(getMetric(overview, ['newUsers'])), 'New accounts in selected range.'],
     ['Paid users', formatMetricValue(getMetric(overview, ['paidUsers'])), 'Users with non-free entitlement.'],
     ['Free to paid', formatPercent(getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion'])), 'Current paid conversion.', toneForMinimum(getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion']), 3, 1)],
     ['D7 retention', formatPercent(getMetric(overview, ['d7RetentionRate', 'd7Retention'])), 'Cohort D7 retention.', toneForMinimum(getMetric(overview, ['d7RetentionRate', 'd7Retention']), 8, 4)],
     ['D30 retention', formatPercent(getMetric(overview, ['d30RetentionRate', 'd30Retention'])), 'Cohort D30 retention.', toneForMinimum(getMetric(overview, ['d30RetentionRate', 'd30Retention']), 8, 4)],
-    ['Smart Capture saved rate', formatPercent(getMetric(overview, ['smartCaptureCandidateSavedRate'])), 'Saved / detected candidate rate.'],
-    ['Limit upgrade CTR', formatPercent(getMetric(limitMetrics, ['upgradeClickRate'])), 'Upgrade clicks after limit reached.', toneForMinimum(getMetric(limitMetrics, ['upgradeClickRate']), 20, 8)],
-    ['Limit dismiss rate', formatPercent(getMetric(limitMetrics, ['dismissRate'])), 'Dismisses after limit reached.', toneForMaximum(getMetric(limitMetrics, ['dismissRate']), 35, 60)],
-    ['Trial extension CTR', formatPercent(getMetric(conversionFunnel, ['extensionClickRate'])), 'Clicks on feedback +7 prompt.', toneForMinimum(getMetric(conversionFunnel, ['extensionClickRate']), 25, 10)],
+    ['Avg transactions / WAU', formatMetricValue(getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser'])), 'Average weekly transaction frequency.'],
+    ['Invite sent', formatMetricValue(getMetric(overview, ['inviteSentCount'])), 'Invitation activity in selected range.'],
+    ['Smart Capture enabled', formatMetricValue(getMetric(overview, ['smartCaptureEnabledUsers'])), 'Users with Smart Capture enabled in selected range.'],
   ].map(([label, value, hint, tone]) => renderAnalyticsCard(label, value, hint, tone || ''));
 
   const targetCards = [
     renderAnalyticsProgress('D30 retention target', getMetric(overview, ['d30RetentionRate', 'd30Retention']), 8, '%', 'Target >= 8%'),
     renderAnalyticsProgress('Free to paid conversion target', getMetric(overview, ['freeToPaidConversionRate', 'freeToPaidConversion']), 3, '%', 'Target >= 3%'),
-    renderAnalyticsProgress('Limit upgrade CTR target', getMetric(limitMetrics, ['upgradeClickRate']), 20, '%', 'Target >= 20%'),
-    renderAnalyticsProgress('Trial extension CTR target', getMetric(conversionFunnel, ['extensionClickRate']), 25, '%', 'Target >= 25%'),
     renderAnalyticsProgress('Transaction frequency target', getMetric(overview, ['avgTransactionsPerWeeklyActiveUser', 'averageTransactionsPerWeeklyActiveUser']), 5, '', 'Target >= 5 per WAU'),
     renderAnalyticsCard('Users with ≥5 transactions/week', formatMetricValue(getMetric(overview, ['usersWithAtLeastFiveTransactionsPerWeek'])), 'Shows active users who are transacting frequently.', ''),
   ];
@@ -5792,35 +5906,53 @@ function renderAnalyticsDashboard() {
     ]),
   ]);
 
-  const anyData = Object.values(state.analyticsData).some((segment) => segment && (Array.isArray(segment) ? segment.length > 0 : Object.keys(segment).length > 0));
+  const activeKeys = analyticsViewKeys();
+  const anyData = activeKeys.some((key) => {
+    const segment = state.analyticsData[key];
+    return segment && (Array.isArray(segment) ? segment.length > 0 : Object.keys(segment).length > 0);
+  });
   if (state.analyticsLoading && !anyData) {
-    return el('div', {}, [renderAnalyticsHero(), renderLoadingState('Loading analytics data...', 'Please wait while all dashboard sections finish loading.')]);
+    return el('div', {}, [
+      renderAnalyticsHero(),
+      renderLoadingState(`Loading ${currentAnalyticsView().label} analytics...`, 'Only this section is being requested from the backend.'),
+    ]);
   }
 
   if (!anyData) {
     return el('div', {}, [renderAnalyticsHero(), renderAnalyticsEmptyState()]);
   }
 
+  const viewSections = {
+    overview: [
+      renderAnalyticsSection('Executive Summary', 'Quick reads for product health, retention and monetization.', [
+        el('div', { class: 'analytics-grid' }, overviewCards),
+      ]),
+      renderAnalyticsSection('Product-market fit targets', 'Launch validation targets backed only by the Overview endpoint.', [
+        el('div', { class: 'analytics-target-grid' }, targetCards),
+      ]),
+    ],
+    retention: [retentionRows.length ? retentionTable : renderAnalyticsEmptyState()],
+    conversion: [
+      conversionFunnelSection,
+      limitModalSection,
+      renderAnalyticsSection('Conversion targets', 'Targets that depend on conversion and limit-interaction data.', [
+        el('div', { class: 'analytics-target-grid' }, [
+          renderAnalyticsProgress('Limit upgrade CTR target', getMetric(limitMetrics, ['upgradeClickRate']), 20, '%', 'Target >= 20%'),
+          renderAnalyticsProgress('Trial extension CTR target', getMetric(conversionFunnel, ['extensionClickRate']), 25, '%', 'Target >= 25%'),
+          renderAnalyticsProgress('Paywall → Trial target', getMetric(conversionFunnel, ['paywallToTrialRate']), 20, '%', 'Use this as an operational comparison target.'),
+        ]),
+      ]),
+    ],
+    features: [featuresList],
+    collaboration: [invitesSection, inviteLinkFunnelSection],
+    smartCapture: [smartCaptureSection],
+  };
+
   return el('div', {}, [
     renderAnalyticsHero(),
-    state.analyticsLoading ? el('div', { class: 'compact-help-row cache-status-row', role: 'status', 'aria-live': 'polite' }, [
-      el('span', { class: 'badge success', text: 'Loading sections' }),
-      el('span', { class: 'muted', text: 'Available analytics are shown now; slower sections will appear automatically.' }),
-    ]) : null,
-    renderAnalyticsSection('Executive Summary', 'Quick reads for retention, monetization and conversion health.', [
-      el('div', { class: 'analytics-grid' }, overviewCards),
-    ]),
-    renderAnalyticsSection('Product-market fit targets', 'Quick checks for the launch validation targets you care about most.', [
-      el('div', { class: 'analytics-target-grid' }, targetCards),
-    ]),
-    conversionFunnelSection,
-    limitModalSection,
-    retentionRows.length ? retentionTable : renderAnalyticsEmptyState(),
-    featuresList,
-    invitesSection,
-    inviteLinkFunnelSection,
-    smartCaptureSection,
+    ...(viewSections[state.analyticsView] || viewSections.overview),
   ]);
+
 }
 
 function renderStats(items) {
@@ -8550,9 +8682,7 @@ async function submitUsageAdjustModal() {
       newUsedCount: newUsed.value,
       ...criticalActionFields(reason.value, modal.expectedPhrase, 'usage_adjustment'),
     } });
-    setMessage('Usage counter adjusted.');
-    state.modal = null;
-    await loadData();
+    await refreshAfterAdminMutation('Usage counter adjusted.');
   } catch (error) {
     if (state.modal) {
       state.modal.loading = false;
@@ -8869,10 +8999,9 @@ async function decideGlobalLearningCandidate(item, approve) {
           : { reason: 'Rejected from Global Learning Review' },
       }
     );
-    setMessage(approve
+    await refreshAfterAdminMutation(approve
       ? `${isTemplateCandidate ? 'Receipt template ' : isStatementImport ? 'Statement Import ' : isOcr ? 'OCR ' : ''}suggestion rule approved with review-only safeguards.`
       : 'Candidate rejected.');
-    await loadData();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'Unable to update global learning candidate.'), true);
     state.loading = false;
@@ -9283,8 +9412,7 @@ async function disableAnnouncement(item) {
   state.loading = true; render();
   try {
     await api(API_PATHS.announcements.disable(item.id), { method: 'POST', body: { reason: reason.value } });
-    setMessage('Announcement disabled. App local dismissed IDs will be pruned on the next active-announcement fetch.');
-    await loadData();
+    await refreshAfterAdminMutation('Announcement disabled. App local dismissed IDs will be pruned on the next active-announcement fetch.');
   } catch (error) {
     setMessage(error, true);
     state.loading = false; render();
@@ -9602,9 +9730,7 @@ async function submitAnnouncementModal() {
       reason: reason.value,
     };
     await api(modal.id ? API_PATHS.announcements.update(modal.id) : API_PATHS.announcements.create, { method: modal.id ? 'PATCH' : 'POST', body });
-    setMessage(modal.id ? 'Announcement updated.' : 'Announcement created.');
-    state.modal = null;
-    await loadData();
+    await refreshAfterAdminMutation(modal.id ? 'Announcement updated.' : 'Announcement created.');
   } catch (error) {
     if (state.modal) {
       state.modal.loading = false;
@@ -9681,8 +9807,7 @@ function renderCollaborationPolicyStatusCard() {
             const password = window.prompt('Enter admin password to re-authenticate before clearing collaboration cache.') || '';
             await reauthenticateAdminForCriticalAction(password);
             const result = await clearCollaborationPolicyCache('Manual emergency console cache clear from status panel.', { forceTokenRefresh: true });
-            setMessage(result.message);
-            await loadData({ force: true });
+            await refreshAfterAdminMutation(result.message || 'Collaboration policy cache cleared.');
           } catch (error) {
             setMessage(error, true);
             state.loading = false;
@@ -9771,8 +9896,7 @@ function renderEmergencyModuleCard(module) {
             const password = window.prompt('Enter admin password to re-authenticate before clearing collaboration cache.') || '';
             await reauthenticateAdminForCriticalAction(password);
             const result = await clearCollaborationPolicyCache('Manual emergency console cache clear.', { forceTokenRefresh: true });
-            setMessage(result.message);
-            await loadData();
+            await refreshAfterAdminMutation(result.message || 'Collaboration policy cache cleared.');
           } catch (error) {
             setMessage(error, true);
             state.loading = false;
@@ -10009,9 +10133,7 @@ async function submitPolicyRollbackModal() {
       method: 'POST',
       body: criticalActionFields(reasonCheck.value, modal.expectedPhrase, 'rollback_policy'),
     });
-    setMessage('Policy version rolled back successfully.');
-    state.modal = null;
-    await loadData();
+    await refreshAfterAdminMutation('Policy version rolled back successfully.');
   } catch (error) {
     if (state.modal) state.modal.loading = false;
     setModalError(error, '');
@@ -10106,9 +10228,7 @@ async function submitRateLimitOverrideDeleteModal() {
       method: 'DELETE',
       body: criticalActionFields(reasonCheck.value, modal.expectedPhrase, 'delete_rate_limit'),
     });
-    setMessage('Rate limit override deleted.');
-    state.modal = null;
-    await loadData();
+    await refreshAfterAdminMutation('Rate limit override deleted.');
   } catch (error) {
     if (state.modal) state.modal.loading = false;
     setModalError(error, '');
@@ -10396,69 +10516,75 @@ async function loadLearningHousekeepingData(loadRequest = null) {
 }
 
 
+async function loadLearningConsoleReadModel({ force = false } = {}) {
+  const cached = state.learningConsoleReadModel;
+  if (!force && cached?.data && (Date.now() - Number(cached.loadedAt || 0)) < 15_000) {
+    return cached.data;
+  }
+  const data = normalizeAdminObjectResponse(await api(API_PATHS.learningOps.console));
+  state.learningConsoleReadModel = { data, loadedAt: Date.now() };
+  return data;
+}
+
+
 async function loadLearningConsoleData(loadRequest = null) {
   const request = loadRequest || beginLoadRequest('learningConsole');
-  const safe = (promise, fallback) => promise.catch(() => fallback);
-  const [
-    learningOpsOverview,
-    smartPending,
-    smartActive,
-    ocrPending,
-    ocrActive,
-    statementPending,
-    statementActive,
-    templatePending,
-    templateFamilies,
-    housekeepingDomains,
-    housekeepingRuns,
-  ] = await Promise.all([
-    safe(api(API_PATHS.learningOps.overview), {}),
-    safe(api(API_PATHS.smartCaptureRules.candidates, { params: { status: 'PENDING' } }), []),
-    safe(api(API_PATHS.smartCaptureRules.active), { rules: [] }),
-    safe(api(API_PATHS.ocrReceiptRules.candidates, { params: { status: 'PENDING' } }), []),
-    safe(api(API_PATHS.ocrReceiptRules.active), { rules: [] }),
-    safe(api(API_PATHS.statementImportRules.candidates, { params: { status: 'PENDING' } }), []),
-    safe(api(API_PATHS.statementImportRules.active), { rules: [] }),
-    safe(api(API_PATHS.ocrReceiptTemplates.candidates, { params: { status: 'PENDING' } }), []),
-    safe(api(API_PATHS.learningTemplateFamilies.candidates, { params: { domain: 'ALL', status: 'PENDING_ADMIN_REVIEW' } }), []),
-    safe(api(API_PATHS.learningHousekeeping.domains), []),
-    safe(api(API_PATHS.learningHousekeeping.runs, { params: { limit: 10 } }), []),
-  ]);
-  if (!isLoadRequestCurrent(request)) return;
+  try {
+    const readModel = await loadLearningConsoleReadModel();
+    if (!isLoadRequestCurrent(request)) return;
 
-  const candidates = [
-    ...normalizeAdminListResponse(smartPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' })),
-    ...normalizeAdminListResponse(ocrPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' })),
-    ...normalizeAdminListResponse(statementPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'statement_import_format', globalLearningKind: 'statement_import' })),
-    ...normalizeAdminListResponse(templatePending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || item.sourceScope || item.source_scope || item.scanType || item.scan_type || 'receipt_single', globalLearningKind: 'ocr_receipt_template', isTemplateCandidate: true })),
-  ];
-  const activeRules = [
-    ...(normalizeAdminObjectResponse(smartActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' })),
-    ...(normalizeAdminObjectResponse(ocrActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' })),
-    ...(normalizeAdminObjectResponse(statementActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'statement_import_format', globalLearningKind: 'statement_import' })),
-  ];
-  const housekeepingDomainRows = normalizeLearningHousekeepingDomains(housekeepingDomains);
-  const housekeepingRunRows = normalizeAdminListResponse(housekeepingRuns);
-  const familyRows = normalizeAdminListResponse(templateFamilies);
-  state.learningOps.overview = normalizeAdminObjectResponse(learningOpsOverview);
-  setScopedData({
-    content: candidates,
-    activeRules,
-    learningConsole: {
-      candidates,
+    const learningOpsOverview = normalizeAdminObjectResponse(readModel.learningOpsOverview);
+    const smartPending = readModel.smartPending || [];
+    const smartActive = readModel.smartActive || { rules: [] };
+    const ocrPending = readModel.ocrPending || [];
+    const ocrActive = readModel.ocrActive || { rules: [] };
+    const statementPending = readModel.statementPending || [];
+    const statementActive = readModel.statementActive || { rules: [] };
+    const templatePending = readModel.receiptTemplatePending || [];
+    const templateActive = readModel.receiptTemplateActive || { updatedRules: [] };
+    const templateFamilies = readModel.templateFamilyCandidates || [];
+    const housekeepingDomains = readModel.housekeepingDomains || [];
+    const housekeepingRuns = readModel.housekeepingRuns || [];
+
+    const candidates = [
+      ...normalizeAdminListResponse(smartPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' })),
+      ...normalizeAdminListResponse(ocrPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' })),
+      ...normalizeAdminListResponse(statementPending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'statement_import_format', globalLearningKind: 'statement_import' })),
+      ...normalizeAdminListResponse(templatePending).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || item.sourceScope || item.source_scope || item.scanType || item.scan_type || 'receipt_single', globalLearningKind: 'ocr_receipt_template', isTemplateCandidate: true })),
+    ];
+    const activeRules = [
+      ...(normalizeAdminObjectResponse(smartActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'smart_capture_notification', globalLearningKind: 'smart_capture' })),
+      ...(normalizeAdminObjectResponse(ocrActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'ocr_receipt_layout', globalLearningKind: 'ocr_receipt' })),
+      ...(normalizeAdminObjectResponse(statementActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || 'statement_import_format', globalLearningKind: 'statement_import' })),
+      ...((normalizeAdminObjectResponse(templateActive).updatedRules || normalizeAdminObjectResponse(templateActive).rules || []).map((item) => ({ ...item, sourceType: item.sourceType || item.source_type || item.sourceScope || item.source_scope || item.scanType || item.scan_type || 'receipt_single', globalLearningKind: 'ocr_receipt_template', isTemplateRule: true }))),
+    ];
+    const housekeepingDomainRows = normalizeLearningHousekeepingDomains(housekeepingDomains);
+    const housekeepingRunRows = normalizeAdminListResponse(housekeepingRuns);
+    const familyRows = normalizeAdminListResponse(templateFamilies);
+    state.learningOps.overview = learningOpsOverview;
+    setScopedData({
+      content: candidates,
       activeRules,
-      templateFamilies: familyRows,
-      housekeepingDomains: housekeepingDomainRows,
-      housekeepingRuns: housekeepingRunRows,
-      learningOpsOverview: state.learningOps.overview,
-      contract: LEARNING_CONSOLE_CONTRACT,
-      housekeepingContract: LEARNING_HOUSEKEEPING_CONTRACT,
-    },
-    page: 0,
-    size: candidates.length,
-    totalElements: candidates.length,
-    totalPages: 1,
-  }, request);
+      learningConsole: {
+        candidates,
+        activeRules,
+        templateFamilies: familyRows,
+        housekeepingDomains: housekeepingDomainRows,
+        housekeepingRuns: housekeepingRunRows,
+        learningOpsOverview: state.learningOps.overview,
+        contract: LEARNING_CONSOLE_CONTRACT,
+        housekeepingContract: LEARNING_HOUSEKEEPING_CONTRACT,
+      },
+      page: 0,
+      size: candidates.length,
+      totalElements: candidates.length,
+      totalPages: 1,
+    }, request);
+  } catch (error) {
+    if (!isLoadRequestCurrent(request)) return;
+    const friendly = toFriendlyErrorMessage(error, 'Failed to load Learning Console.');
+    setScopedData({ content: [], activeRules: [], learningConsole: null, loadError: friendly, page: 0, size: 0, totalElements: 0, totalPages: 1 }, request);
+  }
 }
 
 function buildLearningHousekeepingRequest(domain, overrides = {}) {
@@ -10551,7 +10677,7 @@ async function runLearningHousekeepingAction(domain, action) {
     const result = await api(endpoint, { method: 'POST', body, forceTokenRefresh: Boolean(critical) });
     state.learningHousekeeping.lastPlan = result || null;
     setMessage(`${action === 'plan' ? 'Dry run' : isHardDelete ? 'Merge-retire' : action} completed for ${domain}.`);
-    await loadLearningHousekeepingData();
+    refreshCurrentAdminViewInBackground();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'Learning housekeeping action failed.'), true);
   } finally {
@@ -10652,7 +10778,7 @@ async function updateHousekeepingRetentionSetting(setting) {
       forceTokenRefresh: true,
     });
     setMessage(`${housekeepingPolicyFieldLabel(field)} updated to ${parsed.value} ${range.unit}.`);
-    await loadLearningHousekeepingData();
+    refreshCurrentAdminViewInBackground();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'Housekeeping retention update failed.'), true);
   } finally {
@@ -10790,7 +10916,7 @@ async function updateSystemHousekeepingSchedule(job) {
       forceTokenRefresh: true,
     });
     setMessage(`${target} housekeeping schedule updated to ${result?.scheduleSummary || rawTime}.`);
-    await loadLearningHousekeepingData();
+    refreshCurrentAdminViewInBackground();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'System housekeeping schedule update failed.'), true);
   } finally {
@@ -10814,7 +10940,7 @@ async function runSystemHousekeepingAction(target) {
     });
     state.systemHousekeeping.lastRun = result || null;
     setMessage(result?.resultSummary || `${cleanTarget} housekeeping completed. Page reloaded with latest settings.`);
-    await loadLearningHousekeepingData();
+    refreshCurrentAdminViewInBackground();
   } catch (error) {
     setMessage(toFriendlyErrorMessage(error, 'System housekeeping action failed.'), true);
   } finally {
@@ -11420,13 +11546,13 @@ async function runGovernanceAction(successMessage, action) {
     }
     state.message = successMessage;
     state.error = '';
-    if (!state.user) {
-      state.loading = false;
-      render();
-      return;
-    }
-    await loadAdminSession().catch(() => null);
-    await loadData({ force: true });
+    state.loading = false;
+    render();
+    if (!state.user) return;
+    Promise.resolve().then(async () => {
+      await loadAdminSession().catch(() => null);
+      if (state.user) await loadData({ force: true, background: true });
+    }).catch((error) => console.warn('[Admin] background governance refresh failed', error));
   } catch (error) {
     state.loading = false;
     setMessage(toFriendlyErrorMessage(error, 'Security action failed.'), true);

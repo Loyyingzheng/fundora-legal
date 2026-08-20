@@ -6000,3 +6000,50 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Growth Analytics domain navigation: keep the page lightweight by loading one domain at a time. */
+.analytics-view-tabs {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  margin: 2px 0 14px;
+}
+.analytics-view-tab {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card-soft);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+.analytics-view-tab:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+.analytics-view-tab.active {
+  color: var(--primary-dark);
+  border-color: rgba(15, 118, 110, 0.34);
+  background: var(--primary-soft-2);
+  box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.16);
+}
+.analytics-view-tab-label {
+  font-weight: 700;
+  line-height: 1.2;
+}
+.analytics-view-tab-helper {
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+@media (max-width: 1080px) {
+  .analytics-view-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+  .analytics-view-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .analytics-view-tab { padding: 10px; }
+}

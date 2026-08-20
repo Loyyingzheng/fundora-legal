@@ -12,7 +12,8 @@ const assert = (condition, message) => {
 };
 
 assert(app.includes("conversion: '/api/analytics/admin/conversion'"), 'conversion API path is missing');
-assert(app.includes("['conversion', API_PATHS.analytics.conversion]"), 'loadAnalyticsData must request conversion metrics');
+assert(app.includes("sections: [['conversionView', API_PATHS.analytics.conversionView]]"), 'Conversion view must use the prepared composite endpoint');
+assert(app.includes("dataKeys: ['funnel', 'conversion']"), 'Conversion composite must preserve funnel + conversion metrics');
 assert(app.includes('conversion: null'), 'analytics state must include conversion segment');
 assert(app.includes('Free to Pro Conversion Funnel'), 'dashboard must render Free to Pro Conversion Funnel');
 assert(app.includes('Limit Modal Performance'), 'dashboard must render Limit Modal Performance');
