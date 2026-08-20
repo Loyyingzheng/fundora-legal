@@ -79,6 +79,10 @@ const API_PATHS = {
     close: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/close`,
     reopen: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/reopen`,
     screenshot: (id) => `/api/feedback/admin/${encodeURIComponent(id)}/screenshot`,
+    diagnostics: '/api/feedback/admin/diagnostics',
+    diagnosticQueueCounts: '/api/feedback/admin/diagnostics/queue-counts',
+    diagnosticDetail: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}`,
+    diagnosticStatus: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}/status`,
   },
   rewardSurvey: {
     list: '/api/subscription/feedback-trial/admin/surveys',
@@ -450,11 +454,15 @@ const state = {
   page: 0,
   size: 30,
   feedbackPageSize: 15,
+  feedbackView: 'USER_FEEDBACK',
   feedbackQueue: 'ACTION_REQUIRED',
   feedbackFilters: { status: '', module: '', type: '' },
   feedbackOptions: null,
   feedbackQueueCounts: null,
   feedbackDetails: {},
+  diagnosticFilters: { status: 'OPEN', module: '', severity: '' },
+  diagnosticQueueCounts: null,
+  diagnosticDetails: {},
   feedbackScreenshotPreviews: {},
   feedbackScreenshotAutoLoadScheduled: false,
   feedbackScreenshotAutoLoading: false,
@@ -641,7 +649,9 @@ function stableStringifyForCache(value) {
 }
 
 function getAdminTabCacheFilters(tab = state.activeTab) {
-  if (tab === 'feedback') return { feedbackQueue: state.feedbackQueue, feedbackFilters: state.feedbackFilters, page: state.page, size: state.feedbackPageSize };
+  if (tab === 'feedback') return state.feedbackView === 'SYSTEM_DIAGNOSTICS'
+    ? { feedbackView: state.feedbackView, diagnosticFilters: state.diagnosticFilters, page: state.page, size: state.feedbackPageSize }
+    : { feedbackView: state.feedbackView, feedbackQueue: state.feedbackQueue, feedbackFilters: state.feedbackFilters, page: state.page, size: state.feedbackPageSize };
   if (tab === 'analytics') return { analyticsDateRange: state.analyticsDateRange, analyticsPreset: state.analyticsPreset, analyticsView: state.analyticsView };
   if (tab === 'premium' || tab === 'review') return { page: state.page, size: 50 };
   if (tab === 'auditLogs') return { action: state.adminFilters.action, targetType: state.adminFilters.targetType, page: state.page, size: state.size };
@@ -1500,6 +1510,8 @@ const CREDIT_PROVIDER_STATUSES = ['GOOGLE_PLAY_DEFER_PENDING', 'GOOGLE_PLAY_DEFE
 
 const STATUS_COPY = {
   OPEN: { label: 'Open', tone: 'open', helper: 'New report waiting for admin review.' },
+  INVESTIGATING: { label: 'Investigating', tone: 'info', helper: 'Engineering is actively investigating this system issue.' },
+  RESOLVED: { label: 'Resolved', tone: 'closed', helper: 'The canonical system issue has been resolved.' },
   REVIEWING: { label: 'Reviewing', tone: 'info', helper: 'Admin is checking the issue.' },
   NEED_MORE_INFO: { label: 'Need more info', tone: 'warn', helper: 'Ask the user for screenshot, recording, or steps.' },
   VERIFIED: { label: 'Verified', tone: 'success', helper: 'Confirmed issue. Check service credit eligibility.' },
@@ -2177,6 +2189,8 @@ function resetSignedInRuntimeState() {
   state.feedbackOptions = null;
   state.feedbackQueueCounts = null;
   state.feedbackDetails = {};
+  state.diagnosticQueueCounts = null;
+  state.diagnosticDetails = {};
   clearFeedbackScreenshotPreviews();
   state.feedbackScreenshotAutoLoadScheduled = false;
   state.feedbackScreenshotAutoLoading = false;
@@ -3359,8 +3373,12 @@ async function loadData(options = {}) {
   const hadStaleCache = !force && restoreAdminTabCache(state.activeTab, { allowStale: true });
   const loadRequest = beginLoadRequest(state.activeTab);
   if (state.activeTab === 'feedback') {
-    loadFeedbackOptions(loadRequest).catch(() => {});
-    loadFeedbackQueueCounts(loadRequest).catch(() => {});
+    if (state.feedbackView === 'SYSTEM_DIAGNOSTICS') {
+      loadDiagnosticQueueCounts(loadRequest).catch(() => {});
+    } else {
+      loadFeedbackOptions(loadRequest).catch(() => {});
+      loadFeedbackQueueCounts(loadRequest).catch(() => {});
+    }
   }
   state.loading = background ? false : true;
   state.error = '';
@@ -3379,14 +3397,24 @@ async function loadData(options = {}) {
 
     let response;
     if (state.activeTab === 'feedback') {
-      response = await api(API_PATHS.feedback.list, {
-        params: {
-          page: state.page,
-          size: state.feedbackPageSize,
-          queue: state.feedbackQueue,
-          ...state.feedbackFilters,
-        },
-      });
+      if (state.feedbackView === 'SYSTEM_DIAGNOSTICS') {
+        response = await api(API_PATHS.feedback.diagnostics, {
+          params: {
+            page: state.page,
+            size: state.feedbackPageSize,
+            ...state.diagnosticFilters,
+          },
+        });
+      } else {
+        response = await api(API_PATHS.feedback.list, {
+          params: {
+            page: state.page,
+            size: state.feedbackPageSize,
+            queue: state.feedbackQueue,
+            ...state.feedbackFilters,
+          },
+        });
+      }
     } else if (state.activeTab === 'premium') {
       response = await api(API_PATHS.rewardSurvey.list, {
         params: { page: state.page, size: 50 },
@@ -3434,6 +3462,60 @@ async function loadFeedbackQueueCounts(loadRequest = null) {
     }
   }
   return state.feedbackQueueCounts;
+}
+
+
+async function loadDiagnosticQueueCounts(loadRequest = null) {
+  if (!state.user || state.activeTab !== 'feedback' || state.feedbackView !== 'SYSTEM_DIAGNOSTICS') return state.diagnosticQueueCounts;
+  try {
+    const response = await api(API_PATHS.feedback.diagnosticQueueCounts);
+    if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
+      state.diagnosticQueueCounts = response || null;
+      render();
+    }
+  } catch (_) {
+    if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
+      state.diagnosticQueueCounts = state.diagnosticQueueCounts || null;
+    }
+  }
+  return state.diagnosticQueueCounts;
+}
+
+async function loadDiagnosticDetail(issueId, { force = false, renderAfter = true } = {}) {
+  if (!issueId || !state.user) return null;
+  const current = state.diagnosticDetails?.[issueId];
+  if (!force && current?.data) return current.data;
+  if (current?.loading) return current.promise || null;
+
+  const entry = { ...(current || {}), loading: true, error: '', data: current?.data || null };
+  state.diagnosticDetails = { ...(state.diagnosticDetails || {}), [issueId]: entry };
+  if (renderAfter) render();
+
+  const promise = api(API_PATHS.feedback.diagnosticDetail(issueId))
+    .then((response) => {
+      state.diagnosticDetails = {
+        ...(state.diagnosticDetails || {}),
+        [issueId]: { loading: false, error: '', data: response || null, promise: null },
+      };
+      if (renderAfter) render();
+      return response || null;
+    })
+    .catch((error) => {
+      state.diagnosticDetails = {
+        ...(state.diagnosticDetails || {}),
+        [issueId]: {
+          loading: false,
+          error: toFriendlyErrorMessage(error, 'System diagnostic details could not be loaded.'),
+          data: current?.data || null,
+          promise: null,
+        },
+      };
+      if (renderAfter) render();
+      throw error;
+    });
+
+  state.diagnosticDetails = { ...(state.diagnosticDetails || {}), [issueId]: { ...entry, promise } };
+  return promise;
 }
 
 async function loadFeedbackDetail(feedbackId, { force = false, renderAfter = true } = {}) {
@@ -5958,6 +6040,16 @@ function renderAnalyticsDashboard() {
 function renderStats(items) {
   const total = state.data?.totalElements ?? items.length;
   if (state.activeTab === 'feedback') {
+    if (state.feedbackView === 'SYSTEM_DIAGNOSTICS') {
+      const impactedUsersOnPage = items.reduce((sum, item) => sum + Math.max(0, Number(item?.affectedUserCount) || 0), 0);
+      const statusLabel = getStatusLabel(state.diagnosticFilters.status || 'OPEN');
+      return el('div', { class: 'stats-grid' }, [
+        stat(`${statusLabel} issues`, total),
+        stat('Affected users on page', impactedUsersOnPage),
+        stat('Loaded issues', items.length),
+        stat('Current page', (state.data?.page ?? state.page) + 1),
+      ]);
+    }
     const queueLabel = {
       ACTION_REQUIRED: 'Action needed',
       CRITICAL: 'Critical',
@@ -5990,7 +6082,90 @@ function stat(label, value) {
 }
 
 
+function switchFeedbackView(view) {
+  const next = view === 'SYSTEM_DIAGNOSTICS' ? 'SYSTEM_DIAGNOSTICS' : 'USER_FEEDBACK';
+  if (state.feedbackView === next) return;
+  state.feedbackView = next;
+  state.page = 0;
+  state.expandedItemIds = {};
+  clearScopedData('feedback');
+  loadData();
+}
+
+function renderFeedbackViewTabs() {
+  const options = [
+    ['USER_FEEDBACK', 'User Feedback'],
+    ['SYSTEM_DIAGNOSTICS', 'System Diagnostics'],
+  ];
+  return el('div', { class: 'feedback-queue-tabs wide', role: 'tablist', 'aria-label': 'App feedback views' },
+    options.map(([value, label]) => el('button', {
+      class: `feedback-queue-tab ${state.feedbackView === value ? 'active' : ''}`.trim(),
+      type: 'button',
+      role: 'tab',
+      'aria-selected': state.feedbackView === value ? 'true' : 'false',
+      text: label,
+      onclick: () => switchFeedbackView(value),
+    }))
+  );
+}
+
+function renderDiagnosticToolbar() {
+  const counts = state.diagnosticQueueCounts || {};
+  const statuses = [
+    ['OPEN', 'Open', counts.open],
+    ['INVESTIGATING', 'Investigating', counts.investigating],
+    ['RESOLVED', 'Resolved', counts.resolved],
+  ];
+  const statusTabs = el('div', { class: 'feedback-queue-tabs wide', role: 'tablist', 'aria-label': 'System diagnostic status' },
+    statuses.map(([value, label, count]) => el('button', {
+      class: `feedback-queue-tab ${state.diagnosticFilters.status === value ? 'active' : ''}`.trim(),
+      type: 'button',
+      role: 'tab',
+      'aria-selected': state.diagnosticFilters.status === value ? 'true' : 'false',
+      text: Number.isFinite(Number(count)) ? `${label} (${count})` : label,
+      onclick: () => {
+        if (state.diagnosticFilters.status === value) return;
+        state.diagnosticFilters.status = value;
+        state.page = 0;
+        clearScopedData('feedback');
+        loadData();
+      },
+    }))
+  );
+
+  const module = select(['', 'BILLS', 'BUCKETS', 'DATABASE', 'GOALS', 'GROUP_EVENT', 'PROFILE', 'SMART_CAPTURE', 'SYNC', 'WALLET', 'AUTH', 'APP'], state.diagnosticFilters.module, (value) => { state.diagnosticFilters.module = value; });
+  const severity = select(['', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'], state.diagnosticFilters.severity, (value) => { state.diagnosticFilters.severity = value; });
+  const pageSize = select(['10', '15', '30'], String(state.feedbackPageSize), (value) => {
+    state.feedbackPageSize = Math.max(5, Math.min(50, Number(value) || 15));
+    state.page = 0;
+    clearScopedData('feedback');
+    loadData();
+  });
+
+  return el('div', { class: 'toolbar feedback-toolbar' }, [
+    renderFeedbackViewTabs(),
+    statusTabs,
+    el('div', {}, [el('label', { text: 'Module' }), module]),
+    el('div', {}, [el('label', { text: 'Severity' }), severity]),
+    el('div', {}, [el('label', { text: 'Rows per page' }), pageSize]),
+    el('div', { class: 'toolbar-context wide' }, [
+      el('span', { text: 'Canonical issue view' }),
+      renderInfoHint('Each card is one canonical system defect. Reports from different users and devices are aggregated by stable module + issue code, with fingerprint fallback only for unknown failures. Affected users is the impact measure.', { compact: true, label: 'System diagnostic aggregation details' }),
+    ]),
+    el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; clearScopedData('feedback'); loadData(); } }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => { state.diagnosticQueueCounts = null; loadData({ force: true }); } }),
+  ]);
+}
+
 function renderFeedbackToolbar() {
+  if (state.feedbackView === 'SYSTEM_DIAGNOSTICS') return renderDiagnosticToolbar();
+  const toolbar = renderUserFeedbackToolbar();
+  const children = [renderFeedbackViewTabs()];
+  Array.from(toolbar.childNodes || []).forEach((node) => children.push(node));
+  return el('div', { class: 'toolbar feedback-toolbar' }, children);
+}
+
+function renderUserFeedbackToolbar() {
   const counts = state.feedbackQueueCounts || {};
   const queueOptions = [
     ['ACTION_REQUIRED', 'Action needed', counts.actionRequired],
@@ -6390,6 +6565,167 @@ async function submitFeedbackCreditModal() {
   }
 }
 
+
+function humanizeDiagnosticIssueCode(code, fallback = '') {
+  const normalized = String(code || '').trim();
+  if (!normalized) return fallback || 'Unknown system diagnostic';
+  return normalized
+    .toLowerCase()
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+async function updateDiagnosticIssueStatus(issueId, status, { resolutionNote = null, fixedVersion = null } = {}) {
+  const path = API_PATHS.feedback.diagnosticStatus(issueId);
+  if (!issueId || isActionBusy(path)) return;
+  state.actionLoadingKey = path;
+  state.actionLoadingMessage = `Updating ${issueId}...`;
+  state.error = '';
+  render();
+  try {
+    const result = await api(path, {
+      method: 'PATCH',
+      body: { status, resolutionNote, fixedVersion },
+    });
+    if (result?.issueId) {
+      state.diagnosticDetails = {
+        ...(state.diagnosticDetails || {}),
+        [result.issueId]: { loading: false, error: '', data: result, promise: null },
+      };
+    }
+    state.diagnosticQueueCounts = null;
+    clearScopedData('feedback');
+    setMessage(status === 'RESOLVED' ? 'System diagnostic resolved.' : `System diagnostic marked ${getStatusLabel(status).toLowerCase()}.`);
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
+    await loadData({ force: true });
+  } catch (error) {
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
+    setMessage(toFriendlyErrorMessage(error, 'System diagnostic could not be updated.'), true);
+    render();
+  }
+}
+
+function resolveDiagnosticIssue(item) {
+  const issueId = item?.issueId;
+  if (!issueId) return;
+  const resolutionNote = window.prompt('Resolution note (optional). Describe the root-cause fix, not user data.', item?.resolutionNote || '');
+  if (resolutionNote === null) return;
+  const fixedVersion = window.prompt('Fixed app/backend version (optional).', item?.fixedVersion || '');
+  if (fixedVersion === null) return;
+  return updateDiagnosticIssueStatus(issueId, 'RESOLVED', {
+    resolutionNote: normalizedTrim(resolutionNote) || null,
+    fixedVersion: normalizedTrim(fixedVersion) || null,
+  });
+}
+
+function renderDiagnosticIssueItem(item) {
+  const issueId = item?.issueId || '';
+  const detailState = state.diagnosticDetails?.[issueId] || {};
+  const fullItem = detailState.data ? { ...item, ...detailState.data } : item;
+  const status = String(fullItem?.status || 'OPEN').toUpperCase();
+  const issueCode = fullItem?.issueCode || '';
+  const isFallback = String(fullItem?.identityType || '').toUpperCase() === 'FINGERPRINT' || !issueCode;
+  const title = issueCode
+    ? humanizeDiagnosticIssueCode(issueCode, fullItem?.issue)
+    : (fullItem?.issue || 'Unexpected system diagnostic');
+  const subtitle = `${fullItem?.module || 'APP'} · ${issueId || 'Canonical issue'}`;
+  const affectedUsers = Math.max(0, Number(fullItem?.affectedUserCount) || 0);
+
+  const detailChildren = [];
+  if (detailState.loading && !detailState.data) {
+    detailChildren.push(renderLoadingState('Loading system diagnostic...', 'Fetching the latest consented evidence for this canonical issue.'));
+  } else if (detailState.error && !detailState.data) {
+    detailChildren.push(el('div', { class: 'notice warning inline-notice', text: detailState.error }));
+  } else if (detailState.data) {
+    detailChildren.push(
+      renderMetaGrid([
+        ['Canonical Issue ID', issueId],
+        ['Stable Issue Code', issueCode || 'Fingerprint fallback'],
+        ['Issue Code Version', fullItem.issueCodeVersion],
+        ['Identity Type', fullItem.identityType],
+        ['Module', fullItem.module],
+        ['Severity', fullItem.severity],
+        ['Affected Users', affectedUsers],
+        ['First Seen', formatDate(fullItem.firstSeenAt)],
+        ['Last Seen', formatDate(fullItem.lastSeenAt)],
+        ['Investigating Since', formatDate(fullItem.investigatingAt)],
+        ['Resolved', formatDate(fullItem.resolvedAt)],
+        ['Reopened / Regression', formatDate(fullItem.reopenedAt)],
+        ['Fixed Version', fullItem.fixedVersion],
+        ['Resolution Note', fullItem.resolutionNote],
+      ]),
+      fullItem.latestDescription
+        ? el('details', { class: 'nested-details' }, [
+            el('summary', { text: 'Latest consented report description' }),
+            el('p', { class: 'item-desc', text: fullItem.latestDescription }),
+          ])
+        : null,
+      fullItem.latestTechnicalDiagnostics
+        ? el('details', { class: 'nested-details technical-diagnostics' }, [
+            el('summary', { text: 'Latest technical evidence' }),
+            el('div', { class: 'compact-guidance' }, [
+              el('strong', { text: 'User-approved diagnostic evidence' }),
+              renderInfoHint('This is the latest consented evidence linked to the canonical issue. The queue itself is issue-centric, so multiple users do not create duplicate issue cards.', { compact: true, label: 'Diagnostic evidence privacy and aggregation' }),
+            ]),
+            el('pre', { text: safeJson(fullItem.latestTechnicalDiagnostics) }),
+          ])
+        : null,
+    );
+  } else {
+    detailChildren.push(el('p', { class: 'item-desc', text: 'Expand this canonical issue to load the latest consented technical evidence.' }));
+  }
+
+  const chips = [
+    fullItem?.module,
+    fullItem?.severity,
+    isFallback ? 'Fingerprint fallback' : `Stable code v${fullItem?.issueCodeVersion || 1}`,
+    fullItem?.reopenedAt ? 'Regression history' : '',
+  ].filter(Boolean);
+
+  return renderCollapsibleItem({
+    scope: 'diagnostic',
+    itemId: issueId,
+    title,
+    subtitle,
+    statusNode: el('span', { class: getStatusClass(status), text: getStatusLabel(status) }),
+    onToggle: (expanded) => {
+      if (expanded && !state.diagnosticDetails?.[issueId]?.data && !state.diagnosticDetails?.[issueId]?.loading) {
+        loadDiagnosticDetail(issueId).catch(() => {});
+      }
+    },
+    children: [
+      el('div', { class: 'compact-guidance' }, [
+        el('strong', { text: `${affectedUsers} affected user${affectedUsers === 1 ? '' : 's'}` }),
+        renderInfoHint('Affected users is a distinct-user count from the canonical issue-user mapping. Repeated reports from the same user update evidence and last-seen time without increasing this number.', { compact: true, label: 'Affected-user count meaning' }),
+      ]),
+      chips.length ? el('div', { class: 'chip-row' }, chips.map((text) => el('span', { class: 'chip', text }))) : null,
+      renderMetaGrid([
+        ['Issue ID', issueId],
+        ['Issue Code', issueCode || 'Unknown failure · fingerprint fallback'],
+        ['Affected Users', affectedUsers],
+        ['First Seen', formatDate(fullItem?.firstSeenAt)],
+        ['Last Seen', formatDate(fullItem?.lastSeenAt)],
+      ]),
+      ...detailChildren,
+      state.actionLoadingKey ? el('div', { class: 'notice inline-notice', text: `Admin action running: ${state.actionLoadingMessage || 'Please wait...'}` }) : null,
+      el('div', { class: 'actions feedback-actions' }, [
+        status !== 'INVESTIGATING' && status !== 'RESOLVED'
+          ? el('button', { class: 'btn small', text: isActionBusy(API_PATHS.feedback.diagnosticStatus(issueId)) ? 'Updating...' : 'Start investigating', disabled: isActionBusy(API_PATHS.feedback.diagnosticStatus(issueId)), onclick: (event) => runFeedbackAction(event, () => updateDiagnosticIssueStatus(issueId, 'INVESTIGATING')) })
+          : null,
+        status === 'INVESTIGATING'
+          ? el('button', { class: 'btn ghost small', text: 'Move back to open', onclick: (event) => runFeedbackAction(event, () => updateDiagnosticIssueStatus(issueId, 'OPEN')) })
+          : null,
+        status !== 'RESOLVED'
+          ? el('button', { class: 'btn success small', text: 'Resolve issue', onclick: (event) => runFeedbackAction(event, () => resolveDiagnosticIssue(fullItem)) })
+          : el('button', { class: 'btn small', text: 'Reopen issue', onclick: (event) => runFeedbackAction(event, () => updateDiagnosticIssueStatus(issueId, 'OPEN')) }),
+      ]),
+    ].filter(Boolean),
+  });
+}
 
 function renderFeedbackItem(item) {
   const detailState = state.feedbackDetails?.[item.id] || {};
@@ -12615,7 +12951,7 @@ function renderSignedIn() {
     children.push(el('div', { class: 'card empty-state' }, [el('div', { class: 'empty-state-icon', 'aria-hidden': 'true' }), el('strong', { text: 'No records found.' }), el('p', { class: 'muted', text: 'Try another filter or refresh after new submissions are created.' })]));
   } else {
     const renderer = state.activeTab === 'feedback'
-      ? renderFeedbackItem
+      ? (state.feedbackView === 'SYSTEM_DIAGNOSTICS' ? renderDiagnosticIssueItem : renderFeedbackItem)
       : state.activeTab === 'premium'
         ? renderPremiumItem
         : renderReviewPromptItem;
