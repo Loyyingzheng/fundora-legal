@@ -520,6 +520,7 @@ const state = {
   },
   learningConsole: {
     activeSubtab: 'Overview',
+    focus: 'all',
   },
   subscriptionSupport: {
     activeView: 'users',
@@ -1552,6 +1553,21 @@ const LEARNING_CONSOLE_SOURCE_FILTERS = [
   'Central Category pattern',
 ];
 
+const LEARNING_CONSOLE_FOCUS_OPTIONS = Object.freeze([
+  { value: 'all', label: 'All learning', helper: 'Everything that can create or influence a global learning rule.' },
+  { value: 'smart_capture', label: 'Smart Capture', helper: 'Notification detection, transaction intent, and review/block decisions.' },
+  { value: 'ocr', label: 'OCR', helper: 'Receipt and financial-list layout/parser learning. OCR rules stay review-only.' },
+  { value: 'statement', label: 'Statement Import', helper: 'Statement layout, field-position, and parser-strategy learning.' },
+]);
+
+const LEARNING_METRIC_HELP = Object.freeze({
+  samples: 'How many privacy-safe learning observations support this pattern. More samples means more evidence volume, not automatic correctness.',
+  users: 'How many distinct users contributed evidence to this pattern. This helps prevent one user from dominating global learning.',
+  correction: 'How often users had to correct the original result. Higher usually means the current behavior needs improvement.',
+  conflict: 'How often different signals disagreed. Higher means the pattern is less stable and deserves more review.',
+  disagreement: 'How often parser/resolver decisions disagreed. Higher means the proposed rule should be treated more cautiously.',
+});
+
 const LEARNING_CONSOLE_CONTRACT = {
   keepsBackwardCompatibleOldPages: true,
   reusesLearningOps: true,
@@ -2224,6 +2240,10 @@ function resetSignedInRuntimeState() {
   state.learningTemplateFamilies = {
     actionLoading: '',
     error: '',
+  };
+  state.learningConsole = {
+    activeSubtab: 'Overview',
+    focus: 'all',
   };
   state.analyticsData = {
     overview: null,
@@ -9370,57 +9390,49 @@ function renderOcrGlobalLearningRuleCandidate(item, groups) {
   const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
   const suggestedAction = item.suggestedAction || item.suggested_action || 'REVIEW';
   const reasonCodes = getResolverReasonCodes(item);
+  const readableTitle = item.plainSummary || item.plain_summary || `${renderGlobalLearningSourceLabel(sourceType)} learning pattern`;
   return renderCollapsibleItem({
-    title: item.plainSummary || item.plain_summary || `${renderGlobalLearningSourceLabel(sourceType)} pattern` || 'OCR candidate',
-    subtitle: `${renderGlobalLearningSourceLabel(sourceType)} · ${item.structureSignatureHash || item.structure_signature_hash || '-'} · ${item.patternHash || item.pattern_hash || '-'}`,
-    statusNode: el('span', { class: `badge ${ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: ruleCategory }),
+    title: readableTitle,
+    subtitle: `${renderGlobalLearningSourceLabel(sourceType)} · ${normalizeDistributionLabel(suggestedAction)} · ${learningEvidenceVolume(item).label}`,
+    statusNode: el('span', { class: `badge ${ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: normalizeDistributionLabel(ruleCategory) }),
     children: [
-      renderOcrCandidateInsight(item, groups),
-      renderMetaGrid([
-        ['Source type', renderGlobalLearningSourceLabel(sourceType)],
-        ['Rule category', ruleCategory],
-        ['Suggested action', suggestedAction],
-        ['Samples', item.sampleCount ?? item.sample_count ?? '-'],
-        ['Unique users', item.uniqueUserCount ?? item.unique_user_count ?? '-'],
-        ['Correction rate', formatPercent(item.correctionRate ?? item.correction_rate)],
-        ['Conflict rate', formatPercent(item.conflictRate ?? item.conflict_rate)],
-        ['Disagreement rate', formatPercent(item.disagreementRate ?? item.disagreement_rate)],
-        ['Privacy status', item.privacyStatus || item.privacy_status || 'safe'],
-        ['Created', formatDate(item.createdAt || item.created_at)],
+      renderLearningDecisionSummary(item, { title: readableTitle }),
+      renderLearningCandidateEvidence(item),
+      el('section', { class: 'learning-signal-summary' }, [
+        el('div', { class: 'learning-evidence-heading' }, [
+          el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'What the aggregate is showing' }), el('strong', { text: 'Most common safe signals' })]),
+        ]),
+        renderCompactDistributionChips('Confidence', groups.confidence, 'No confidence distribution.'),
+        renderCompactDistributionChips('Category family', groups.categoryFamily, 'No category distribution.'),
+        renderCompactDistributionChips('Wallet type', groups.walletType, 'No wallet distribution.'),
+        renderCompactDistributionChips('Transaction type', groups.transactionType, 'No transaction-type distribution.'),
       ]),
-      el('div', { class: 'compact-distribution-stack' }, [
-        renderCompactDistributionChips('Category family', groups.categoryFamily),
-        renderCompactDistributionChips('Wallet type', groups.walletType),
-      ]),
-      el('details', { class: 'nested-details' }, [
-        el('summary', { text: `Reason codes${reasonCodes.length ? ` (${reasonCodes.length})` : ''}` }),
-        reasonCodes.length
-          ? el('div', { class: 'distribution-chip-list compact-chips' }, reasonCodes.map((code) => el('span', { class: 'distribution-chip', text: normalizeDistributionLabel(code) })))
-          : el('p', { class: 'muted compact-text', text: 'No resolver reason codes returned.' }),
-      ]),
-      el('details', { class: 'nested-details' }, [
-        el('summary', { text: 'Raw aggregate JSON' }),
-        el('pre', { class: 'json-preview', text: safeJson({
-          sourceType,
-          ruleCategory,
-          suggestedAction,
-          reasonCodes,
-          action: groups.action,
-          confidence: groups.confidence,
-          categoryFamily: groups.categoryFamily,
-          walletType: groups.walletType,
-          transactionType: groups.transactionType,
-          privacy: groups.privacy,
-        }) }),
+      reasonCodes.length ? el('details', { class: 'nested-details learning-reason-details' }, [
+        el('summary', { text: `Why the resolver raised this candidate (${reasonCodes.length})` }),
+        el('div', { class: 'distribution-chip-list compact-chips' }, reasonCodes.map((code) => el('span', { class: 'distribution-chip', text: normalizeDistributionLabel(code) }))),
+      ]) : null,
+      renderLearningRecommendationBadge(item),
+      el('details', { class: 'nested-details learning-technical-details' }, [
+        el('summary', { text: 'Technical details' }),
+        renderMetaGrid([
+          ['Source type', renderGlobalLearningSourceLabel(sourceType)],
+          ['Rule category', ruleCategory],
+          ['Suggested action', suggestedAction],
+          ['Pattern hash', item.patternHash || item.pattern_hash || '-'],
+          ['Structure signature', item.structureSignatureHash || item.structure_signature_hash || '-'],
+          ['Privacy status', item.privacyStatus || item.privacy_status || 'safe'],
+          ['Created', formatDate(item.createdAt || item.created_at)],
+        ]),
+        el('pre', { class: 'json-preview', text: safeJson({ sourceType, ruleCategory, suggestedAction, reasonCodes, confidence: groups.confidence, categoryFamily: groups.categoryFamily, walletType: groups.walletType, transactionType: groups.transactionType, privacy: groups.privacy }) }),
       ]),
       el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: 'OCR safety: no OCR text, merchant, payee, note, exact amount, account/card number, receipt id, image URL/path, embedding, or vector is displayed.' }),
+        el('span', { text: 'OCR safety: this console shows aggregate structure and counters only. Approval changes parser/review hints, not the shared OCR engine or financial balances.' }),
       ]),
-      el('div', { class: 'actions' }, [
+      el('div', { class: 'actions learning-review-actions' }, [
         el('button', { class: 'btn primary small', text: 'Approve review-only OCR rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
         el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideGlobalLearningCandidate(item, false) }),
       ]),
-    ],
+    ].filter(Boolean),
   });
 }
 
@@ -9428,79 +9440,73 @@ function renderSmartCaptureGlobalLearningRuleCandidate(item, groups) {
   const sourceType = globalLearningSourceType(item);
   const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
   const suggestedType = item.suggestedFinalType || item.suggested_final_type || '';
-  const resolverReasonCodes = item.resolverReasonCodesJson || item.resolver_reason_codes_json || '[]';
+  const reasonCodes = getResolverReasonCodes(item);
+  const readableTitle = item.plainSummary || item.plain_summary || `${normalizeDistributionLabel(ruleCategory)} Smart Capture pattern`;
   return renderCollapsibleItem({
-    title: item.plainSummary || item.plain_summary || ruleCategory || 'Smart Capture candidate',
-    subtitle: `${sourceType} · ${item.semanticSignatureHash || item.semantic_signature_hash || item.sourcePackageName || item.source_package_name || '-'} · ${item.patternHash || item.pattern_hash || '-'}`,
-    statusNode: el('span', { class: `badge ${ruleCategory === 'BLOCK_NON_TRANSACTION' ? 'danger' : ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: ruleCategory }),
+    title: readableTitle,
+    subtitle: `Smart Capture · ${suggestedType ? normalizeDistributionLabel(suggestedType) : 'No type change'} · ${learningEvidenceVolume(item).label}`,
+    statusNode: el('span', { class: `badge ${ruleCategory === 'BLOCK_NON_TRANSACTION' ? 'danger' : ruleCategory === 'FORCE_REVIEW' ? 'info' : 'warn'}`, text: normalizeDistributionLabel(ruleCategory) }),
     children: [
-      renderSmartCaptureCandidateInsight(item, groups),
-      renderMetaGrid([
-        ['Source type', sourceType],
-        ['Pattern hash', item.patternHash || item.pattern_hash],
-        ['Structure signature hash', item.structureSignatureHash || item.structure_signature_hash || '-'],
-        ['Semantic signature hash', item.semanticSignatureHash || item.semantic_signature_hash || '-'],
-        ['Semantic slot signature hash', item.semanticSlotSignatureHash || item.semantic_slot_signature_hash || '-'],
-        ['Semantic slot summary', item.semanticSlotSummary || item.semantic_slot_summary || '-'],
-        ['Resolver suggested type', item.resolverSuggestedTransactionType || item.resolver_suggested_transaction_type || '-'],
-        ['Final transaction type', item.finalTransactionType || item.final_transaction_type || suggestedType || '-'],
-        ['Original parser type', item.originalParserTransactionType || item.original_parser_transaction_type || '-'],
-        ['Changed transaction type', item.changedTransactionType ?? item.changed_transaction_type ?? '-'],
-        ['Changed category', item.changedCategory ?? item.changed_category ?? '-'],
-        ['Changed wallet', item.changedWallet ?? item.changed_wallet ?? '-'],
-        ['Changed bucket', item.changedBucket ?? item.changed_bucket ?? '-'],
-        ['Entry type uncertain', item.entryTypeUncertain ?? item.entry_type_uncertain ?? '-'],
-        ['Transfer conflict hint', item.transferConflictHint ?? item.transfer_conflict_hint ?? '-'],
-        ['Correction rate', formatPercent(item.correctionRate ?? item.correction_rate)],
-        ['Conflict rate', formatPercent(item.conflictRate ?? item.conflict_rate)],
-        ['Disagreement rate', formatPercent(item.disagreementRate ?? item.disagreement_rate)],
-        ['Privacy status', item.privacyStatus || item.privacy_status || 'safe'],
-        ['Reason codes', resolverReasonCodes],
-        ['Suggested action', item.suggestedAction || item.suggested_action],
-        ['Suggested type', suggestedType || 'No type change'],
-        ['Samples', item.sampleCount ?? item.sample_count],
-        ['Unique users', item.uniqueUserCount ?? item.unique_user_count],
-        ['Modification rate', formatPercent(item.modificationRate ?? item.modification_rate)],
-        ['Estimated impact', item.estimatedImpact ?? item.estimated_impact],
-        ['Created', formatDate(item.createdAt || item.created_at)],
+      renderLearningDecisionSummary(item, { title: readableTitle }),
+      renderLearningCandidateEvidence(item),
+      el('section', { class: 'learning-signal-summary' }, [
+        el('div', { class: 'learning-evidence-heading' }, [
+          el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'What users and detectors are doing' }), el('strong', { text: 'Top aggregate signals' })]),
+        ]),
+        renderCompactDistributionChips('User action', groups.action),
+        renderCompactDistributionChips('Transaction type', groups.transactionType),
+        renderCompactDistributionChips('Source trust', groups.sourceTrust),
+        renderCompactDistributionChips('Amount context', groups.amountContext),
+        renderCompactDistributionChips('Final intent', groups.finalAccountingIntent),
+        renderCompactDistributionChips('Movement nature', groups.movementNature),
       ]),
-      el('div', { class: 'distribution-grid' }, [
-        renderDistributionChips('Action distribution', groups.action),
-        renderDistributionChips('Confidence', groups.confidence),
-        renderDistributionChips('Source trust', groups.sourceTrust),
-        renderDistributionChips('Amount context', groups.amountContext),
-        renderDistributionChips('Transaction type', groups.transactionType),
-        renderDistributionChips('Self detection', groups.selfDetection),
-        renderDistributionChips('Privacy level', groups.privacy),
-        renderDistributionChips('Language profile', groups.language),
-        renderDistributionChips('Final accounting intent', groups.finalAccountingIntent),
-        renderDistributionChips('Movement nature', groups.movementNature),
-        renderDistributionChips('Category family', groups.categoryFamily),
-        renderDistributionChips('Wallet type', groups.walletType),
-      ]),
-      el('details', { class: 'nested-details' }, [
-        el('summary', { text: 'Raw aggregate JSON' }),
-        el('pre', { class: 'json-preview', text: safeJson({
-          action: groups.action,
-          confidence: groups.confidence,
-          sourceTrust: groups.sourceTrust,
-          amountContext: groups.amountContext,
-          resolverReasonCodes,
-          categoryFamily: groups.categoryFamily,
-          walletType: groups.walletType,
-          transactionType: groups.transactionType,
-          selfDetection: groups.selfDetection,
-          privacy: groups.privacy,
-        }) }),
+      reasonCodes.length ? el('details', { class: 'nested-details learning-reason-details' }, [
+        el('summary', { text: `Why the resolver raised this candidate (${reasonCodes.length})` }),
+        el('div', { class: 'distribution-chip-list compact-chips' }, reasonCodes.map((code) => el('span', { class: 'distribution-chip', text: normalizeDistributionLabel(code) }))),
+      ]) : null,
+      renderLearningRecommendationBadge(item),
+      el('details', { class: 'nested-details learning-technical-details' }, [
+        el('summary', { text: 'Technical details and full distributions' }),
+        renderMetaGrid([
+          ['Source type', renderGlobalLearningSourceLabel(sourceType)],
+          ['Pattern hash', item.patternHash || item.pattern_hash || '-'],
+          ['Structure signature', item.structureSignatureHash || item.structure_signature_hash || '-'],
+          ['Semantic signature', item.semanticSignatureHash || item.semantic_signature_hash || '-'],
+          ['Resolver suggested type', item.resolverSuggestedTransactionType || item.resolver_suggested_transaction_type || '-'],
+          ['Original parser type', item.originalParserTransactionType || item.original_parser_transaction_type || '-'],
+          ['Final transaction type', item.finalTransactionType || item.final_transaction_type || suggestedType || '-'],
+          ['Changed transaction type', item.changedTransactionType ?? item.changed_transaction_type ?? '-'],
+          ['Changed category', item.changedCategory ?? item.changed_category ?? '-'],
+          ['Changed wallet', item.changedWallet ?? item.changed_wallet ?? '-'],
+          ['Changed bucket', item.changedBucket ?? item.changed_bucket ?? '-'],
+          ['Entry type uncertain', item.entryTypeUncertain ?? item.entry_type_uncertain ?? '-'],
+          ['Transfer conflict hint', item.transferConflictHint ?? item.transfer_conflict_hint ?? '-'],
+          ['Privacy status', item.privacyStatus || item.privacy_status || 'safe'],
+          ['Created', formatDate(item.createdAt || item.created_at)],
+        ]),
+        el('div', { class: 'distribution-grid learning-technical-distributions' }, [
+          renderDistributionChips('Action distribution', groups.action),
+          renderDistributionChips('Confidence', groups.confidence),
+          renderDistributionChips('Source trust', groups.sourceTrust),
+          renderDistributionChips('Amount context', groups.amountContext),
+          renderDistributionChips('Transaction type', groups.transactionType),
+          renderDistributionChips('Self detection', groups.selfDetection),
+          renderDistributionChips('Privacy level', groups.privacy),
+          renderDistributionChips('Language profile', groups.language),
+          renderDistributionChips('Final accounting intent', groups.finalAccountingIntent),
+          renderDistributionChips('Movement nature', groups.movementNature),
+          renderDistributionChips('Category family', groups.categoryFamily),
+          renderDistributionChips('Wallet type', groups.walletType),
+        ]),
       ]),
       el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: 'Review tip: approve only if the summary is clearly privacy-safe and the candidate cannot turn internal/top-up or promo signals into expense/income quick-save behavior.' }),
+        el('span', { text: 'Smart Capture safety: approve only when the aggregate meaning is clear. Global learning must not turn internal transfers, top-ups, promotions, or uncertain captures into automatic expense/income saves.' }),
       ]),
-      el('div', { class: 'actions' }, [
+      el('div', { class: 'actions learning-review-actions' }, [
         el('button', { class: 'btn primary small', text: 'Approve review-only rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
         el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideGlobalLearningCandidate(item, false) }),
       ]),
-    ],
+    ].filter(Boolean),
   });
 }
 
@@ -9631,26 +9637,48 @@ function renderGlobalLearningActiveRule(item) {
   const ocrServerFlagWarning = (isOcr || isStatementImport) && (rawAllowQuickAction || rawAllowAutoSave)
     ? 'Server returned an unsafe OCR/Statement Import quick/auto flag. Admin UI treats OCR global rules as review-only; verify backend policy before rollout.'
     : null;
+  const rollout = `${item.rolloutPercentage ?? item.rollout_percentage ?? 100}%`;
   return renderCollapsibleItem({
-    title: `${renderGlobalLearningSourceLabel(sourceType)} · ${ruleCategory} · ${action}`,
-    subtitle: `${signature} · ${patternHash}`,
+    title: `${renderGlobalLearningSourceLabel(sourceType)} · ${normalizeDistributionLabel(ruleCategory)}`,
+    subtitle: `${normalizeDistributionLabel(action)} · rollout ${rollout}`,
     statusNode: el('span', { class: 'badge success', text: item.status || 'ACTIVE' }),
     children: [
-      renderMetaGrid([
-        ['Source type', renderGlobalLearningSourceLabel(sourceType)],
-        ['Pattern hash', patternHash],
-        ['Rollout', `${item.rolloutPercentage ?? item.rollout_percentage ?? 100}%`],
-        ['Force review', item.forceReview ?? item.force_review ? 'Yes' : 'No'],
-        ['Quick action', allowQuickAction ? 'Allowed' : 'Disabled'],
-        ['Auto-save', allowAutoSave ? 'Allowed' : 'Disabled'],
-        ['Version', item.version],
-        ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      el('section', { class: 'learning-decision-summary active-learning-rule-summary' }, [
+        el('div', { class: 'learning-decision-top' }, [
+          el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'Active rule meaning' }), el('h4', { text: normalizeDistributionLabel(action) })]),
+          el('div', { class: 'learning-decision-badges' }, [
+            el('span', { class: 'mini-badge success', text: `Rollout ${rollout}` }),
+            el('span', { class: 'mini-badge neutral', text: item.forceReview ?? item.force_review ? 'Force Review' : 'Review-safe policy' }),
+          ]),
+        ]),
+        el('p', { text: learningDecisionMeaning({ ...item, ruleCategory, suggestedAction: action }) }),
+        el('div', { class: 'learning-decision-impact' }, [
+          el('strong', { text: 'Financial safety' }),
+          el('span', { text: `Quick action: ${allowQuickAction ? 'allowed' : 'disabled'} · Auto-save: ${allowAutoSave ? 'allowed' : 'disabled'}.` }),
+        ]),
+      ]),
+      renderLearningRecommendationBadge(item),
+      el('details', { class: 'nested-details learning-technical-details' }, [
+        el('summary', { text: 'Rule identity and technical details' }),
+        renderMetaGrid([
+          ['Source type', renderGlobalLearningSourceLabel(sourceType)],
+          ['Pattern hash', patternHash],
+          ['Signature', signature],
+          ['Rule category', ruleCategory],
+          ['Action', action],
+          ['Rollout', rollout],
+          ['Force review', item.forceReview ?? item.force_review ? 'Yes' : 'No'],
+          ['Quick action', allowQuickAction ? 'Allowed' : 'Disabled'],
+          ['Auto-save', allowAutoSave ? 'Allowed' : 'Disabled'],
+          ['Version', item.version],
+          ['Updated', formatDate(item.updatedAt || item.updated_at)],
+        ]),
       ]),
       (isOcr || isStatementImport) ? el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: `${isStatementImport ? 'Statement Import' : 'OCR'} active rule is global suggestion only. It must stay review-only and must not expose raw text, merchant, payee, note, exact amount, transaction date, image URL/path, account/card number, embedding, or vector.` }),
+        el('span', { text: `${isStatementImport ? 'Statement Import' : 'OCR'} active rules remain global suggestion/parser hints. They do not expose private financial content in this console.` }),
       ]) : null,
       ocrServerFlagWarning ? el('div', { class: 'notice warning inline-notice compact-text', text: ocrServerFlagWarning }) : null,
-    ],
+    ].filter(Boolean),
   });
 }
 
@@ -11679,6 +11707,162 @@ function getLearningConsoleData() {
   return state.data?.learningConsole || { candidates: [], activeRules: [], templateFamilies: [], housekeepingDomains: [], housekeepingRuns: [], learningOpsOverview: {}, contract: LEARNING_CONSOLE_CONTRACT, housekeepingContract: LEARNING_HOUSEKEEPING_CONTRACT };
 }
 
+
+function learningConsoleFocusForItem(item = {}) {
+  if (isStatementImportGlobalLearningItem(item)) return 'statement';
+  if (isOcrGlobalLearningItem(item) || item.globalLearningKind === 'ocr_receipt_template' || item.isTemplateCandidate || item.isTemplateRule) return 'ocr';
+  const sourceType = globalLearningSourceType(item);
+  if (sourceType === 'smart_capture' || sourceType === 'smart_capture_notification' || item.globalLearningKind === 'smart_capture') return 'smart_capture';
+  return 'other';
+}
+
+function learningConsoleFocusMatches(item, focus = state.learningConsole.focus || 'all') {
+  return !focus || focus === 'all' || learningConsoleFocusForItem(item) === focus;
+}
+
+function renderLearningConsoleFocusFilter() {
+  const current = state.learningConsole.focus || 'all';
+  return el('section', { class: 'learning-area-switcher', 'aria-label': 'Learning area' }, [
+    el('div', { class: 'learning-area-switcher-copy' }, [
+      el('strong', { text: 'Learning area' }),
+      el('span', { text: 'Switch between Smart Capture and OCR without changing the underlying data.' }),
+    ]),
+    el('div', { class: 'learning-area-buttons' }, LEARNING_CONSOLE_FOCUS_OPTIONS.map((option) => el('button', {
+      class: `btn small ${current === option.value ? 'primary' : 'ghost'}`,
+      text: option.label,
+      title: option.helper,
+      onclick: () => {
+        state.learningConsole.focus = option.value;
+        state.adminFilters.globalLearningSourceType = '';
+        render();
+      },
+    }))),
+  ]);
+}
+
+function learningEvidenceVolume(item = {}) {
+  const samples = Number(item.sampleCount ?? item.sample_count ?? 0);
+  const users = Number(item.uniqueUserCount ?? item.unique_user_count ?? 0);
+  if (samples >= 50 && users >= 5) return { label: 'Broad evidence', tone: 'success', helper: 'Evidence volume is broad. This is a UI guide only; still follow backend recommendation, correction/conflict, privacy, and regression checks.' };
+  if (samples >= 20 && users >= 3) return { label: 'Growing evidence', tone: 'info', helper: 'Evidence volume is growing across multiple observations/users. This is not an approval threshold.' };
+  return { label: 'Early evidence', tone: 'warn', helper: 'Evidence volume is still limited. Treat this as a volume warning, not a rule-quality score.' };
+}
+
+function learningRateTone(value, { warn = 0.15, danger = 0.3 } = {}) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 'neutral';
+  const normalized = Math.abs(num) <= 1 ? Math.abs(num) : Math.abs(num) / 100;
+  if (normalized >= danger) return 'danger';
+  if (normalized >= warn) return 'warn';
+  return 'success';
+}
+
+function renderLearningEvidenceMetric(label, value, helper, tone = 'neutral') {
+  return el('div', { class: `learning-evidence-metric ${tone}` }, [
+    el('span', { class: 'learning-evidence-label', text: label }),
+    el('strong', { text: value === undefined || value === null || value === '' ? '-' : String(value) }),
+    el('small', { text: helper }),
+  ]);
+}
+
+function renderLearningCandidateEvidence(item = {}, { includeDisagreement = true } = {}) {
+  const evidence = learningEvidenceVolume(item);
+  const correction = item.correctionRate ?? item.correction_rate;
+  const conflict = item.conflictRate ?? item.conflict_rate;
+  const disagreement = item.disagreementRate ?? item.disagreement_rate;
+  const metrics = [
+    renderLearningEvidenceMetric('Samples', formatNumber(item.sampleCount ?? item.sample_count), LEARNING_METRIC_HELP.samples),
+    renderLearningEvidenceMetric('Unique users', formatNumber(item.uniqueUserCount ?? item.unique_user_count), LEARNING_METRIC_HELP.users),
+    renderLearningEvidenceMetric('Correction rate', formatPercent(correction), LEARNING_METRIC_HELP.correction, learningRateTone(correction)),
+    renderLearningEvidenceMetric('Conflict rate', formatPercent(conflict), LEARNING_METRIC_HELP.conflict, learningRateTone(conflict)),
+  ];
+  if (includeDisagreement) metrics.push(renderLearningEvidenceMetric('Disagreement', formatPercent(disagreement), LEARNING_METRIC_HELP.disagreement, learningRateTone(disagreement)));
+  return el('section', { class: 'learning-evidence-panel' }, [
+    el('div', { class: 'learning-evidence-heading' }, [
+      el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'Evidence' }), el('strong', { text: 'How strong is this pattern?' })]),
+      el('span', { class: `mini-badge ${evidence.tone}`, text: evidence.label, title: evidence.helper }),
+    ]),
+    el('p', { class: 'muted compact-text', text: evidence.helper }),
+    el('div', { class: 'learning-evidence-grid' }, metrics),
+  ]);
+}
+
+function learningDecisionMeaning(item = {}) {
+  const rule = String(item.ruleCategory || item.rule_category || '').toUpperCase();
+  const action = String(item.suggestedAction || item.suggested_action || '').toUpperCase();
+  if (rule === 'BLOCK_NON_TRANSACTION' || action === 'IGNORE') return 'Treat this pattern as non-transaction content so it does not become a financial capture.';
+  if (rule === 'FORCE_REVIEW' || action === 'REVIEW') return 'Keep matching results in Review so a user confirms them before any financial effect.';
+  if (rule === 'BOOST_CONFIDENCE') return 'Increase ranking confidence for this known pattern, while keeping global financial safety gates in place.';
+  if (item.globalLearningKind === 'ocr_receipt_template' || item.isTemplateCandidate) return 'Promote this privacy-safe receipt structure as a parser template. It does not save a transaction automatically.';
+  if (isStatementImportGlobalLearningItem(item)) return 'Adjust statement parsing/review hints for this layout. It cannot auto-apply a transaction.';
+  if (isOcrGlobalLearningItem(item)) return 'Adjust OCR parser/review hints for this recurring layout pattern. The result remains review-only.';
+  return 'Apply this global learning hint only within the existing review-first safety policy.';
+}
+
+function renderLearningDecisionSummary(item = {}, { title = '' } = {}) {
+  const evidence = learningEvidenceVolume(item);
+  const privacy = item.privacyStatus || item.privacy_status || 'safe aggregate';
+  const action = item.recommendedAction || item.recommended_action || item.suggestedAction || item.suggested_action || item.ruleCategory || item.rule_category || 'Review';
+  return el('section', { class: 'learning-decision-summary' }, [
+    el('div', { class: 'learning-decision-top' }, [
+      el('div', {}, [
+        el('span', { class: 'learning-section-kicker', text: 'What this means' }),
+        el('h4', { text: title || normalizeDistributionLabel(action) }),
+      ]),
+      el('div', { class: 'learning-decision-badges' }, [
+        el('span', { class: `mini-badge ${evidence.tone}`, text: evidence.label }),
+        el('span', { class: 'mini-badge success', text: `Privacy: ${normalizeDistributionLabel(privacy)}` }),
+        el('span', { class: 'mini-badge neutral', text: 'Review-first' }),
+      ]),
+    ]),
+    el('p', { text: learningDecisionMeaning(item) }),
+    el('div', { class: 'learning-decision-impact' }, [
+      el('strong', { text: 'If approved' }),
+      el('span', { text: 'The rule can influence detection/parser suggestions only. It cannot enable auto-save, quick-save, or direct wallet/balance mutation.' }),
+    ]),
+  ]);
+}
+
+function getLearningConsoleDomainSummary(consoleData, focus) {
+  const candidates = (consoleData.candidates || []).filter((item) => learningConsoleFocusForItem(item) === focus);
+  const activeRules = (consoleData.activeRules || []).filter((item) => learningConsoleFocusForItem(item) === focus);
+  return { candidates, activeRules, pending: candidates.length, active: activeRules.length };
+}
+
+function renderLearningDomainSummaryCard(consoleData, focus, title, copy, learns, why) {
+  const summary = getLearningConsoleDomainSummary(consoleData, focus);
+  const tone = summary.pending > 0 ? 'warn' : 'success';
+  return el('section', { class: `learning-domain-card ${focus}` }, [
+    el('div', { class: 'learning-domain-card-head' }, [
+      el('div', {}, [el('span', { class: 'learning-section-kicker', text: title }), el('h3', { text: summary.pending ? `${summary.pending} waiting for review` : 'No pending review' })]),
+      el('span', { class: `status-pill ${tone}`, text: summary.pending > 0 ? 'Needs review' : 'Clear' }),
+    ]),
+    el('p', { class: 'learning-domain-intro', text: copy }),
+    el('div', { class: 'learning-domain-counts' }, [
+      el('div', {}, [el('span', { text: 'Pending' }), el('strong', { text: String(summary.pending) })]),
+      el('div', {}, [el('span', { text: 'Active rules' }), el('strong', { text: String(summary.active) })]),
+    ]),
+    el('div', { class: 'learning-domain-explanation' }, [
+      el('div', {}, [el('strong', { text: 'What it learns' }), el('span', { text: learns })]),
+      el('div', {}, [el('strong', { text: 'Why it matters' }), el('span', { text: why })]),
+    ]),
+    el('button', { class: 'btn small ghost', text: `Review ${title}`, onclick: () => { state.learningConsole.focus = focus; setLearningConsoleSubtab('Review Queue'); } }),
+  ]);
+}
+
+function renderLearningMetricGuide() {
+  return el('details', { class: 'card learning-metric-guide' }, [
+    el('summary', { text: 'What do the learning numbers mean?' }),
+    el('div', { class: 'learning-guide-grid' }, [
+      renderLearningEvidenceMetric('Samples', 'Volume', LEARNING_METRIC_HELP.samples),
+      renderLearningEvidenceMetric('Unique users', 'Diversity', LEARNING_METRIC_HELP.users),
+      renderLearningEvidenceMetric('Correction rate', 'Current errors', LEARNING_METRIC_HELP.correction),
+      renderLearningEvidenceMetric('Conflict rate', 'Stability', LEARNING_METRIC_HELP.conflict),
+      renderLearningEvidenceMetric('Disagreement', 'Parser agreement', LEARNING_METRIC_HELP.disagreement),
+    ]),
+  ]);
+}
+
 function renderLearningConsoleCompatibilityNote(sourcePage) {
   return el('section', { class: 'notice info inline-notice learning-console-compatibility' }, [
     el('strong', { text: `${sourcePage} is now available inside Learning Console.` }),
@@ -11697,17 +11881,20 @@ function renderLearningConsoleTabs() {
 
 
 function renderLearningRecommendationBadge(item = {}) {
-  const action = item.recommendedAction || item.recommended_action || item.suggestedAction || 'Not available';
+  const action = item.recommendedAction || item.recommended_action || item.suggestedAction || item.suggested_action || 'Not available';
   const impact = item.impactLevel || item.impact_level || item.estimatedImpact || item.estimated_impact || 'Not available';
-  const risk = item.riskLevel || item.risk_level || item.regressionStatus || item.regression_status || 'Not available';
+  const risk = item.riskLevel || item.risk_level || 'Not available';
   const privacy = item.privacyStatus || item.privacy_status || 'Not available';
-  const confidence = item.confidenceLevel || item.confidence_level || item.confidence || 'Not available';
-  return el('div', { class: 'recommendation-strip' }, [
-    el('span', { class: 'status-pill neutral', text: `Recommended action: ${action}` }),
-    el('span', { class: 'status-pill neutral', text: `Impact level: ${impact}` }),
-    el('span', { class: 'status-pill neutral', text: `Risk level: ${risk}` }),
-    el('span', { class: 'status-pill neutral', text: `Privacy status: ${privacy}` }),
-    el('span', { class: 'status-pill neutral', text: `Confidence level: ${confidence}` }),
+  const regression = item.regressionStatus || item.regression_status || 'Not available';
+  const confidence = item.confidenceLevel || item.confidence_level || 'Not available';
+  const readable = (value) => value === 'Not available' ? value : normalizeDistributionLabel(value);
+  return el('div', { class: 'recommendation-strip learning-recommendation-strip' }, [
+    el('span', { class: 'status-pill neutral', text: `Recommended action: ${readable(action)}` }),
+    el('span', { class: 'status-pill neutral', text: `Impact level: ${readable(impact)}` }),
+    el('span', { class: 'status-pill neutral', text: `Risk level: ${readable(risk)}` }),
+    el('span', { class: 'status-pill neutral', text: `Privacy status: ${readable(privacy)}` }),
+    el('span', { class: 'status-pill neutral', text: `Regression status: ${readable(regression)}` }),
+    el('span', { class: 'status-pill neutral', text: `Confidence level: ${readable(confidence)}` }),
   ]);
 }
 
@@ -11728,36 +11915,64 @@ function renderLearningConsoleOverview(consoleData) {
   const latestRun = consoleData.housekeepingRuns[0] || {};
   const privacyBlockedCount = getLearningOpsResultValue(overview, ['privacyBlockedCount', 'privacy_blocked_count'], 0);
   const lastCandidateJob = getLearningOpsResultValue(overview, ['lastCandidateJob', 'last_candidate_job'], '-');
-  return el('div', {}, [
-    el('div', { class: 'control-dashboard-grid learning-console-overview-grid' }, [
-      renderLearningConsoleMetricCard('Pending review', pendingReviewCount, 'Unified global learning candidates waiting for admin review.', 'Open Review Queue', 'learningConsole', 'Review Queue'),
-      renderLearningConsoleMetricCard('Active rules', activeRulesCount, 'Review-only active learning rules across Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, and Central Category pattern.', 'Open Rules', 'learningConsole', 'Rules'),
-      renderLearningConsoleMetricCard('Template family pending status', templateFamilyPendingStatus, 'Similarity candidates waiting for hidden feedback or admin decision.', 'Open Template Families', 'learningConsole', 'Template Families'),
-      renderLearningConsoleMetricCard('Latest housekeeping status', latestRun.status || latestRun.resultStatus || 'UNKNOWN', 'Most recent protected housekeeping run. Job history remains lazy loaded.', 'Open Jobs & Housekeeping', 'learningConsole', 'Jobs & Housekeeping'),
-      renderLearningConsoleMetricCard('Privacy blocked count', privacyBlockedCount, 'Privacy guard blocks events that contain unsafe fields.', null, null),
-      renderLearningConsoleMetricCard('Last candidate job', lastCandidateJob, 'Last candidate generation job reported by Learning Ops if available.', 'Open Learning Ops', 'learningOps'),
+  return el('div', { class: 'learning-console-overview' }, [
+    el('section', { class: 'learning-console-intro card' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Learning health' }),
+        el('h2', { text: 'See what Fundoralit is learning before it becomes a global rule' }),
+        el('p', { class: 'muted', text: 'Start with Smart Capture or OCR. Each area shows what the system is trying to learn, how much evidence supports it, and what an approval would change. Technical hashes stay hidden until you expand a candidate.' }),
+      ]),
+      el('div', { class: 'learning-safety-summary' }, [
+        el('strong', { text: 'Global learning is review-first' }),
+        el('span', { text: 'Approval can improve detection or parser suggestions, but it cannot auto-save a financial transaction or mutate balances.' }),
+      ]),
     ]),
+    el('div', { class: 'learning-domain-grid' }, [
+      renderLearningDomainSummaryCard(consoleData, 'smart_capture', 'Smart Capture', 'Learns from privacy-safe notification outcomes and user corrections.', 'Whether a notification looks like a real transaction, what transaction intent it suggests, and when it should be blocked or forced to Review.', 'Reduces false captures and wrong income/expense/transfer interpretation without exposing notification text.'),
+      renderLearningDomainSummaryCard(consoleData, 'ocr', 'OCR', 'Learns recurring receipt and financial-list structures after OCR has already read the image.', 'Which layout/parser hints are reliable for totals, rows, fields, and review decisions. It does not train a separate OCR engine here.', 'Makes receipt/list parsing more consistent while keeping the shared OCR Core and review safety centralized.'),
+      renderLearningDomainSummaryCard(consoleData, 'statement', 'Statement Import', 'Learns statement layout and parser strategy separately from receipt OCR.', 'Field/column positions, direction hints, and import-format structure.', 'Improves statement import without letting statement patterns contaminate receipt or Smart Capture learning.'),
+    ]),
+    el('div', { class: 'control-dashboard-grid learning-console-overview-grid learning-console-ops-summary' }, [
+      renderLearningConsoleMetricCard('Pending review', pendingReviewCount, 'All global candidates currently waiting for an admin decision.', 'Open Review Queue', 'learningConsole', 'Review Queue'),
+      renderLearningConsoleMetricCard('Active rules', activeRulesCount, 'Rules already allowed to influence review-first suggestions.', 'Open Rules', 'learningConsole', 'Rules'),
+      renderLearningConsoleMetricCard('Template families', templateFamilyPendingStatus, 'Similarity groups still collecting hidden feedback or waiting for review.', 'Open Template Families', 'learningConsole', 'Template Families'),
+      renderLearningConsoleMetricCard('Privacy blocked', privacyBlockedCount, 'Events rejected by privacy controls instead of entering global learning.', null, null),
+      renderLearningConsoleMetricCard('Latest housekeeping', latestRun.status || latestRun.resultStatus || 'UNKNOWN', 'Latest protected retention/cleanup result.', 'Open Jobs & Housekeeping', 'learningConsole', 'Jobs & Housekeeping'),
+      renderLearningConsoleMetricCard('Last candidate job', lastCandidateJob, 'Latest candidate-generation job reported by Learning Ops.', 'Open Learning Ops', 'learningOps'),
+    ]),
+    renderLearningMetricGuide(),
     renderPolicySafetyNote('Learning Console centralizes all five Template Family domains: Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, and Central Category pattern. Global rules are review-only by default; no raw notification/OCR/transaction text is stored. Old pages remain backward compatible while the workflow is centralized.'),
   ]);
 }
 
 function renderLearningConsoleReviewQueue(consoleData) {
   const selectedSource = state.adminFilters.globalLearningSourceType || '';
-  const rows = consoleData.candidates.filter((item) => !selectedSource || globalLearningSourceType(item) === selectedSource);
-  return el('div', {}, [
-    el('section', { class: 'card' }, [
+  const rows = consoleData.candidates.filter((item) => learningConsoleFocusMatches(item) && (!selectedSource || globalLearningSourceType(item) === selectedSource));
+  const focusOption = LEARNING_CONSOLE_FOCUS_OPTIONS.find((item) => item.value === (state.learningConsole.focus || 'all')) || LEARNING_CONSOLE_FOCUS_OPTIONS[0];
+  return el('div', { class: 'learning-review-queue' }, [
+    el('section', { class: 'card learning-review-header' }, [
       el('div', { class: 'section-title-row' }, [
-        el('div', {}, [el('p', { class: 'eyebrow', text: 'Review Queue' }), el('h3', { text: 'Unified candidate review' })]),
-        renderInfoHint('This tab reuses the existing Global Learning Review actions. Approval remains review-only and cannot enable quick-save or auto-save.', { label: 'Review safety' }),
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Review Queue' }), el('h3', { text: `${focusOption.label} candidates` })]),
+        renderInfoHint('Start with the plain-language summary and evidence panel. Expand technical details only when you need hashes, distributions, or parser diagnostics.', { label: 'How to review' }),
       ]),
-      renderGlobalLearningSourceFilter(),
-      el('p', { class: 'muted', text: `Source filters: ${LEARNING_CONSOLE_SOURCE_FILTERS.join(', ')}` }),
-      el('p', { class: 'muted', text: 'Risk filters: All, Low, Medium, High, Privacy Blocked. Detailed risk scoring will be populated by the future evaluation stage.' }),
-      el('p', { class: 'muted', text: 'Recommended action, Impact level, Risk level, Privacy status, Regression status, and Confidence level are shown when backend data is available. Missing values display Not available.' }),
-      el('p', { class: 'muted', text: 'Safe recommendation examples: approve_review_only for low-risk layout rules, keep_pending for weak evidence, reject for critical regression. Recommended action: approve_review_only.' }),
+      el('p', { class: 'muted', text: focusOption.helper }),
+      el('div', { class: 'learning-review-checklist' }, [
+        el('div', {}, [el('strong', { text: '1. Meaning' }), el('span', { text: 'Is the proposed behavior what you expect?' })]),
+        el('div', {}, [el('strong', { text: '2. Evidence' }), el('span', { text: 'Check sample/user volume plus correction and conflict rates.' })]),
+        el('div', {}, [el('strong', { text: '3. Safety' }), el('span', { text: 'Privacy must be safe and financial behavior must stay review-first.' })]),
+      ]),
+      el('details', { class: 'learning-advanced-filter' }, [
+        el('summary', { text: 'Advanced source filter' }),
+        renderGlobalLearningSourceFilter(),
+        el('p', { class: 'muted compact-text', text: `Source filters: ${LEARNING_CONSOLE_SOURCE_FILTERS.join(', ')}` }),
+      ]),
+      el('p', { class: 'muted compact-text', text: 'Recommended action, Impact level, Risk level, Privacy status, Regression status, and Confidence level are shown when backend data is available. Missing values display Not available.' }),
+      el('p', { class: 'muted compact-text', text: 'Backend recommendation states: approve_review_only = evidence supports a review-safe rule; keep_pending = collect more evidence; reject = do not promote this pattern. Not available means the backend has not scored that signal yet.' }),
     ]),
-    renderStats(rows),
-    renderControlList(rows, renderGlobalLearningRuleCandidate, 'No pending learning candidates in the selected source.'),
+    rows.length
+      ? el('div', { class: 'learning-review-count' }, [el('strong', { text: `${rows.length} candidate${rows.length === 1 ? '' : 's'}` }), el('span', { text: 'Open a card to review evidence and take action.' })])
+      : null,
+    renderControlList(rows, renderGlobalLearningRuleCandidate, 'No pending learning candidates in this learning area.'),
   ]);
 }
 
@@ -11779,16 +11994,17 @@ function renderLearningConsoleTemplateFamilies(consoleData) {
 }
 
 function renderLearningConsoleRules(consoleData) {
-  return el('div', {}, [
+  const rows = (consoleData.activeRules || []).filter((item) => learningConsoleFocusMatches(item));
+  const focusOption = LEARNING_CONSOLE_FOCUS_OPTIONS.find((item) => item.value === (state.learningConsole.focus || 'all')) || LEARNING_CONSOLE_FOCUS_OPTIONS[0];
+  return el('div', { class: 'learning-active-rules' }, [
     el('section', { class: 'card' }, [
       el('div', { class: 'section-title-row' }, [
-        el('div', {}, [el('p', { class: 'eyebrow', text: 'Rules' }), el('h3', { text: 'Active review-only rules' })]),
-        renderInfoHint('reusesExistingGlobalLearningReview: true. Active rules are still managed by their existing disable/rollback actions.', { label: 'Rules reuse' }),
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Rules' }), el('h3', { text: `${focusOption.label} active rules` })]),
+        renderInfoHint('An active global rule can influence a suggestion or force Review. OCR and Statement Import rules are treated as review-only even if an unsafe backend flag is returned.', { label: 'Rule safety' }),
       ]),
-      el('p', { class: 'muted', text: 'Sources: Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern.' }),
       el('p', { class: 'muted', text: 'All global rules remain review-only; auto-save disabled and quick-save disabled.' }),
     ]),
-    renderControlList(consoleData.activeRules, renderGlobalLearningActiveRule, 'No active learning rules found.'),
+    renderControlList(rows, renderGlobalLearningActiveRule, 'No active learning rules in this learning area.'),
   ]);
 }
 
@@ -11852,9 +12068,10 @@ function renderLearningConsolePage() {
   const consoleData = getLearningConsoleData();
   const activeSubtab = state.learningConsole.activeSubtab || LEARNING_CONSOLE_TABS[0];
   const children = [
-    renderAdminControlHero('Learning Console', 'Centralized learning governance for Smart Capture, OCR, Statement Import, Template Families, Jobs, Housekeeping, Safety, and future Evaluation.', 'keepsBackwardCompatibleOldPages: true. This page centralizes workflows without deleting the older pages yet.'),
+    renderAdminControlHero('Learning Console', 'Understand what Smart Capture and OCR are learning, review evidence, and control global rules safely.', 'Global learning uses privacy-safe aggregates and remains review-first. Technical details are available when you need them, but the default view explains the meaning first.'),
     renderLearningConsoleTabs(),
   ];
+  if (['Overview', 'Review Queue', 'Rules'].includes(activeSubtab)) children.push(renderLearningConsoleFocusFilter());
   if (activeSubtab === 'Overview') children.push(renderLearningConsoleOverview(consoleData));
   else if (activeSubtab === 'Review Queue') children.push(renderLearningConsoleReviewQueue(consoleData));
   else if (activeSubtab === 'Template Families') children.push(renderLearningConsoleTemplateFamilies(consoleData));
