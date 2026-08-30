@@ -9270,6 +9270,18 @@ function getGlobalLearningRulePaths(itemOrKind) {
   return API_PATHS.smartCaptureRules;
 }
 
+function renderStatementImportDocumentMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  if (!mode) return '-';
+  if (mode === 'single_document_slip') return 'Single bank/payment slip';
+  if (mode === 'single_transaction_row') return 'Single transaction image';
+  if (mode === 'statement_image_list') return 'Transaction list screenshot';
+  if (mode === 'statement_pdf_table' || mode === 'pdf_text_statement') return 'PDF statement table';
+  if (mode === 'statement_csv_table' || mode === 'csv_bank_or_wallet_statement') return 'CSV statement table';
+  if (mode === 'pasted_table_statement') return 'Pasted statement table';
+  return humanizeKey(mode);
+}
+
 function renderGlobalLearningSourceLabel(sourceType) {
   if (sourceType === 'smart_capture' || sourceType === 'smart_capture_notification') return 'Smart Capture notification';
   if (sourceType === 'receipt_single' || sourceType === 'ocr_receipt_layout' || sourceType === 'ocr_receipt') return 'OCR Receipt layout';
@@ -9533,13 +9545,16 @@ function renderStatementImportGlobalLearningRuleCandidate(item) {
         ['Structure signature hash', item.structureSignatureHash || item.structure_signature_hash || '-'],
         ['Layout family', item.layoutFamily || item.layout_family || '-'],
         ['Parser strategy', item.parserStrategy || item.parser_strategy || '-'],
+        ['Document mode', renderStatementImportDocumentMode(item.importKind || item.import_kind)],
         ['Rule category', ruleCategory],
         ['Suggested action', suggestedAction],
         ['Target field', item.targetField || item.target_field || '-'],
         ['Target bucket', item.targetPositionBucket || item.target_position_bucket || '-'],
         ['Samples', item.sampleCount ?? item.sample_count ?? '-'],
+        ['Weighted samples', item.weightedSampleCount ?? item.weighted_sample_count ?? '-'],
         ['Unique users', item.uniqueUserCount ?? item.unique_user_count ?? '-'],
         ['Correction rate', formatPercent(item.correctionRate ?? item.correction_rate)],
+        ['Conflict rate', formatPercent(item.conflictRate ?? item.conflict_rate)],
         ['Payee correction rate', formatPercent(item.payeeCorrectionRate ?? item.payee_correction_rate)],
         ['Direction correction rate', formatPercent(item.directionCorrectionRate ?? item.direction_correction_rate)],
         ['Amount correction rate', formatPercent(item.amountCorrectionRate ?? item.amount_correction_rate)],
@@ -11645,6 +11660,11 @@ function renderLearningOpsPage() {
     ['Active rules', formatLearningOpsNumber(getLearningOpsField(statementImport, ['activeRules', 'active_rules']))],
     ['Payee edited 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['payeeChangedRate7d', 'payee_changed_rate_7d', 'payeeEditedRate7d']))],
     ['Direction edited 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['directionChangedRate7d', 'direction_changed_rate_7d', 'directionEditedRate7d']))],
+    ['Amount edited 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['amountChangedRate7d', 'amount_changed_rate_7d']))],
+    ['Date edited 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['dateChangedRate7d', 'date_changed_rate_7d']))],
+    ['Category edited 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['categoryChangedRate7d', 'category_changed_rate_7d']))],
+    ['Single slips 7d', formatLearningOpsNumber(getLearningOpsField(statementImport, ['singleSlipEvents7d', 'single_slip_events_7d']))],
+    ['Transaction lists 7d', formatLearningOpsNumber(getLearningOpsField(statementImport, ['transactionListEvents7d', 'transaction_list_events_7d']))],
     ['Conflict rate 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['conflictRate7d', 'conflict_rate_7d']))],
     ['Last candidate run', getLearningOpsField(statementImport, ['lastCandidateRunStatus', 'last_candidate_run_status'])],
     ['Last event at', formatLearningOpsDate(getLearningOpsField(statementImport, ['lastEventAt', 'last_event_at']))],
