@@ -9419,6 +9419,28 @@ function renderOcrGlobalLearningRuleCandidate(item, groups) {
         renderCompactDistributionChips('Wallet type', groups.walletType, 'No wallet distribution.'),
         renderCompactDistributionChips('Transaction type', groups.transactionType, 'No transaction-type distribution.'),
       ]),
+      el('section', { class: 'learning-signal-summary ocr-resolution-stability' }, [
+        el('div', { class: 'learning-evidence-heading' }, [
+          el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'OCR Resolution Stability' }), el('strong', { text: 'Deterministic resolver and verification evidence' })]),
+          el('span', { class: 'mini-badge neutral', text: 'Ranking influence frozen' }),
+        ]),
+        renderMetaGrid([
+          ['Stable resolution rate', formatPercent(item.stableResolutionRate ?? item.stable_resolution_rate)],
+          ['Verified resolution rate', formatPercent(item.verifiedResolutionRate ?? item.verified_resolution_rate)],
+          ['Verification rate', formatPercent(item.verificationRate ?? item.verification_rate)],
+          ['Verification agreement rate', formatPercent(item.verificationAgreementRate ?? item.verification_agreement_rate)],
+          ['Verification conflict rate', formatPercent(item.verificationConflictRate ?? item.verification_conflict_rate)],
+          ['Needs review rate', formatPercent(item.needsReviewRate ?? item.needs_review_rate)],
+          ['Weak winner margin rate', formatPercent(item.weakWinnerMarginRate ?? item.weak_winner_margin_rate)],
+          ['Payment-only recovery rate', formatPercent(item.paymentOnlyRecoveryRate ?? item.payment_only_recovery_rate)],
+        ]),
+        renderCompactDistributionChips('Resolution status', parseJsonObject(item.resolutionStatusDistributionJson || item.resolution_status_distribution_json), 'No resolution-status telemetry yet.'),
+        renderCompactDistributionChips('Verification status', parseJsonObject(item.verificationStatusDistributionJson || item.verification_status_distribution_json), 'No verification telemetry yet.'),
+        renderCompactDistributionChips('Winner margin', parseJsonObject(item.winnerMarginDistributionJson || item.winner_margin_distribution_json), 'No winner-margin telemetry yet.'),
+        renderCompactDistributionChips('Merchant stability', parseJsonObject(item.merchantStabilityDistributionJson || item.merchant_stability_distribution_json), 'No merchant-stability telemetry yet.'),
+        renderCompactDistributionChips('Script path', parseJsonObject(item.scriptPathDistributionJson || item.script_path_distribution_json), 'No script-path telemetry yet.'),
+        renderCompactDistributionChips('Variant path', parseJsonObject(item.variantPathDistributionJson || item.variant_path_distribution_json), 'No variant-path telemetry yet.'),
+      ]),
       reasonCodes.length ? el('details', { class: 'nested-details learning-reason-details' }, [
         el('summary', { text: `Why the resolver raised this candidate (${reasonCodes.length})` }),
         el('div', { class: 'distribution-chip-list compact-chips' }, reasonCodes.map((code) => el('span', { class: 'distribution-chip', text: normalizeDistributionLabel(code) }))),
@@ -9438,7 +9460,7 @@ function renderOcrGlobalLearningRuleCandidate(item, groups) {
         el('pre', { class: 'json-preview', text: safeJson({ sourceType, ruleCategory, suggestedAction, reasonCodes, confidence: groups.confidence, categoryFamily: groups.categoryFamily, walletType: groups.walletType, transactionType: groups.transactionType, privacy: groups.privacy }) }),
       ]),
       el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: 'OCR safety: this console shows aggregate structure and counters only. Approval changes parser/review hints, not the shared OCR engine or financial balances.' }),
+        el('span', { text: 'OCR safety: this console shows aggregate structure and counters only. Ranking influence is frozen: approval can only add review/retake safety hints, score adjustment remains 0, and no approved rule may change the financial amount winner.' }),
       ]),
       el('div', { class: 'actions learning-review-actions' }, [
         el('button', { class: 'btn primary small', text: 'Approve review-only OCR rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
@@ -9560,11 +9582,28 @@ function renderStatementImportGlobalLearningRuleCandidate(item) {
         ['Amount correction rate', formatPercent(item.amountCorrectionRate ?? item.amount_correction_rate)],
         ['Date correction rate', formatPercent(item.dateCorrectionRate ?? item.date_correction_rate)],
         ['Category correction rate', formatPercent(item.categoryCorrectionRate ?? item.category_correction_rate)],
+        ['Stable resolution rate', formatPercent(item.stableResolutionRate ?? item.stable_resolution_rate)],
+        ['Verification rate', formatPercent(item.verificationRate ?? item.verification_rate)],
+        ['Verification agreement rate', formatPercent(item.verificationAgreementRate ?? item.verification_agreement_rate)],
+        ['Verification conflict rate', formatPercent(item.verificationConflictRate ?? item.verification_conflict_rate)],
+        ['Needs review rate', formatPercent(item.needsReviewRate ?? item.needs_review_rate)],
+        ['Weak winner margin rate', formatPercent(item.weakWinnerMarginRate ?? item.weak_winner_margin_rate)],
+        ['Row grouping unstable rate', formatPercent(item.rowGroupingUnstableRate ?? item.row_grouping_unstable_rate)],
+        ['Amount association unstable rate', formatPercent(item.amountAssociationUnstableRate ?? item.amount_association_unstable_rate)],
         ['Privacy status', item.privacyStatus || item.privacy_status || 'safe_aggregate'],
         ['Created', formatDate(item.createdAt || item.created_at)],
       ]),
+      el('section', { class: 'learning-signal-summary ocr-resolution-stability' }, [
+        el('div', { class: 'learning-evidence-heading' }, [
+          el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'OCR Resolution Stability' }), el('strong', { text: 'Statement row grouping and amount association' })]),
+          el('span', { class: 'mini-badge neutral', text: 'Ranking influence frozen' }),
+        ]),
+        renderCompactDistributionChips('Resolution status', parseJsonObject(item.resolutionStatusDistributionJson || item.resolution_status_distribution_json), 'No resolution-status telemetry yet.'),
+        renderCompactDistributionChips('Verification status', parseJsonObject(item.verificationStatusDistributionJson || item.verification_status_distribution_json), 'No verification telemetry yet.'),
+        renderCompactDistributionChips('Winner margin', parseJsonObject(item.winnerMarginDistributionJson || item.winner_margin_distribution_json), 'No winner-margin telemetry yet.'),
+      ]),
       el('div', { class: 'privacy-note inline-note' }, [
-        el('span', { text: 'Statement Import safety: no raw statement/OCR text, payee, merchant, exact amount, transaction date, reference, account/card number, image URL/path, embedding, or vector is displayed.' }),
+        el('span', { text: 'Statement Import safety: no raw statement/OCR text, payee, merchant, exact amount, transaction date, reference, account/card number, image URL/path, embedding, or vector is displayed. Ranking influence is frozen; approval remains review-only with score adjustment 0.' }),
       ]),
       el('div', { class: 'actions' }, [
         el('button', { class: 'btn primary small', text: 'Approve review-only Statement Import rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
@@ -11648,6 +11687,14 @@ function renderLearningOpsPage() {
     ['Parser changed 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['parserChangedRate7d', 'parser_changed_rate_7d']))],
     ['Multi candidate 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['multiCandidateRate7d', 'multi_candidate_rate_7d']))],
     ['Poor quality 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['poorQualityRate7d', 'poor_quality_rate_7d']))],
+    ['Stable resolution 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['stableResolutionRate7d', 'stable_resolution_rate_7d']))],
+    ['Verified resolution 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['verifiedResolutionRate7d', 'verified_resolution_rate_7d']))],
+    ['Verification triggered 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['verificationRate7d', 'verification_rate_7d']))],
+    ['Verification agreement 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['verificationAgreementRate7d', 'verification_agreement_rate_7d']))],
+    ['Verification conflict 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['verificationConflictRate7d', 'verification_conflict_rate_7d']))],
+    ['Needs review 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['needsReviewRate7d', 'needs_review_rate_7d']))],
+    ['Weak winner margin 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['weakWinnerMarginRate7d', 'weak_winner_margin_rate_7d']))],
+    ['Payment-only recovery 7d', formatLearningOpsPercent(getLearningOpsField(ocr, ['paymentOnlyRecoveryRate7d', 'payment_only_recovery_rate_7d']))],
     ['Last candidate run', getLearningOpsField(ocr, ['lastCandidateRunStatus', 'last_candidate_run_status'])],
     ['Last run at', formatLearningOpsDate(getLearningOpsField(ocr, ['lastCandidateRunAt', 'last_candidate_run_at']))],
     ['Last event at', formatLearningOpsDate(getLearningOpsField(ocr, ['lastEventAt', 'last_event_at']))],
@@ -11666,6 +11713,14 @@ function renderLearningOpsPage() {
     ['Single slips 7d', formatLearningOpsNumber(getLearningOpsField(statementImport, ['singleSlipEvents7d', 'single_slip_events_7d']))],
     ['Transaction lists 7d', formatLearningOpsNumber(getLearningOpsField(statementImport, ['transactionListEvents7d', 'transaction_list_events_7d']))],
     ['Conflict rate 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['conflictRate7d', 'conflict_rate_7d']))],
+    ['Stable resolution 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['stableResolutionRate7d', 'stable_resolution_rate_7d']))],
+    ['Verification triggered 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['verificationRate7d', 'verification_rate_7d']))],
+    ['Verification agreement 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['verificationAgreementRate7d', 'verification_agreement_rate_7d']))],
+    ['Verification conflict 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['verificationConflictRate7d', 'verification_conflict_rate_7d']))],
+    ['Needs review 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['needsReviewRate7d', 'needs_review_rate_7d']))],
+    ['Weak winner margin 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['weakWinnerMarginRate7d', 'weak_winner_margin_rate_7d']))],
+    ['Row grouping unstable 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['rowGroupingUnstableRate7d', 'row_grouping_unstable_rate_7d']))],
+    ['Amount association unstable 7d', formatLearningOpsPercent(getLearningOpsField(statementImport, ['amountAssociationUnstableRate7d', 'amount_association_unstable_rate_7d']))],
     ['Last candidate run', getLearningOpsField(statementImport, ['lastCandidateRunStatus', 'last_candidate_run_status'])],
     ['Last event at', formatLearningOpsDate(getLearningOpsField(statementImport, ['lastEventAt', 'last_event_at']))],
   ];
@@ -12890,7 +12945,7 @@ function renderAdminControlPage() {
     children.push(renderLearningOpsPage());
   } else if (state.activeTab === 'smartCaptureRules') {
     children.push(renderLearningConsoleCompatibilityNote('Global Learning Review'));
-    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'One page reviews Smart Capture, OCR Receipt, OCR Financial List, OCR Handwritten, and Statement Import candidates. Approved rules stay review-only and cannot quick-save or auto-save.'));
+    children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'One page reviews Smart Capture, OCR Receipt, OCR Financial List, OCR Handwritten, and Statement Import candidates. Approved OCR/Statement rules stay review-only, cannot quick-save or auto-save, and cannot change financial ranking while stability hardening is active.'));
     children.push(renderGlobalLearningSourceFilter());
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Approval creates suggestion rules only: forceReview=true, allowQuickAction=false, allowAutoSave=false. Personal local learning remains higher priority than global rules.'));
