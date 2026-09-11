@@ -83,6 +83,7 @@ const API_PATHS = {
     diagnosticQueueCounts: '/api/feedback/admin/diagnostics/queue-counts',
     diagnosticDetail: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}`,
     diagnosticStatus: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}/status`,
+    diagnosticMerge: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}/merge`,
   },
   rewardSurvey: {
     list: '/api/subscription/feedback-trial/admin/surveys',
@@ -6198,7 +6199,7 @@ function renderDiagnosticToolbar() {
     el('div', {}, [el('label', { text: 'Rows per page' }), pageSize]),
     el('div', { class: 'toolbar-context wide' }, [
       el('span', { text: 'Canonical issue view' }),
-      renderInfoHint('Each card is one canonical system defect. Reports from different users and devices are aggregated by stable module + issue code, with fingerprint fallback only for unknown failures. Affected users is the impact measure.', { compact: true, label: 'System diagnostic aggregation details' }),
+      renderInfoHint('Android production scope: each card is one canonical defect across users, Android versions, and manufacturers. Stable module + issue code joins known defects; unknown fingerprints remain separate and only surface as manual related-issue suggestions.', { compact: true, label: 'System diagnostic aggregation details' }),
     ]),
     el('button', { class: 'btn', text: 'Apply filters', onclick: () => { state.page = 0; clearScopedData('feedback'); loadData(); } }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => { state.diagnosticQueueCounts = null; loadData({ force: true }); } }),
@@ -6657,6 +6658,101 @@ async function updateDiagnosticIssueStatus(issueId, status, { resolutionNote = n
   }
 }
 
+async function mergeDiagnosticIssues(targetIssueId, sourceIssueId) {
+  const path = API_PATHS.feedback.diagnosticMerge(targetIssueId);
+  if (!targetIssueId || !sourceIssueId || targetIssueId === sourceIssueId || isActionBusy(path)) return;
+  const confirmed = window.confirm('Merge these diagnostics into one canonical issue? This moves reports, affected-user mappings, and Android environment evidence. The action is audited and the source issue becomes MERGED.');
+  if (!confirmed) return;
+  state.actionLoadingKey = path;
+  state.actionLoadingMessage = `Merging ${sourceIssueId} into ${targetIssueId}...`;
+  state.error = '';
+  render();
+  try {
+    const result = await api(path, { method: 'POST', body: { sourceIssueId } });
+    state.diagnosticDetails = {
+      ...(state.diagnosticDetails || {}),
+      ...(result?.issueId ? { [result.issueId]: { loading: false, error: '', data: result, promise: null } } : {}),
+    };
+    delete state.diagnosticDetails[sourceIssueId];
+    state.diagnosticQueueCounts = null;
+    clearScopedData('feedback');
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
+    setMessage('Related diagnostic merged into the canonical issue.');
+    await loadData({ force: true });
+  } catch (error) {
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
+    setMessage(toFriendlyErrorMessage(error, 'Related diagnostics could not be merged.'), true);
+    render();
+  }
+}
+
+function renderDiagnosticDistribution(title, rows = []) {
+  const items = Array.isArray(rows) ? rows.filter((row) => row?.value) : [];
+  if (!items.length) return null;
+  return el('details', { class: 'nested-details' }, [
+    el('summary', { text: `${title} (${items.length})` }),
+    el('div', { class: 'chip-row' }, items.slice(0, 12).map((row) =>
+      el('span', { class: 'chip', text: `${row.value} · ${Number(row.affectedUserCount || 0)} user${Number(row.affectedUserCount || 0) === 1 ? '' : 's'} · ${Number(row.reportCount || 0)} report${Number(row.reportCount || 0) === 1 ? '' : 's'}` })
+    )),
+  ]);
+}
+
+function renderDiagnosticEnvironmentEvidence(rows = []) {
+  const items = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (!items.length) return null;
+  return el('details', { class: 'nested-details technical-diagnostics' }, [
+    el('summary', { text: `Representative Android evidence (${items.length})` }),
+    el('div', { class: 'compact-guidance' }, [
+      el('strong', { text: 'Latest evidence from distinct Android environments' }),
+      renderInfoHint('Environment fields are evidence dimensions only. Manufacturer, model, Android version, and build never participate in canonical issue identity, so Xiaomi/Samsung/Oppo reports can still join the same defect.', { compact: true, label: 'Android environment evidence' }),
+    ]),
+    ...items.map((row) => el('details', { class: 'nested-details' }, [
+      el('summary', { text: [row.manufacturer, row.deviceModel, row.osVersion ? `Android ${row.osVersion}` : null, row.buildNumber ? `build ${row.buildNumber}` : null].filter(Boolean).join(' · ') || 'Android environment' }),
+      renderMetaGrid([
+        ['Android Version', row.osVersion],
+        ['App Version', row.appVersion],
+        ['Build', row.buildNumber],
+        ['Manufacturer', row.manufacturer],
+        ['Device Model', row.deviceModel],
+        ['Last Seen', formatDate(row.lastSeenAt)],
+      ]),
+      row.technicalDiagnostics ? el('pre', { text: safeJson(row.technicalDiagnostics) }) : null,
+    ].filter(Boolean))),
+  ]);
+}
+
+function renderPossibleRelatedDiagnostics(currentItem) {
+  const related = Array.isArray(currentItem?.possibleRelatedIssues) ? currentItem.possibleRelatedIssues : [];
+  if (!related.length) return null;
+  const currentStable = Boolean(currentItem?.issueCode) && String(currentItem?.identityType || '').toUpperCase() === 'ISSUE_CODE';
+  return el('details', { class: 'nested-details' }, [
+    el('summary', { text: `Possible related issues (${related.length})` }),
+    el('div', { class: 'compact-guidance' }, [
+      el('strong', { text: 'Manual review only' }),
+      renderInfoHint('Unknown fingerprint diagnostics are never auto-merged. Suggestions use same-module technical evidence only. Confirm a merge only when the root cause is the same.', { compact: true, label: 'Related diagnostic safety' }),
+    ]),
+    ...related.map((candidate) => {
+      const candidateStable = Boolean(candidate?.issueCode) && String(candidate?.identityType || '').toUpperCase() === 'ISSUE_CODE';
+      const targetId = !currentStable && candidateStable ? candidate.issueId : currentItem.issueId;
+      const sourceId = !currentStable && candidateStable ? currentItem.issueId : candidate.issueId;
+      const buttonText = !currentStable && candidateStable ? 'Merge this issue into stable issue' : 'Merge related into this issue';
+      return el('div', { class: 'list-item compact-item' }, [
+        el('div', { class: 'item-head' }, [
+          el('strong', { text: candidate.issueCode ? humanizeDiagnosticIssueCode(candidate.issueCode, candidate.issue) : (candidate.issue || candidate.issueId) }),
+          el('span', { class: getStatusClass(candidate.status), text: getStatusLabel(candidate.status) }),
+        ]),
+        el('p', { class: 'item-desc', text: `${Math.round(Number(candidate.similarityScore || 0) * 100)}% evidence match · ${Number(candidate.affectedUserCount || 0)} affected user${Number(candidate.affectedUserCount || 0) === 1 ? '' : 's'} · ${candidate.identityType === 'ISSUE_CODE' ? 'stable issue code' : 'fingerprint fallback'}` }),
+        Array.isArray(candidate.reasons) && candidate.reasons.length ? el('div', { class: 'chip-row' }, candidate.reasons.map((reason) => el('span', { class: 'chip', text: reason }))) : null,
+        el('div', { class: 'actions' }, [
+          el('button', { class: 'btn ghost small', text: isActionBusy(API_PATHS.feedback.diagnosticMerge(targetId)) ? 'Merging...' : buttonText, disabled: isActionBusy(API_PATHS.feedback.diagnosticMerge(targetId)), onclick: (event) => runFeedbackAction(event, () => mergeDiagnosticIssues(targetId, sourceId)) }),
+        ]),
+      ].filter(Boolean));
+    }),
+  ]);
+}
+
 function resolveDiagnosticIssue(item) {
   const issueId = item?.issueId;
   if (!issueId) return;
@@ -6682,6 +6778,7 @@ function renderDiagnosticIssueItem(item) {
     : (fullItem?.issue || 'Unexpected system diagnostic');
   const subtitle = `${fullItem?.module || 'APP'} · ${issueId || 'Canonical issue'}`;
   const affectedUsers = Math.max(0, Number(fullItem?.affectedUserCount) || 0);
+  const reportCount = Math.max(0, Number(fullItem?.reportCount) || 0);
 
   const detailChildren = [];
   if (detailState.loading && !detailState.data) {
@@ -6698,6 +6795,8 @@ function renderDiagnosticIssueItem(item) {
         ['Module', fullItem.module],
         ['Severity', fullItem.severity],
         ['Affected Users', affectedUsers],
+        ['Reports', reportCount],
+        ['Android Environment Coverage', `${Math.max(0, Number(fullItem.environmentObservedUserCount) || 0)} / ${affectedUsers} users`],
         ['First Seen', formatDate(fullItem.firstSeenAt)],
         ['Last Seen', formatDate(fullItem.lastSeenAt)],
         ['Investigating Since', formatDate(fullItem.investigatingAt)],
@@ -6706,6 +6805,13 @@ function renderDiagnosticIssueItem(item) {
         ['Fixed Version', fullItem.fixedVersion],
         ['Resolution Note', fullItem.resolutionNote],
       ]),
+      renderDiagnosticDistribution('Android versions', fullItem.androidVersionDistribution),
+      renderDiagnosticDistribution('App versions', fullItem.appVersionDistribution),
+      renderDiagnosticDistribution('Builds', fullItem.buildDistribution),
+      renderDiagnosticDistribution('Manufacturers', fullItem.manufacturerDistribution),
+      renderDiagnosticDistribution('Device models', fullItem.deviceModelDistribution),
+      renderDiagnosticEnvironmentEvidence(fullItem.representativeEnvironmentEvidence),
+      renderPossibleRelatedDiagnostics(fullItem),
       fullItem.latestDescription
         ? el('details', { class: 'nested-details' }, [
             el('summary', { text: 'Latest consented report description' }),
@@ -6747,8 +6853,8 @@ function renderDiagnosticIssueItem(item) {
     },
     children: [
       el('div', { class: 'compact-guidance' }, [
-        el('strong', { text: `${affectedUsers} affected user${affectedUsers === 1 ? '' : 's'}` }),
-        renderInfoHint('Affected users is a distinct-user count from the canonical issue-user mapping. Repeated reports from the same user update evidence and last-seen time without increasing this number.', { compact: true, label: 'Affected-user count meaning' }),
+        el('strong', { text: `${affectedUsers} affected user${affectedUsers === 1 ? '' : 's'}${reportCount ? ` · ${reportCount} report${reportCount === 1 ? '' : 's'}` : ''}` }),
+        renderInfoHint('Affected users is a distinct-user count. Repeated reports from the same user do not increase it; Android environment observations separately show version/build/manufacturer concentration without splitting the canonical issue.', { compact: true, label: 'Affected-user count meaning' }),
       ]),
       chips.length ? el('div', { class: 'chip-row' }, chips.map((text) => el('span', { class: 'chip', text }))) : null,
       renderMetaGrid([
