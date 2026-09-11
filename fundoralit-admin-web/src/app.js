@@ -99,6 +99,7 @@ const API_PATHS = {
     features: '/api/analytics/admin/features',
     invites: '/api/analytics/admin/invites',
     smartCapture: '/api/analytics/admin/smart-capture',
+    usagePeriods: '/api/analytics/admin/usage-periods',
     conversion: '/api/analytics/admin/conversion',
     conversionView: '/api/analytics/admin/conversion-view',
     inviteLinks: '/api/analytics/admin/invite-links',
@@ -487,6 +488,7 @@ const state = {
     features: null,
     invites: null,
     smartCapture: null,
+    usagePeriods: null,
     conversion: null,
     inviteLinks: null,
   },
@@ -2252,6 +2254,7 @@ function resetSignedInRuntimeState() {
     features: null,
     invites: null,
     smartCapture: null,
+    usagePeriods: null,
     conversion: null,
     inviteLinks: null,
   };
@@ -3616,8 +3619,12 @@ const ANALYTICS_VIEWS = {
   },
   features: {
     label: 'Features',
-    helper: 'Module adoption',
-    sections: [['features', API_PATHS.analytics.features]],
+    helper: 'Module adoption + quota usage',
+    sections: [
+      ['features', API_PATHS.analytics.features],
+      ['usagePeriods', API_PATHS.analytics.usagePeriods],
+    ],
+    dataKeys: ['features', 'usagePeriods'],
   },
   collaboration: {
     label: 'Collaboration',
@@ -3703,6 +3710,7 @@ async function loadAnalyticsData(loadRequest = null) {
     features: null,
     invites: null,
     smartCapture: null,
+    usagePeriods: null,
     conversion: null,
     inviteLinks: null,
   };
@@ -5829,6 +5837,8 @@ function renderAnalyticsDashboard() {
   const features = normalizeAnalyticsResponse(state.analyticsData.features) || {};
   const invites = normalizeAnalyticsResponse(state.analyticsData.invites) || {};
   const smartCapture = normalizeAnalyticsResponse(state.analyticsData.smartCapture) || {};
+  const usagePeriods = normalizeAnalyticsResponse(state.analyticsData.usagePeriods) || {};
+  const usagePeriodRows = normalizeAnalyticsList(usagePeriods, 'periods');
   const conversion = normalizeAnalyticsResponse(state.analyticsData.conversion) || {};
   const inviteLinks = normalizeAnalyticsResponse(state.analyticsData.inviteLinks) || {};
   const conversionFunnel = normalizeAnalyticsResponse(conversion.funnel) || {};
@@ -5928,6 +5938,24 @@ function renderAnalyticsDashboard() {
       { label: 'Smart Capture dismissed users', value: getMetric(features, ['smartCaptureDismissedUsers']) },
       { label: 'Smart Capture corrected users', value: getMetric(features, ['smartCaptureCorrectedUsers']) },
     ]),
+  ]);
+
+  const smartCaptureUsageRows = usagePeriodRows.filter((row) =>
+    String(row.featureKey || row.feature_key || '') === 'smart_capture_monthly_save'
+  );
+  const usageAnalyticsSection = renderAnalyticsSection('Usage & quota trend', 'Privacy-safe monthly usage totals combine current hot counters with archived period aggregates. No user identifiers are returned.', [
+    renderAnalyticsMiniTable('Smart Capture monthly saves', [
+      ['Month', 'Saves', 'Active users', 'Avg / active user', 'Peak user', 'Source'],
+      ...(smartCaptureUsageRows.length ? smartCaptureUsageRows.map((row) => [
+        row.periodKey || row.period_key || '-',
+        formatMetricValue(getMetric(row, ['usedTotal', 'used_total'])),
+        formatMetricValue(getMetric(row, ['userCount', 'user_count'])),
+        formatMetricValue(getMetric(row, ['averagePerActiveUser', 'average_per_active_user'])),
+        formatMetricValue(getMetric(row, ['maxUsedCount', 'max_used_count'])),
+        String(row.source || '-').toLowerCase() === 'archive' ? 'Archived aggregate' : String(row.source || '-').toLowerCase() === 'hot' ? 'Current counters' : row.source || '-',
+      ]) : [['No Smart Capture usage periods in this range', '-', '-', '-', '-', '-']]),
+    ]),
+    el('p', { class: 'muted', text: 'Current/recent periods read from quota counters. Older closed periods read from compact privacy-safe aggregates after housekeeping.' }),
   ]);
 
   const invitesSection = renderAnalyticsSection('Collaboration & invites', 'Invite activity for group goals and group events.', [
@@ -6045,7 +6073,7 @@ function renderAnalyticsDashboard() {
         ]),
       ]),
     ],
-    features: [featuresList],
+    features: [featuresList, usageAnalyticsSection],
     collaboration: [invitesSection, inviteLinkFunnelSection],
     smartCapture: [smartCaptureSection],
   };
@@ -11121,6 +11149,9 @@ const HOUSEKEEPING_POLICY_FIELD_RANGES = {
   learningInactiveRuleRetentionDays: { min: 30, max: 3650, unit: 'days' },
   learningAggregateRetentionDays: { min: 30, max: 3650, unit: 'days' },
   learningProtectedLatestRuleVersions: { min: 1, max: 50, unit: 'versions' },
+  usageClosedPeriodRetentionMonths: { min: 0, max: 24, unit: 'months' },
+  usageEventRetentionDays: { min: 14, max: 365, unit: 'days' },
+  usageAggregateRetentionDays: { min: 90, max: 3650, unit: 'days' },
 };
 
 function getHousekeepingProductPolicy() {
@@ -11209,7 +11240,12 @@ function retentionSettingValue(setting) {
   if (!setting) return '-';
   if (setting.enabled === false) return 'Disabled';
   if (setting.retentionDays === undefined || setting.retentionDays === null) return '-';
-  const unit = String(setting.key || '') === 'learningProtectedLatestRuleVersions' ? 'version' : 'day';
+  const key = String(setting.key || '');
+  const unit = key === 'learningProtectedLatestRuleVersions'
+    ? 'version'
+    : key === 'usageClosedPeriodRetentionMonths'
+      ? 'month'
+      : 'day';
   return `${setting.retentionDays} ${unit}${Number(setting.retentionDays) === 1 ? '' : 's'}`;
 }
 
@@ -11390,7 +11426,7 @@ function renderSystemHousekeepingOverview() {
         el('div', {}, [el('p', { class: 'eyebrow', text: 'System housekeeping contract' }), el('h3', { text: 'Single retention control surface' })]),
         el('span', { class: overview.globalEnabled === false ? 'status-pill danger' : 'status-pill success', text: overview.globalEnabled === false ? 'Global disabled' : 'Global enabled' }),
       ]),
-      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values are runtime-backed by Product Policy housekeeping_policy with safe env fallback. Schedule time can be overridden by Super Admin from this page and is used by the dynamic backend scheduler.' }),
+      el('p', { class: 'muted section-helper', text: 'This replaces the old learning-only view with one page for personal deleted data, feedback status/notifications, Smart Capture retention, usage quota history, cloud backups, audit logs, subscription support requests, and learning-version cleanup. Retention values are runtime-backed by Product Policy housekeeping_policy with safe env fallback. Shared usage retention values are also delivered through Mobile Policy so synced local usage history follows the same control. Schedule time can be overridden by Super Admin from this page and is used by the dynamic backend scheduler.' }),
       renderLearningOpsMetricRows([
         ['Timezone', overview.timezone || 'Asia/Kuala_Lumpur'],
         ['Data retention schedule', (jobs.find((job) => job.target === 'DATA_RETENTION') || {}).schedule || 'Daily at 03:30 MYT'],
