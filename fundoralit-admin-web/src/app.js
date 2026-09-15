@@ -9748,6 +9748,68 @@ function renderStatementImportGlobalLearningRuleCandidate(item) {
 }
 
 
+
+function getReceiptTemplateItemLearning(item) {
+  const raw = item.fieldRoleCandidatesJson || item.field_role_candidates_json || '{}';
+  const parsed = parseJsonObject(raw);
+  const structure = parsed?.itemStructure || parsed?.item_structure || {};
+  const columns = Array.isArray(structure?.columns) ? structure.columns : [];
+  const order = Array.isArray(structure?.columnOrder)
+    ? structure.columnOrder
+    : columns.map((column) => column?.role).filter(Boolean);
+  return {
+    enabled: structure?.itemTableDetected === true || columns.length >= 2,
+    structure,
+    columns,
+    order,
+    quantityLaneDetected: structure?.quantityLaneDetected === true,
+    amountLaneDetected: structure?.amountLaneDetected === true,
+    rowBandPairingApplied: structure?.rowBandPairingApplied === true,
+    laneBodyConsensusUsed: structure?.laneBodyConsensusUsed === true,
+    corridorConstrained: structure?.corridorConstrained === true,
+    arithmeticRelation: structure?.arithmeticRelation || structure?.arithmetic_relation || 'unknown',
+  };
+}
+
+function renderReceiptItemLearningEvidence(item) {
+  const learned = getReceiptTemplateItemLearning(item);
+  if (!learned.enabled) {
+    return el('section', { class: 'learning-signal-summary receipt-item-learning' }, [
+      el('div', { class: 'learning-evidence-heading' }, [
+        el('div', {}, [
+          el('span', { class: 'learning-section-kicker', text: 'Item-list learning' }),
+          el('strong', { text: 'No item-table structure in this candidate' }),
+        ]),
+        el('span', { class: 'mini-badge neutral', text: 'Total / field template only' }),
+      ]),
+      el('p', { class: 'muted', text: 'This candidate can still improve total/field structure matching, but it does not carry a learned Qty / Item / Price layout.' }),
+    ]);
+  }
+  const columnText = learned.columns.length
+    ? learned.columns.map((column) => `${normalizeDistributionLabel(column?.role || 'unknown')} · ${normalizeDistributionLabel(column?.positionBucket || column?.position_bucket || 'unknown')}`).join(' → ')
+    : learned.order.map(normalizeDistributionLabel).join(' → ');
+  return el('section', { class: 'learning-signal-summary receipt-item-learning' }, [
+    el('div', { class: 'learning-evidence-heading' }, [
+      el('div', {}, [
+        el('span', { class: 'learning-section-kicker', text: 'Item-list learning' }),
+        el('strong', { text: 'Adaptive receipt item-table structure' }),
+      ]),
+      el('span', { class: 'mini-badge success', text: 'Cross-user structural evidence' }),
+    ]),
+    el('p', { text: 'This privacy-safe structure can help another user with a similar receipt by strengthening the existing bounded item-detail recovery path. It never copies item names, exact prices, merchant text, or raw OCR.' }),
+    renderMetaGrid([
+      ['Column order', columnText || 'Not available'],
+      ['Quantity lane', learned.quantityLaneDetected ? 'Detected' : 'Not detected'],
+      ['Amount lane', learned.amountLaneDetected ? 'Detected' : 'Not detected'],
+      ['Row pairing', learned.rowBandPairingApplied ? 'Applied' : 'Not observed'],
+      ['Body consensus', learned.laneBodyConsensusUsed ? 'Used' : 'Not observed'],
+      ['Table corridor', learned.corridorConstrained ? 'Constrained' : 'Not constrained'],
+      ['Arithmetic relation', normalizeDistributionLabel(learned.arithmeticRelation)],
+    ]),
+  ]);
+}
+
+
 function renderReceiptTemplateCandidate(item) {
   const labels = item.normalizedLabelKeysJson || item.normalized_label_keys_json || '[]';
   const titleTokens = item.normalizedTitleTokensJson || item.normalized_title_tokens_json || '[]';
@@ -9766,6 +9828,7 @@ function renderReceiptTemplateCandidate(item) {
         ]),
         el('p', { text: 'Approving this promotes a parser template rule only. Runtime remains review-safe: no quick-save, no auto-save, and local mirror sync can disable or version the rule later.' }),
       ]),
+      renderReceiptItemLearningEvidence(item),
       renderMetaGrid([
         ['Source scope', item.sourceScope || item.source_scope || '-'],
         ['Scan type', item.scanType || item.scan_type || '-'],
@@ -12146,7 +12209,7 @@ function renderLearningConsoleOverview(consoleData) {
     ]),
     el('div', { class: 'learning-domain-grid' }, [
       renderLearningDomainSummaryCard(consoleData, 'smart_capture', 'Smart Capture', 'Learns from privacy-safe notification outcomes and user corrections.', 'Whether a notification looks like a real transaction, what transaction intent it suggests, and when it should be blocked or forced to Review.', 'Reduces false captures and wrong income/expense/transfer interpretation without exposing notification text.'),
-      renderLearningDomainSummaryCard(consoleData, 'ocr', 'OCR', 'Learns recurring receipt and financial-list structures after OCR has already read the image.', 'Which layout/parser hints are reliable for totals, rows, fields, and review decisions. It does not train a separate OCR engine here.', 'Makes receipt/list parsing more consistent while keeping the shared OCR Core and review safety centralized.'),
+      renderLearningDomainSummaryCard(consoleData, 'ocr', 'OCR', 'Learns recurring receipt and financial-list structures after OCR has already read the image.', 'Which layout/parser hints are reliable for totals, item-table columns (Qty / Item / Unit Price / Amount), rows, fields, and review decisions. It does not train a separate OCR engine here.', 'Improves both total resolution and item-list recovery for similar layouts while keeping the shared OCR Core and review safety centralized.'),
       renderLearningDomainSummaryCard(consoleData, 'statement', 'Statement Import', 'Learns statement layout and parser strategy separately from receipt OCR.', 'Field/column positions, direction hints, and import-format structure.', 'Improves statement import without letting statement patterns contaminate receipt or Smart Capture learning.'),
     ]),
     el('div', { class: 'control-dashboard-grid learning-console-overview-grid learning-console-ops-summary' }, [
@@ -12285,7 +12348,7 @@ function renderLearningConsolePage() {
   const consoleData = getLearningConsoleData();
   const activeSubtab = state.learningConsole.activeSubtab || LEARNING_CONSOLE_TABS[0];
   const children = [
-    renderAdminControlHero('Learning Console', 'Understand what Smart Capture and OCR are learning, review evidence, and control global rules safely.', 'Global learning uses privacy-safe aggregates and remains review-first. Technical details are available when you need them, but the default view explains the meaning first.'),
+    renderAdminControlHero('Learning Console', 'Understand what Smart Capture and OCR are learning, review evidence, and control global rules safely.', 'Global learning uses privacy-safe aggregates and remains review-first. OCR learning now tracks both receipt totals/fields and adaptive item-table structure, while technical details stay available on demand.'),
     renderLearningConsoleTabs(),
   ];
   if (['Overview', 'Review Queue', 'Rules'].includes(activeSubtab)) children.push(renderLearningConsoleFocusFilter());
