@@ -4829,7 +4829,11 @@ body {
   .modal-card-wide {
     display: flex;
     flex-direction: column;
-    min-height: 100dvh;
+    /* Keep the action bar inside the actual visual viewport. 100dvh plus the
+       backdrop/card spacing can push Save below the screen on mobile browsers. */
+    min-height: 0;
+    height: 100dvh;
+    max-height: 100dvh;
     overflow: hidden;
   }
 

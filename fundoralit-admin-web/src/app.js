@@ -8246,10 +8246,10 @@ async function submitPlanPolicyValueModal() {
   const body = {
     policyKey: policyKey.value,
     planKey: planKey.value.toUpperCase(),
-    value: rawValue || null,
+    value: rawValue === '' ? null : rawValue,
     valueNumber: numericValue,
     valueBoolean: booleanValue,
-    valueText: rawValue || null,
+    valueText: rawValue === '' ? null : rawValue,
     unlimited: Boolean(modal.unlimited),
     periodType: period.value,
     enabled: Boolean(modal.enabled),
