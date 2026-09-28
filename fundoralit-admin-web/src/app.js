@@ -4287,6 +4287,51 @@ async function performPostAction(path, successMessage, body) {
   }
 }
 
+async function performCriticalModalMutation(path, method, successMessage, buildBody, context = 'ADMIN_CRITICAL') {
+  const modalRequest = Boolean(state.modal);
+  if (modalRequest) {
+    state.modal.loading = true;
+    state.modal.error = '';
+    state.modal.message = '';
+    state.modal.fieldErrors = {};
+  } else {
+    state.actionLoadingKey = path;
+    state.actionLoadingMessage = successMessage || 'Saving...';
+    state.error = '';
+  }
+  render();
+
+  let reauthenticationAttempted = false;
+  try {
+    while (true) {
+      try {
+        const body = await buildBody();
+        const result = await api(path, { method, ...(body !== undefined ? { body } : {}) });
+        await refreshAfterAdminMutation(successMessage || 'Updated successfully.', { path, result });
+        return result;
+      } catch (error) {
+        if (!isCriticalActionProofError(error) || reauthenticationAttempted) throw error;
+        reauthenticationAttempted = true;
+        const verified = await promptCriticalActionReauthentication(context);
+        if (!verified) throw error;
+        // Rebuild the body after re-authentication. Critical-action proof tokens are
+        // single-use, so retrying the previous payload would reuse a consumed token.
+      }
+    }
+  } catch (error) {
+    if (modalRequest && state.modal) {
+      state.modal.loading = false;
+      setModalError(error, '');
+    } else {
+      state.actionLoadingKey = '';
+      state.actionLoadingMessage = '';
+      setMessage(error, true);
+      render();
+    }
+    return null;
+  }
+}
+
 function openCloseModal(kind, item) {
   const isReward = kind === 'rewardSurvey';
   const targetLabel = isReward ? 'reward survey' : 'feedback';
@@ -8059,7 +8104,7 @@ async function submitPolicyDefinitionModal() {
   if (!sortOrder.ok) return validationError(sortOrder.message, 'sortOrder');
   const critical = validatePlanPolicyCriticalFields(modal);
   if (!critical.ok) return validationError(critical.message, critical.field);
-  const body = {
+  const baseBody = {
     policyKey: policyKey.value,
     moduleKey: moduleKey.value,
     displayNameEn: displayNameEn.value,
@@ -8076,15 +8121,18 @@ async function submitPolicyDefinitionModal() {
     enforcedBy: normalizeCsvList(modal.enforcedBy),
     sortOrder: sortOrder.value ?? 100,
     enabled: Boolean(modal.enabled),
-    ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_definition'),
   };
-  const existingRecord = findExistingPolicyDefinitionRecord(body.policyKey);
+  const existingRecord = findExistingPolicyDefinitionRecord(baseBody.policyKey);
   if (modal.isCreate && existingRecord) {
     applyPolicyDefinitionRecordToModal(modal, existingRecord, { preserveUserValue: true });
   }
-  const path = modal.isCreate ? API_PATHS.policyDefinitions.create : API_PATHS.policyDefinitions.update(modal.id || body.policyKey);
-  const action = modal.isCreate ? performPostAction : performPatchAction;
-  await action(path, modal.isCreate ? 'Policy definition created.' : 'Policy definition updated.', body);
+  const path = modal.isCreate ? API_PATHS.policyDefinitions.create : API_PATHS.policyDefinitions.update(modal.id || baseBody.policyKey);
+  await performCriticalModalMutation(
+    path,
+    modal.isCreate ? 'POST' : 'PATCH',
+    modal.isCreate ? 'Policy definition created.' : 'Policy definition updated.',
+    () => ({ ...baseBody, ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_definition') }),
+  );
 }
 
 function openSubscriptionPlanModal(item) {
@@ -8147,7 +8195,7 @@ async function submitSubscriptionPlanModal() {
   if (!sortOrder.ok) return validationError(sortOrder.message, 'sortOrder');
   const critical = validatePlanPolicyCriticalFields(modal);
   if (!critical.ok) return validationError(critical.message, critical.field);
-  const body = {
+  const baseBody = {
     planKey: planKey.value.toUpperCase(),
     displayNameEn: displayNameEn.value,
     displayNameZh: blankToNull(modal.displayNameZh),
@@ -8156,15 +8204,18 @@ async function submitSubscriptionPlanModal() {
     enabled: Boolean(modal.enabled),
     publicVisible: Boolean(modal.publicVisible),
     isPaid: Boolean(modal.isPaid),
-    ...criticalActionFields(critical.reason, critical.confirmPhrase, 'subscription_plan'),
   };
-  const existingRecord = findExistingSubscriptionPlanRecord(body.planKey);
+  const existingRecord = findExistingSubscriptionPlanRecord(baseBody.planKey);
   if (modal.isCreate && existingRecord) {
     applySubscriptionPlanRecordToModal(modal, existingRecord, { preserveUserValue: true });
   }
-  const path = modal.isCreate ? API_PATHS.subscriptionPlans.create : API_PATHS.subscriptionPlans.update(modal.id || body.planKey);
-  const action = modal.isCreate ? performPostAction : performPatchAction;
-  await action(path, modal.isCreate ? 'Subscription plan created.' : 'Subscription plan updated.', body);
+  const path = modal.isCreate ? API_PATHS.subscriptionPlans.create : API_PATHS.subscriptionPlans.update(modal.id || baseBody.planKey);
+  await performCriticalModalMutation(
+    path,
+    modal.isCreate ? 'POST' : 'PATCH',
+    modal.isCreate ? 'Subscription plan created.' : 'Subscription plan updated.',
+    () => ({ ...baseBody, ...criticalActionFields(critical.reason, critical.confirmPhrase, 'subscription_plan') }),
+  );
 }
 
 function openPlanPolicyValueModal({ matrixItem = null, planKey = '', valueRecord = null, valueItem = null } = {}) {
@@ -8243,7 +8294,7 @@ async function submitPlanPolicyValueModal() {
   const rawValue = normalizedTrim(modal.value);
   const numericValue = rawValue !== '' && /^-?\d+(\.\d+)?$/.test(rawValue) ? Number(rawValue) : null;
   const booleanValue = /^(true|false)$/i.test(rawValue) ? rawValue.toLowerCase() === 'true' : null;
-  const body = {
+  const baseBody = {
     policyKey: policyKey.value,
     planKey: planKey.value.toUpperCase(),
     value: rawValue === '' ? null : rawValue,
@@ -8253,17 +8304,20 @@ async function submitPlanPolicyValueModal() {
     unlimited: Boolean(modal.unlimited),
     periodType: period.value,
     enabled: Boolean(modal.enabled),
-    ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_value'),
   };
-  const existingRecord = findExistingPlanPolicyValueRecord(body.policyKey, body.planKey, modal.matrixItem);
+  const existingRecord = findExistingPlanPolicyValueRecord(baseBody.policyKey, baseBody.planKey, modal.matrixItem);
   if (modal.isCreate && existingRecord) {
     applyPlanPolicyValueRecordToModal(modal, existingRecord, { preserveUserValue: true });
   }
-  const valueKey = modal.id || (body.policyKey && body.planKey ? `${body.policyKey}:${body.planKey}` : '');
+  const valueKey = modal.id || (baseBody.policyKey && baseBody.planKey ? `${baseBody.policyKey}:${baseBody.planKey}` : '');
   if (!modal.isCreate && !valueKey) return validationError('Plan policy value id is missing. Refresh Plan Matrix and try again.', 'policyKey');
   const path = modal.isCreate ? API_PATHS.planPolicyValues.create : API_PATHS.planPolicyValues.update(valueKey);
-  const action = modal.isCreate ? performPostAction : performPatchAction;
-  await action(path, modal.isCreate ? 'Plan policy value created.' : 'Plan policy value updated.', body);
+  await performCriticalModalMutation(
+    path,
+    modal.isCreate ? 'POST' : 'PATCH',
+    modal.isCreate ? 'Plan policy value created.' : 'Plan policy value updated.',
+    () => ({ ...baseBody, ...criticalActionFields(critical.reason, critical.confirmPhrase, 'plan_policy_value') }),
+  );
 }
 
 function renderFeatureLimitToolbar() {
@@ -8338,13 +8392,18 @@ async function submitFeatureLimitModal() {
   if (!reason.ok) return validationError(reason.message, 'reason');
   if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
 
-  await performPatchAction(API_PATHS.featureLimits.update(modal.id), 'Feature limit updated.', {
+  const baseBody = {
     limitCount: limit.value,
     periodType: period.value,
     enabled: Boolean(modal.enabled),
     description: description.value || null,
-    ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_feature_limit'),
-  });
+  };
+  await performCriticalModalMutation(
+    API_PATHS.featureLimits.update(modal.id),
+    'PATCH',
+    'Feature limit updated.',
+    () => ({ ...baseBody, ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_feature_limit') }),
+  );
 }
 
 function renderFeatureFlagToolbar() {
@@ -8413,14 +8472,19 @@ async function submitFeatureFlagModal() {
   if (!reason.ok) return validationError(reason.message, 'reason');
   if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
 
-  await performPatchAction(API_PATHS.featureFlags.update(modal.id), 'Feature flag updated.', {
+  const baseBody = {
     enabled: Boolean(modal.enabled),
     rolloutPercentage: rollout.value,
     targetPlan: targetPlan.value || null,
     minAppVersion: minVersion.value,
     description: description.value || null,
-    ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_feature_flag'),
-  });
+  };
+  await performCriticalModalMutation(
+    API_PATHS.featureFlags.update(modal.id),
+    'PATCH',
+    'Feature flag updated.',
+    () => ({ ...baseBody, ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_feature_flag') }),
+  );
 }
 
 function renderProductPolicyToolbar() {
@@ -8508,13 +8572,18 @@ async function submitProductPolicyModal() {
   if (!reason.ok) return validationError(reason.message, 'reason');
   if (normalizedTrim(modal.confirmPhrase) !== modal.expectedPhrase) return validationError(`Type exactly: ${modal.expectedPhrase}`, 'confirmPhrase');
 
-  await performPatchAction(API_PATHS.productPolicies.update(modal.id), 'Product policy updated.', {
+  const baseBody = {
     enabled: Boolean(modal.enabled),
     platform: platform.value || null,
     minAppVersion: minVersion.value,
     value: valueJson,
-    ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_product_policy'),
-  });
+  };
+  await performCriticalModalMutation(
+    API_PATHS.productPolicies.update(modal.id),
+    'PATCH',
+    'Product policy updated.',
+    () => ({ ...baseBody, ...criticalActionFields(reason.value, modal.expectedPhrase, 'update_product_policy') }),
+  );
 }
 
 
