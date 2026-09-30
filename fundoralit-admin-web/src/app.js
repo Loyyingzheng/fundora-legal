@@ -1576,7 +1576,7 @@ const LEARNING_CONSOLE_CONTRACT = {
   reusesLearningOps: true,
   reusesLearningHousekeeping: true,
   reusesExistingTemplateFamiliesUi: true,
-  policy: 'Learning Console centralizes all five Template Family domains. Global rules are review-only by default. No auto-save / quick-save. Category pattern global rules are high risk. No raw notification/OCR/transaction text. Generate candidates. Evaluate feedback. Approve family. Reject / keep separate. Disable / rollback family. Split member.',
+  policy: 'Learning Console centralizes all five Template Family domains. Smart Capture rules remain Review-first until Graduation Evidence + Shadow validation is ready. Auto-save remains disabled. Category pattern global rules are high risk. No raw notification/OCR/transaction text. Generate candidates. Evaluate feedback. Approve family. Reject / keep separate. Disable / rollback family. Split member.',
   requiredSignals: ['recommendedAction', 'impactLevel', 'riskLevel', 'privacyStatus', 'regressionStatus', 'confidenceLevel'],
   placeholder: false,
   fakeNumbers: false,
@@ -6064,23 +6064,44 @@ function renderAnalyticsDashboard() {
       : 'No Collaboration invite analytics have been synchronized to Core yet.' }),
   ]);
 
-  const smartCaptureSection = renderAnalyticsSection('Smart Capture performance', 'Monitoring Smart Capture enablement and candidate resolution.', [
-    renderAnalyticsMiniTable('Smart Capture summary', [
-      ['Enabled users', formatMetricValue(getMetric(smartCapture, ['enabledUsers', 'smartCaptureEnabledUsers']))],
-      ['Permission granted', formatMetricValue(getMetric(smartCapture, ['permissionGrantedCount']))],
-      ['Permission denied', formatMetricValue(getMetric(smartCapture, ['permissionDeniedCount']))],
-      ['Setup completed', formatMetricValue(getMetric(smartCapture, ['setupCompletedCount']))],
-      ['Candidate detected', formatMetricValue(getMetric(smartCapture, ['candidateDetectedCount']))],
-      ['Candidate saved', formatMetricValue(getMetric(smartCapture, ['candidateSavedCount']))],
-      ['Candidate dismissed', formatMetricValue(getMetric(smartCapture, ['candidateDismissedCount']))],
-      ['Candidate corrected', formatMetricValue(getMetric(smartCapture, ['candidateCorrectedCount']))],
-      ['Duplicate blocked', formatMetricValue(getMetric(smartCapture, ['duplicateBlockedCount']))],
-      ['Ignored by rule', formatMetricValue(getMetric(smartCapture, ['ignoredByRuleCount']))],
-      ['Throttled', formatMetricValue(getMetric(smartCapture, ['throttledCount']))],
-      ['Health failure count', formatMetricValue(getMetric(smartCapture, ['healthFailureCount']))],
-      ['Candidate saved rate', formatPercent(getMetric(smartCapture, ['candidateSavedRate', 'smartCaptureCandidateSavedRate']))],
-    ]),
-  ]);
+  const smartCaptureSection = renderAnalyticsSection(
+    'Smart Capture Intelligence',
+    'Outcome-based observability for native confirmation, Review friction and shadow graduation. Rule approval and rollback stay in Learning Console.',
+    [
+      renderAnalyticsMiniTable('Capture & resolution', [
+        ['Enabled users', formatMetricValue(getMetric(smartCapture, ['enabledUsers', 'smartCaptureEnabledUsers']))],
+        ['Permission granted', formatMetricValue(getMetric(smartCapture, ['permissionGrantedCount']))],
+        ['Setup completed', formatMetricValue(getMetric(smartCapture, ['setupCompletedCount']))],
+        ['Candidate detected', formatMetricValue(getMetric(smartCapture, ['candidateDetectedCount']))],
+        ['Candidate saved', formatMetricValue(getMetric(smartCapture, ['candidateSavedCount']))],
+        ['Candidate dismissed', formatMetricValue(getMetric(smartCapture, ['candidateDismissedCount']))],
+        ['Native resolution', formatMetricValue(getMetric(smartCapture, ['nativeResolutionCount']))],
+        ['Review resolution', formatMetricValue(getMetric(smartCapture, ['reviewResolutionCount']))],
+        ['Review dependency rate', formatPercent(getMetric(smartCapture, ['reviewDependencyRate']))],
+      ]),
+      renderAnalyticsMiniTable('Agreement & correction signals', [
+        ['Confirmed agreement rate', formatPercent(getMetric(smartCapture, ['confirmedAgreementRate']))],
+        ['Correction rate', formatPercent(getMetric(smartCapture, ['correctionRate']))],
+        ['Reject rate', formatPercent(getMetric(smartCapture, ['rejectRate']))],
+        ['No-edit confirmations', formatMetricValue(getMetric(smartCapture, ['noEditConfirmationCount']))],
+        ['Post-save correction', formatMetricValue(getMetric(smartCapture, ['postSaveCorrectionCount']))],
+        ['Post-save correction rate', formatPercent(getMetric(smartCapture, ['postSaveCorrectionRate']))],
+        ['Preset updates accepted', formatMetricValue(getMetric(smartCapture, ['presetUpdateAcceptedCount']))],
+        ['Preset updates kept unchanged', formatMetricValue(getMetric(smartCapture, ['presetUpdateRejectedCount']))],
+      ]),
+      renderAnalyticsMiniTable('Shadow & graduation', [
+        ['Shadow evaluations', formatMetricValue(getMetric(smartCapture, ['shadowEvaluationCount']))],
+        ['Shadow Top-1 matches', formatMetricValue(getMetric(smartCapture, ['shadowTop1MatchCount']))],
+        ['Shadow Top-1 match rate', formatPercent(getMetric(smartCapture, ['shadowTop1MatchRate']))],
+        ['Ready for native confirmation', formatMetricValue(getMetric(smartCapture, ['readyNativeConfirmableCandidates']))],
+        ['Shadow native-confirmable', formatMetricValue(getMetric(smartCapture, ['shadowNativeConfirmableCandidates']))],
+      ]),
+      el('p', {
+        class: 'muted',
+        text: 'These are behavior-based agreement and correction signals, not a gold-label “AI accuracy” score. Graduation controls remain in Learning Console.',
+      }),
+    ]
+  );
 
   const activeKeys = analyticsViewKeys();
   const anyData = activeKeys.some((key) => {
@@ -9403,23 +9424,43 @@ function renderSmartCaptureCandidateInsight(item, groups) {
   const rule = String(item.ruleCategory || '').toUpperCase();
   const action = String(item.suggestedAction || '').toUpperCase();
   const type = String(item.suggestedFinalType || '').toUpperCase();
-  const isBlock = rule === 'BLOCK_NON_TRANSACTION' || action === 'IGNORE';
+  const graduationState = String(item.graduationState || item.graduation_state || 'REVIEW_ONLY').toUpperCase();
+  const isBlock = rule === 'BLOCK_NON_TRANSACTION' || action === 'IGNORE' || graduationState === 'BLOCKED';
   const isReview = rule === 'FORCE_REVIEW' || action === 'REVIEW';
-  const isPotentialBoost = rule === 'BOOST_CONFIDENCE';
+  const isReady = graduationState === 'READY_NATIVE_CONFIRMABLE';
+  const isShadow = graduationState === 'SHADOW_NATIVE_CONFIRMABLE';
   const isInternal = ['INTERNAL_TRANSFER', 'TOP_UP'].includes(type);
   const hasPromoSignal = Object.values(groups.amountContext || {}).some((value) => Number(value) > 0)
     && ['priceOrPromo', 'PRICE', 'DISCOUNT', 'VOUCHER', 'PROMO', 'LIMIT'].some((key) => Number(groups.amountContext[key] || 0) > 0);
-  const quickActionCopy = isPotentialBoost && !isInternal && !hasPromoSignal
-    ? 'Backend still keeps global quick action disabled unless separately verified safe.'
-    : 'Safe default: review/block only. No global quick-save rule should be enabled from this candidate.';
+
+  const graduationCopy = isReady
+    ? 'Graduation evidence and shadow agreement are sufficient for admin-approved native confirmation. A user tap is still required; auto-save remains disabled.'
+    : isShadow
+      ? 'Evidence is strong enough for shadow evaluation only. Users still stay on the current Review path while predicted Native Confirmable behavior is measured.'
+      : isBlock
+        ? 'Safety evidence blocks graduation. Keep this pattern in Review/block behavior.'
+        : 'Not enough evidence to graduate. Continue collecting confirmed outcomes and correction/reject signals.';
+
   const badges = [
-    el('span', { class: `mini-badge ${isBlock ? 'danger' : isReview ? 'info' : 'neutral'}`, text: isBlock ? 'Block candidate' : isReview ? 'Review-only' : rule || 'Candidate' }),
+    el('span', { class: `mini-badge ${isBlock ? 'danger' : isReady ? 'success' : isShadow ? 'info' : isReview ? 'info' : 'neutral'}`, text: normalizeDistributionLabel(graduationState) }),
     el('span', { class: 'mini-badge neutral', text: type || 'No type change' }),
     el('span', { class: 'mini-badge success', text: 'Privacy-safe aggregate' }),
   ];
+
   return el('div', { class: 'candidate-insight-card' }, [
     el('div', { class: 'candidate-insight-header' }, badges),
-    el('p', { text: quickActionCopy }),
+    el('p', { text: graduationCopy }),
+    renderMetaGrid([
+      ['No-edit confirmation', formatPercent(item.noEditConfirmationRate ?? item.no_edit_confirmation_rate)],
+      ['Resolution correction', formatPercent(item.resolutionCorrectionRate ?? item.resolution_correction_rate ?? item.correctionRate ?? item.correction_rate)],
+      ['Reject rate', formatPercent(item.rejectRate ?? item.reject_rate)],
+      ['Post-save correction', formatPercent(item.postSaveCorrectionRate ?? item.post_save_correction_rate)],
+      ['Shadow samples', formatMetricValue(item.shadowSampleCount ?? item.shadow_sample_count)],
+      ['Shadow Top-1 match', formatPercent(item.shadowMatchRate ?? item.shadow_match_rate)],
+    ]),
+    (!isInternal && !hasPromoSignal)
+      ? el('p', { class: 'muted compact-text', text: 'Learning may graduate only to NATIVE_CONFIRMABLE. Part 1 still revalidates actuality, required fields and stale command authority before Save.' })
+      : null,
   ]);
 }
 
@@ -9613,6 +9654,38 @@ function renderOcrGlobalLearningRuleCandidate(item, groups) {
     children: [
       renderLearningDecisionSummary(item, { title: readableTitle }),
       renderLearningCandidateEvidence(item),
+      el('section', { class: 'learning-signal-summary smart-capture-graduation-evidence' }, [
+        el('div', { class: 'learning-evidence-heading' }, [
+          el('div', {}, [
+            el('span', { class: 'learning-section-kicker', text: 'Graduation evidence' }),
+            el('strong', { text: normalizeDistributionLabel(graduationState) }),
+          ]),
+          el('span', {
+            class: `mini-badge ${readyNativeConfirmable ? 'success' : shadowNativeConfirmable ? 'warn' : graduationState === 'BLOCKED' ? 'danger' : 'neutral'}`,
+            text: readyNativeConfirmable
+              ? 'Eligible for native confirmation'
+              : shadowNativeConfirmable
+                ? 'Shadow only'
+                : graduationState === 'BLOCKED'
+                  ? 'Safety blocked'
+                  : 'Review only',
+          }),
+        ]),
+        renderMetaGrid([
+          ['No-edit confirmation rate', formatPercent(item.noEditConfirmationRate ?? item.no_edit_confirmation_rate)],
+          ['Resolution correction rate', formatPercent(item.resolutionCorrectionRate ?? item.resolution_correction_rate ?? item.correctionRate ?? item.correction_rate)],
+          ['Reject rate', formatPercent(item.rejectRate ?? item.reject_rate)],
+          ['Post-save correction rate', formatPercent(item.postSaveCorrectionRate ?? item.post_save_correction_rate)],
+          ['Shadow samples', formatMetricValue(item.shadowSampleCount ?? item.shadow_sample_count)],
+          ['Shadow Top-1 match rate', formatPercent(item.shadowMatchRate ?? item.shadow_match_rate)],
+          ['Evidence version', item.graduationEvidenceVersion || item.graduation_evidence_version || 'sc_grad_v1'],
+        ]),
+        el('p', { class: 'muted', text: readyNativeConfirmable
+          ? 'Evidence has cleared the configured safety thresholds. Approval may enable one-tap native confirmation, but never auto-save.'
+          : shadowNativeConfirmable
+            ? 'The challenger is still shadow-only. User behavior remains authoritative while more Top-1 vs final-choice evidence is collected.'
+            : 'This pattern remains Review-first until evidence is strong and stable enough to graduate.' }),
+      ]),
       el('section', { class: 'learning-signal-summary' }, [
         el('div', { class: 'learning-evidence-heading' }, [
           el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'What the aggregate is showing' }), el('strong', { text: 'Most common safe signals' })]),
@@ -9678,6 +9751,9 @@ function renderSmartCaptureGlobalLearningRuleCandidate(item, groups) {
   const ruleCategory = item.ruleCategory || item.rule_category || 'PENDING';
   const suggestedType = item.suggestedFinalType || item.suggested_final_type || '';
   const reasonCodes = getResolverReasonCodes(item);
+  const graduationState = String(item.graduationState || item.graduation_state || 'REVIEW_ONLY').toUpperCase();
+  const readyNativeConfirmable = graduationState === 'READY_NATIVE_CONFIRMABLE';
+  const shadowNativeConfirmable = graduationState === 'SHADOW_NATIVE_CONFIRMABLE';
   const readableTitle = item.plainSummary || item.plain_summary || `${normalizeDistributionLabel(ruleCategory)} Smart Capture pattern`;
   return renderCollapsibleItem({
     title: readableTitle,
@@ -9740,7 +9816,11 @@ function renderSmartCaptureGlobalLearningRuleCandidate(item, groups) {
         el('span', { text: 'Smart Capture safety: approve only when the aggregate meaning is clear. Global learning must not turn internal transfers, top-ups, promotions, or uncertain captures into automatic expense/income saves.' }),
       ]),
       el('div', { class: 'actions learning-review-actions' }, [
-        el('button', { class: 'btn primary small', text: 'Approve review-only rule', onclick: () => decideGlobalLearningCandidate(item, true) }),
+        el('button', {
+          class: 'btn primary small',
+          text: readyNativeConfirmable ? 'Approve native-confirmable rule' : 'Approve review-only rule',
+          onclick: () => decideGlobalLearningCandidate(item, true),
+        }),
         el('button', { class: 'btn danger small', text: 'Reject', onclick: () => decideGlobalLearningCandidate(item, false) }),
       ]),
     ].filter(Boolean),
@@ -9958,6 +10038,9 @@ function renderGlobalLearningActiveRule(item) {
     ? 'Server returned an unsafe OCR/Statement Import quick/auto flag. Admin UI treats OCR global rules as review-only; verify backend policy before rollout.'
     : null;
   const rollout = `${item.rolloutPercentage ?? item.rollout_percentage ?? 100}%`;
+  const resolutionMode = String(item.resolutionMode || item.resolution_mode || 'APP_REVIEW_REQUIRED').toUpperCase();
+  const graduationState = String(item.graduationState || item.graduation_state || 'REVIEW_ONLY').toUpperCase();
+  const nativeConfirmable = resolutionMode === 'NATIVE_CONFIRMABLE' && graduationState === 'READY_NATIVE_CONFIRMABLE';
   return renderCollapsibleItem({
     title: `${renderGlobalLearningSourceLabel(sourceType)} · ${normalizeDistributionLabel(ruleCategory)}`,
     subtitle: `${normalizeDistributionLabel(action)} · rollout ${rollout}`,
@@ -9968,13 +10051,13 @@ function renderGlobalLearningActiveRule(item) {
           el('div', {}, [el('span', { class: 'learning-section-kicker', text: 'Active rule meaning' }), el('h4', { text: normalizeDistributionLabel(action) })]),
           el('div', { class: 'learning-decision-badges' }, [
             el('span', { class: 'mini-badge success', text: `Rollout ${rollout}` }),
-            el('span', { class: 'mini-badge neutral', text: item.forceReview ?? item.force_review ? 'Force Review' : 'Review-safe policy' }),
+            el('span', { class: `mini-badge ${nativeConfirmable ? 'success' : 'neutral'}`, text: nativeConfirmable ? 'Native confirmable' : (item.forceReview ?? item.force_review ? 'Force Review' : 'Review-safe policy') }),
           ]),
         ]),
         el('p', { text: learningDecisionMeaning({ ...item, ruleCategory, suggestedAction: action }) }),
         el('div', { class: 'learning-decision-impact' }, [
           el('strong', { text: 'Financial safety' }),
-          el('span', { text: `Quick action: ${allowQuickAction ? 'allowed' : 'disabled'} · Auto-save: ${allowAutoSave ? 'allowed' : 'disabled'}.` }),
+          el('span', { text: `Native confirmation: ${nativeConfirmable && allowQuickAction ? 'allowed' : 'disabled'} · Auto-save: disabled.` }),
         ]),
       ]),
       renderLearningRecommendationBadge(item),
@@ -12417,7 +12500,7 @@ function renderLearningConsolePage() {
   const consoleData = getLearningConsoleData();
   const activeSubtab = state.learningConsole.activeSubtab || LEARNING_CONSOLE_TABS[0];
   const children = [
-    renderAdminControlHero('Learning Console', 'Understand what Smart Capture and OCR are learning, review evidence, and control global rules safely.', 'Global learning uses privacy-safe aggregates and remains review-first. OCR learning now tracks both receipt totals/fields and adaptive item-table structure, while technical details stay available on demand.'),
+    renderAdminControlHero('Learning Console', 'Understand what Smart Capture and OCR are learning, review evidence, and control global rules safely.', 'Global learning uses privacy-safe aggregates and remains Review-first until Smart Capture graduation evidence passes Shadow validation. Auto-save stays disabled; OCR learning remains review-only while technical details stay available on demand.'),
     renderLearningConsoleTabs(),
   ];
   if (['Overview', 'Review Queue', 'Rules'].includes(activeSubtab)) children.push(renderLearningConsoleFocusFilter());
