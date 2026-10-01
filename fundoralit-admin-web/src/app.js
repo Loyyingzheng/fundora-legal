@@ -84,6 +84,8 @@ const API_PATHS = {
     diagnosticDetail: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}`,
     diagnosticStatus: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}/status`,
     diagnosticMerge: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}/merge`,
+    diagnosticCompensationPreview: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}/compensation-preview`,
+    diagnosticCompensation: (id) => `/api/feedback/admin/diagnostics/${encodeURIComponent(id)}/compensation`,
   },
   rewardSurvey: {
     list: '/api/subscription/feedback-trial/admin/surveys',
@@ -144,6 +146,12 @@ const API_PATHS = {
     update: (id) => `/api/admin/announcements/${encodeURIComponent(id)}`,
     disable: (id) => `/api/admin/announcements/${encodeURIComponent(id)}/disable`,
     uploadMedia: '/api/admin/announcements/media',
+  },
+  memberFrames: {
+    list: '/api/admin/member-frames',
+    create: '/api/admin/member-frames',
+    update: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}`,
+    uploadAsset: '/api/admin/member-frames/assets',
   },
   mobilePolicy: {
     current: '/api/config/mobile-policy',
@@ -1624,7 +1632,7 @@ const NAV_GROUPS = [
     title: 'User & Usage',
     items: [
       { id: 'usage', label: 'Usage & Quota', helper: 'Support lookup', description: 'Check user usage counters, usage events, remaining quota, and safe quota adjustment history.', info: 'Usage views are for support and debugging. Adjustments should be rare and always require an audit reason.' },
-      { id: 'subscriptionSupport', label: 'Subscription Support', helper: 'Entitlement approval', description: 'Search user subscription state, request entitlement corrections, and approve high-risk subscription support actions.', info: 'Support admins can request only and need a separate reviewer. Super admins can request and self-approve emergency corrections. Do not duplicate this workflow in Reward Surveys, Feedback, Usage, or Feature Limits.' },
+      { id: 'subscriptionSupport', label: 'Subscription Support', helper: 'Entitlement approval', description: 'Search user subscription state, derived Member identity benefits, request entitlement corrections, and approve high-risk subscription support actions.', info: 'Support admins can request only and need a separate reviewer. Super admins can request and self-approve emergency corrections. Do not duplicate this workflow in Reward Surveys, Feedback, Usage, or Feature Limits.' },
     ],
   },
   {
@@ -1639,6 +1647,7 @@ const NAV_GROUPS = [
     title: 'Operations',
     items: [
       { id: 'announcements', label: 'Announcements', helper: 'Remote notices', description: 'Create user-facing app notices without shipping a new app version.', info: 'Use announcements for maintenance, updates, or important messages. Keep copy short; details are hidden in the app until users choose to read or act.' },
+      { id: 'memberFrames', label: 'Member Frames', helper: 'Yearly avatar assets', description: 'Upload and schedule private yearly member avatar frames without shipping a new app build.', info: 'PNG assets stay in private storage. Admin controls claim windows and eligibility; mobile receives only metadata until a frame is claimed or needs authenticated display.' },
       { id: 'premium', label: 'Reward Surveys', helper: 'Trial reward', description: 'Review feedback-trial reward surveys and related service-credit workflows.', info: 'Use this section to verify survey submissions and keep reward decisions traceable.' },
       { id: 'review', label: 'Review Prompts', helper: 'Store prompt', description: 'Monitor app review prompt eligibility and outcomes.', info: 'Review prompt data helps tune rating prompts without showing private finance content.' },
       { id: 'featureAnalytics', label: 'Feature Analytics', helper: 'Summary events', description: 'See aggregated feature interaction summaries for UX and dashboard improvements.', info: 'This is summary analytics only. It should not contain raw click streams, merchant names, payees, OCR text, or notification content.' },
@@ -3986,6 +3995,13 @@ async function loadAdminControlData(loadRequest) {
     setScopedData({ content: announcementItems, page: 0, size: 100, totalElements: announcementItems.length, totalPages: 1 }, loadRequest);
     return;
   }
+  if (state.activeTab === 'memberFrames') {
+    response = await api(API_PATHS.memberFrames.list);
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    const frameItems = normalizeAdminListResponse(response);
+    setScopedData({ content: frameItems, page: 0, size: 100, totalElements: frameItems.length, totalPages: 1 }, loadRequest);
+    return;
+  }
   if (state.activeTab === 'usage') {
     const counters = await api(API_PATHS.usage.list, {
       params: { userEmail: filters.userEmail, featureKey: filters.featureKey, periodKey: filters.periodKey },
@@ -5105,7 +5121,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements'].includes(tab);
+  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements', 'memberFrames'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -6832,6 +6848,88 @@ function resolveDiagnosticIssue(item) {
   });
 }
 
+async function openDiagnosticCompensationModal(item) {
+  const issueId = item?.issueId;
+  const userId = item?.latestUserId;
+  if (!issueId || !userId) {
+    setMessage('Load the diagnostic detail first. A consented affected user is required before compensation can be reviewed.', true);
+    return;
+  }
+  state.actionLoadingKey = API_PATHS.feedback.diagnosticCompensationPreview(issueId);
+  state.actionLoadingMessage = 'Loading compensation policy...';
+  render();
+  try {
+    const preview = await api(API_PATHS.feedback.diagnosticCompensationPreview(issueId), { params: { userId } });
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
+    state.modal = {
+      kind: 'diagnosticCompensation',
+      issueId,
+      userId,
+      userEmail: item?.latestUserEmail || '',
+      issue: item?.issue || '',
+      preview,
+      creditDays: Number(preview?.suggestedDays || 1),
+      reason: item?.resolutionNote || item?.issue || '',
+      notifyUser: true,
+    };
+    render();
+  } catch (error) {
+    state.actionLoadingKey = '';
+    state.actionLoadingMessage = '';
+    setMessage(toFriendlyErrorMessage(error, 'Compensation policy could not be loaded.'), true);
+    render();
+  }
+}
+
+function renderDiagnosticCompensationModal() {
+  const modal = state.modal;
+  const preview = modal.preview || {};
+  const days = el('input', { type: 'number', min: '1', max: String(preview.maxAllowedDays || 14), step: '1', value: modal.creditDays || preview.suggestedDays || 1, 'data-field-key': 'creditDays' });
+  days.addEventListener('input', () => { modal.creditDays = Number(days.value); });
+  const reason = el('textarea', { rows: '4', placeholder: 'Why this affected user should receive compensation.', 'data-field-key': 'reason' });
+  reason.value = modal.reason || '';
+  reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const notify = el('input', { type: 'checkbox' });
+  notify.checked = modal.notifyUser !== false;
+  notify.addEventListener('change', () => { modal.notifyUser = notify.checked; });
+
+  return renderControlModal('Review diagnostic compensation', 'Customer Remediation', [
+    renderPolicySafetyNote('The admin selects the business remedy. The backend decides whether fulfillment is Google Play renewal defer or an internal entitlement, records an idempotent grant, and reconciles uncertain provider outcomes before retrying.'),
+    renderMetaGrid([
+      ['Issue ID', modal.issueId],
+      ['Affected User', modal.userEmail || modal.userId],
+      ['Severity', preview.severity],
+      ['Policy Level', preview.policyLevel],
+      ['Recommended Days', preview.suggestedDays],
+      ['Maximum Allowed', preview.maxAllowedDays],
+      ['Monthly Used', `${preview.monthlyUsedDays || 0} / ${preview.monthlyCapDays || 14}`],
+      ['Eligibility', preview.eligible ? 'Eligible' : (preview.reason || 'Not eligible')],
+    ]),
+    el('div', { class: modalFieldClass('creditDays') }, [
+      el('label', { text: 'Final compensation days' }), days, renderFieldError('creditDays'),
+      el('small', { class: 'field-help', text: 'Use the severity recommendation unless evidence supports a different value within the backend policy cap.' }),
+    ]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Reason / decision note' }), reason, renderFieldError('reason')]),
+    el('label', { class: 'checkbox-row' }, [notify, el('span', { text: 'Notify user after entitlement is confirmed' })]),
+  ], submitDiagnosticCompensationModal, true);
+}
+
+async function submitDiagnosticCompensationModal() {
+  const modal = state.modal;
+  const maxDays = Number(modal.preview?.maxAllowedDays || 14);
+  const days = parseWholeNumber(modal.creditDays, 'Compensation days', { min: 1, max: maxDays });
+  if (!days.ok) return validationError(days.message, 'creditDays');
+  const reason = requireMaxLength(modal.reason, 'Reason', ADMIN_LIMITS.feedbackReviewReasonMax || 3000, { required: true });
+  if (!reason.ok) return validationError(reason.message, 'reason');
+  await performPostAction(API_PATHS.feedback.diagnosticCompensation(modal.issueId), 'Diagnostic compensation submitted.', {
+    userId: modal.userId,
+    creditDays: days.value,
+    reason: reason.value,
+    notifyUser: modal.notifyUser !== false,
+  });
+}
+
 function renderDiagnosticIssueItem(item) {
   const issueId = item?.issueId || '';
   const detailState = state.diagnosticDetails?.[issueId] || {};
@@ -6938,6 +7036,9 @@ function renderDiagnosticIssueItem(item) {
           : null,
         status === 'INVESTIGATING'
           ? el('button', { class: 'btn ghost small', text: 'Move back to open', onclick: (event) => runFeedbackAction(event, () => updateDiagnosticIssueStatus(issueId, 'OPEN')) })
+          : null,
+        detailState.data && fullItem.latestUserId
+          ? el('button', { class: 'btn secondary small', text: 'Review compensation', onclick: (event) => runFeedbackAction(event, () => openDiagnosticCompensationModal(fullItem)) })
           : null,
         status !== 'RESOLVED'
           ? el('button', { class: 'btn success small', text: 'Resolve issue', onclick: (event) => runFeedbackAction(event, () => resolveDiagnosticIssue(fullItem)) })
@@ -7111,6 +7212,7 @@ function renderAdminModal() {
   if (!state.modal) return null;
   if (state.modal.kind === 'feedbackReview') return renderFeedbackReviewModal();
   if (state.modal.kind === 'feedbackCredit') return renderFeedbackCreditModal();
+  if (state.modal.kind === 'diagnosticCompensation') return renderDiagnosticCompensationModal();
   if (state.modal.kind === 'featureLimitEdit') return renderFeatureLimitModal();
   if (state.modal.kind === 'featureFlagEdit') return renderFeatureFlagModal();
   if (state.modal.kind === 'productPolicyEdit') return renderProductPolicyModal();
@@ -7121,6 +7223,7 @@ function renderAdminModal() {
   if (state.modal.kind === 'subscriptionSupportRequest') return renderSubscriptionSupportRequestModal();
   if (state.modal.kind === 'subscriptionSupportReview') return renderSubscriptionSupportReviewModal();
   if (state.modal.kind === 'announcementEdit') return renderAnnouncementModal();
+  if (state.modal.kind === 'memberFrameEdit') return renderMemberFrameModal();
   if (state.modal.kind === 'emergencyAction') return renderEmergencyActionModal();
   if (state.modal.kind === 'emergencyRuleAction') return renderEmergencyRuleActionModal();
   if (state.modal.kind === 'policyVersionView') return renderPolicyVersionViewModal();
@@ -8652,6 +8755,10 @@ function normalizeSubscriptionRequestItem(item = {}) {
     reviewedByEmail: firstPresent(item.reviewedByEmail, item.reviewed_by_email),
     reviewedAt: firstPresent(item.reviewedAt, item.reviewed_at),
     applyStatus: firstPresent(item.applyStatus, item.apply_status),
+    entitlementGrantId: firstPresent(item.entitlementGrantId, item.entitlement_grant_id),
+    notificationStatus: firstPresent(item.notificationStatus, item.notification_status),
+    notificationAttemptedAt: firstPresent(item.notificationAttemptedAt, item.notification_attempted_at),
+    notificationError: firstPresent(item.notificationError, item.notification_error),
     reason: firstPresent(item.reason, item.requestReason, item.request_reason),
     evidenceNote: firstPresent(item.evidenceNote, item.evidence_note),
     beforeJson: item.beforeJson || item.before_json || before,
@@ -8694,6 +8801,13 @@ function normalizeSubscriptionUserSummary(item = {}) {
     adminOverrideReason: firstPresent(item.adminOverrideReason, item.admin_override_reason),
     adminOverrideUpdatedAt: firstPresent(item.adminOverrideUpdatedAt, item.admin_override_updated_at),
     adminOverrideUpdatedByEmail: firstPresent(item.adminOverrideUpdatedByEmail, item.admin_override_updated_by_email),
+    membershipActive: asBoolean(firstPresent(item.membershipActive, item.membership_active), false),
+    membershipTier: firstPresent(item.membershipTier, item.membership_tier, 'NONE'),
+    membershipExpiresAt: firstPresent(item.membershipExpiresAt, item.membership_expires_at),
+    membershipBenefitVersion: firstPresent(item.membershipBenefitVersion, item.membership_benefit_version),
+    membershipBenefits: Array.isArray(firstPresent(item.membershipBenefits, item.membership_benefits))
+      ? firstPresent(item.membershipBenefits, item.membership_benefits)
+      : [],
   };
 }
 
@@ -8706,12 +8820,12 @@ const SUBSCRIPTION_REQUEST_COPY = Object.freeze({
   GRANT_COMPENSATION_DAYS: {
     label: 'Request compensation extension',
     shortLabel: 'Compensation days',
-    description: 'Extend an active Pro entitlement after a verified service issue or approved support case.',
+    description: 'Grant service compensation through the unified entitlement engine. Active Google Play subscriptions are deferred at the provider; other eligible cases use an internal entitlement overlay with reconciliation and audit.',
   },
   CORRECT_TO_PRO: {
     label: 'Request Force Pro override',
     shortLabel: 'Force Pro',
-    description: 'Apply a temporary administrator override after verification. Underlying provider and service-credit records remain preserved for audit.',
+    description: 'Apply a temporary highest-priority Pro override after verification. Underlying provider and service-credit records remain preserved for audit.',
   },
   CORRECT_TO_FREE: {
     label: 'Request Force Free override',
@@ -8966,6 +9080,10 @@ function renderSubscriptionUserItem(summary) {
         ['Admin Override', normalizedSummary?.adminOverrideMode || 'NONE'], ['Override Expiry', formatDate(normalizedSummary?.adminOverrideExpiresAt)], ['Override Updated By', normalizedSummary?.adminOverrideUpdatedByEmail],
         ['Base Tier', normalizedSummary?.baseTier], ['Base Status', normalizedSummary?.baseStatus], ['Base Billing', normalizedSummary?.baseBillingCycle], ['Base Expiry', formatDate(normalizedSummary?.baseExpiresAt)], ['Base Provider', normalizedSummary?.baseProvider],
         ['Underlying Service Credit', normalizedSummary?.underlyingServiceCreditActive ? `Active until ${formatDate(normalizedSummary?.underlyingServiceCreditExpiresAt)}` : 'Inactive'],
+        ['Member Layer', normalizedSummary?.membershipActive ? `${normalizedSummary.membershipTier || 'PRO_MEMBER'} · Active` : 'Inactive'],
+        ['Member Expiry', formatDate(normalizedSummary?.membershipExpiresAt)],
+        ['Member Benefit Contract', normalizedSummary?.membershipBenefitVersion || '-'],
+        ['Member Benefits', normalizedSummary?.membershipBenefits?.length ? normalizedSummary.membershipBenefits.join(', ') : '-'],
         ['Provider Customer', normalizedSummary?.providerCustomerId], ['Provider Entitlement', normalizedSummary?.providerEntitlementId ? 'Stored' : '-'], ['Updated', formatDate(normalizedSummary?.updatedAt)],
         ['Cancelled At', formatDate(normalizedSummary?.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary?.cancellationEffectiveAt)],
         ['Trial Used', normalizedSummary?.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary?.trialExpiresAt)],
@@ -9010,6 +9128,10 @@ function renderSubscriptionSupportSummary(summary, permissions = {}) {
       ['Admin Override', normalizedSummary.adminOverrideMode || 'NONE'], ['Override Expiry', formatDate(normalizedSummary.adminOverrideExpiresAt)], ['Override Reason', normalizedSummary.adminOverrideReason], ['Override Updated By', normalizedSummary.adminOverrideUpdatedByEmail],
       ['Base Tier', normalizedSummary.baseTier], ['Base Status', normalizedSummary.baseStatus], ['Base Billing', normalizedSummary.baseBillingCycle], ['Base Expiry', formatDate(normalizedSummary.baseExpiresAt)], ['Base Provider', normalizedSummary.baseProvider],
       ['Underlying Service Credit', normalizedSummary.underlyingServiceCreditActive ? `Active until ${formatDate(normalizedSummary.underlyingServiceCreditExpiresAt)}` : 'Inactive'],
+      ['Member Layer', normalizedSummary.membershipActive ? `${normalizedSummary.membershipTier || 'PRO_MEMBER'} · Active` : 'Inactive'],
+      ['Member Expiry', formatDate(normalizedSummary.membershipExpiresAt)],
+      ['Member Benefit Contract', normalizedSummary.membershipBenefitVersion || '-'],
+      ['Member Benefits', normalizedSummary.membershipBenefits?.length ? normalizedSummary.membershipBenefits.join(', ') : '-'],
       ['Provider Customer', normalizedSummary.providerCustomerId], ['Provider Entitlement', normalizedSummary.providerEntitlementId ? 'Stored' : '-'], ['Updated', formatDate(normalizedSummary.updatedAt)],
       ['Cancelled At', formatDate(normalizedSummary.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary.cancellationEffectiveAt)],
       ['Trial Used', normalizedSummary.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary.trialExpiresAt)],
@@ -9071,8 +9193,10 @@ function renderSubscriptionSupportRequestItem(item) {
         ['Requested Tier', view.requestedTier], ['Requested Status', view.requestedStatus], ['Requested Billing', view.requestedBillingCycle],
         ['Requested Expiry', formatDate(view.requestedExpiresAt)], ['Requested Days', view.requestedDays],
         ['Requested By', view.requestedByEmail], ['Requested At', formatDate(view.requestedAt)],
-        ['Reviewed By', view.reviewedByEmail], ['Reviewed At', formatDate(view.reviewedAt)], ['Apply Status', view.applyStatus],
+        ['Reviewed By', view.reviewedByEmail], ['Reviewed At', formatDate(view.reviewedAt)], ['Apply Status', view.applyStatus], ['Grant ID', view.entitlementGrantId],
+        ['User Notification', view.notificationStatus], ['Notification Attempted', formatDate(view.notificationAttemptedAt)],
       ]),
+      view.notificationError ? el('div', { class: 'notice warning inline-notice', text: `User notification: ${view.notificationError}` }) : null,
       el('details', { class: 'nested-details' }, [el('summary', { text: 'Reason and evidence' }), el('p', { text: view.reason || '-' }), view.evidenceNote ? el('pre', { text: view.evidenceNote }) : null]),
       el('details', { class: 'nested-details' }, [el('summary', { text: 'Before / after JSON' }), el('pre', { text: compactJson(view.beforeJson || {}) }), el('pre', { text: compactJson(view.afterJson || {}) })]),
       el('div', { class: 'actions' }, [
@@ -13354,6 +13478,12 @@ function renderAdminControlPage() {
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Keep announcement messages meaningful and short. Use Modal only for important service-impacting notices; normal updates should use Banner.'));
     children.push(renderControlList(items, renderAnnouncementItem, 'No announcements found.'));
+  } else if (state.activeTab === 'memberFrames') {
+    children.push(renderAdminControlHero('Member Frames', 'Operate yearly and limited avatar frames from the backend instead of the AAB.', 'Assets are uploaded to a private Supabase bucket. Users see metadata first; the app requests short-lived delivery only after claim or when an authenticated shared-group view needs to render that frame.'));
+    children.push(renderMemberFrameToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Use transparent square PNG files. Set a claim window and eligibility explicitly. “Featured” is only presentation priority; ownership remains permanent until an explicit future revoke workflow is used.'));
+    children.push(renderControlList(items, renderMemberFrameItem, 'No member frames configured.'));
   } else if (state.activeTab === 'auditLogs') {
     children.push(renderAdminControlHero('Audit Logs', 'Review admin changes to policies, flags, limits, usage, version, and support actions.', 'Every control action should leave a reasoned audit trail: who changed it, what changed, before/after values, and when.'));
     children.push(renderAuditToolbar());
@@ -13478,6 +13608,160 @@ function renderUsageAdjustModal() {
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
     el('div', { class: modalFieldClass('confirmPhrase') }, [el('label', { text: 'Confirmation phrase' }), phrase, renderFieldError('confirmPhrase')]),
   ], submitUsageAdjustModal);
+}
+
+
+function renderMemberFrameToolbar() {
+  return renderControlToolbar([
+    el('button', { class: 'btn', text: 'Create member frame', onclick: () => openMemberFrameModal(null) }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
+  ]);
+}
+
+function memberFrameStatus(item) {
+  if (!item.enabled) return { text: 'Disabled', tone: 'neutral' };
+  const now = Date.now();
+  const start = item.claimStartAt || item.claim_start_at ? new Date(item.claimStartAt || item.claim_start_at).getTime() : null;
+  const end = item.claimEndAt || item.claim_end_at ? new Date(item.claimEndAt || item.claim_end_at).getTime() : null;
+  if (start && start > now) return { text: 'Scheduled', tone: 'info' };
+  if (end && end < now) return { text: 'Claim ended', tone: 'closed' };
+  return { text: item.featured ? 'Featured · Claimable' : 'Claimable', tone: 'success' };
+}
+
+function renderMemberFrameItem(item) {
+  const status = memberFrameStatus(item);
+  return renderCollapsibleItem({
+    title: item.title || item.code || 'Member frame',
+    subtitle: `${item.code || '-'} · ${item.releaseYear || item.release_year || '-'} · ${item.eligibilityType || item.eligibility_type || 'MEMBER'}`,
+    statusNode: el('span', { class: `badge ${status.tone}`, text: status.text }),
+    children: [
+      renderMetaGrid([
+        ['Code', item.code], ['Collection', item.collection], ['Release year', item.releaseYear || item.release_year],
+        ['Eligibility', item.eligibilityType || item.eligibility_type], ['Featured', item.featured ? 'Yes' : 'No'], ['Enabled', item.enabled ? 'Yes' : 'No'],
+        ['Claim start', formatDate(item.claimStartAt || item.claim_start_at)], ['Claim end', formatDate(item.claimEndAt || item.claim_end_at)],
+        ['Asset version', item.assetVersion || item.asset_version], ['SHA-256', item.assetSha256 || item.asset_sha256],
+        ['PNG size', `${item.imageWidth || item.image_width || '-'} × ${item.imageHeight || item.image_height || '-'}`],
+        ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openMemberFrameModal(item) }),
+      ]),
+    ],
+  });
+}
+
+function openMemberFrameModal(item) {
+  state.modal = {
+    kind: 'memberFrameEdit',
+    id: item?.id || null,
+    code: item?.code || '',
+    title: item?.title || '',
+    collection: item?.collection || '',
+    releaseYear: item?.releaseYear || item?.release_year || new Date().getFullYear(),
+    eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
+    claimStartAt: item?.claimStartAt || item?.claim_start_at || '',
+    claimEndAt: item?.claimEndAt || item?.claim_end_at || '',
+    enabled: item?.enabled === true,
+    featured: item?.featured === true,
+    assetBucket: item?.assetBucket || item?.asset_bucket || '',
+    assetPath: item?.assetPath || item?.asset_path || '',
+    assetSha256: item?.assetSha256 || item?.asset_sha256 || '',
+    assetVersion: item?.assetVersion || item?.asset_version || 1,
+    mimeType: item?.mimeType || item?.mime_type || 'image/png',
+    assetBytes: item?.assetBytes || item?.asset_bytes || 0,
+    imageWidth: item?.imageWidth || item?.image_width || null,
+    imageHeight: item?.imageHeight || item?.image_height || null,
+    assetFile: null,
+    assetFileName: '',
+    reason: '',
+    submitLabel: item ? 'Save frame' : 'Create frame',
+  };
+  render();
+}
+
+function renderMemberFrameModal() {
+  const modal = state.modal;
+  const field = (key, label, attrs = {}) => {
+    const input = el('input', { value: modal[key] ?? '', ...attrs });
+    input.addEventListener('input', () => { modal[key] = input.value; });
+    return el('div', { class: 'field' }, [el('label', { text: label }), input]);
+  };
+  const eligibility = select(['MEMBER', 'ALL'], modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
+  const start = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.claimStartAt) });
+  start.addEventListener('input', () => { modal.claimStartAt = start.value; });
+  const end = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.claimEndAt) });
+  end.addEventListener('input', () => { modal.claimEndAt = end.value; });
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const featured = el('input', { type: 'checkbox' }); featured.checked = Boolean(modal.featured); featured.addEventListener('change', () => { modal.featured = featured.checked; });
+  const asset = el('input', { type: 'file', accept: 'image/png' });
+  asset.addEventListener('change', () => {
+    const file = asset.files && asset.files[0] ? asset.files[0] : null;
+    if (!file) return;
+    if (file.type !== 'image/png') { setMessage('Member frame must be a PNG file.', true); asset.value = ''; return; }
+    if (file.size > 5 * 1024 * 1024) { setMessage('Member frame PNG must be 5MB or smaller.', true); asset.value = ''; return; }
+    modal.assetFile = file; modal.assetFileName = file.name; render();
+  });
+  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason' });
+  reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+
+  return renderControlModal(modal.id ? 'Edit member frame' : 'Create member frame', 'Private member-frame asset', [
+    renderPolicySafetyNote('PNG is stored privately and never embedded into the AAB. A short-lived signed delivery URL is created only when mobile actually needs the frame. Keep the center transparent and use a square canvas.'),
+    el('div', { class: 'form-grid two' }, [
+      field('code', 'Stable code', { placeholder: 'founding_2026' }),
+      field('title', 'Display title', { placeholder: 'Founding 2026' }),
+      field('collection', 'Collection', { placeholder: 'FOUNDING' }),
+      field('releaseYear', 'Release year', { type: 'number', min: '2026', max: '2200' }),
+      el('div', { class: 'field' }, [el('label', { text: 'Eligibility' }), eligibility]),
+      el('div', { class: 'field' }, [el('label', { text: 'Claim start' }), start]),
+      el('div', { class: 'field' }, [el('label', { text: 'Claim end' }), end]),
+    ]),
+    el('div', { class: 'form-grid two' }, [
+      el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
+      el('label', { class: 'check-row' }, [featured, el('span', { text: 'Featured / current-year priority' })]),
+    ]),
+    el('div', { class: 'field' }, [
+      el('label', { text: modal.assetPath ? 'Replace PNG asset · optional' : 'PNG asset · required' }),
+      asset,
+      el('p', { class: 'muted', text: modal.assetFileName || modal.assetPath || 'No asset selected yet.' }),
+    ]),
+    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+  ], submitMemberFrameModal, true);
+}
+
+async function submitMemberFrameModal() {
+  const modal = state.modal;
+  if (!String(modal.code || '').trim()) return setMessage('Stable frame code is required.', true);
+  if (!String(modal.title || '').trim()) return setMessage('Frame title is required.', true);
+  if (!String(modal.reason || '').trim()) return setMessage('Audit reason is required.', true);
+  modal.loading = true; render();
+  try {
+    if (modal.assetFile) {
+      const formData = new FormData(); formData.append('file', modal.assetFile);
+      const uploaded = normalizeAdminObjectResponse(await api(API_PATHS.memberFrames.uploadAsset, { method: 'POST', formData }));
+      modal.assetBucket = uploaded.assetBucket || uploaded.asset_bucket;
+      modal.assetPath = uploaded.assetPath || uploaded.asset_path;
+      modal.assetSha256 = uploaded.sha256;
+      modal.mimeType = uploaded.mimeType || uploaded.mime_type || 'image/png';
+      modal.assetBytes = uploaded.bytes || 0;
+      modal.imageWidth = uploaded.width;
+      modal.imageHeight = uploaded.height;
+      modal.assetVersion = Math.max(1, Number(modal.assetVersion || 1) + (modal.id ? 1 : 0));
+    }
+    if (!modal.id && (!modal.assetPath || !modal.assetSha256)) throw new Error('A private PNG asset is required before creating this frame.');
+    const body = {
+      code: String(modal.code).trim().toLowerCase(), title: String(modal.title).trim(), collection: String(modal.collection || '').trim() || null,
+      releaseYear: Number(modal.releaseYear) || null, eligibilityType: modal.eligibilityType || 'MEMBER', enabled: Boolean(modal.enabled), featured: Boolean(modal.featured),
+      claimStartAt: fromDateTimeLocalValue(modal.claimStartAt), claimEndAt: fromDateTimeLocalValue(modal.claimEndAt),
+      assetBucket: modal.assetBucket || null, assetPath: modal.assetPath || null, assetSha256: modal.assetSha256 || null, assetVersion: modal.assetFile ? Math.max(1, Number(modal.assetVersion) || 1) : null,
+      mimeType: modal.mimeType || 'image/png', assetBytes: Number(modal.assetBytes) || 0, imageWidth: modal.imageWidth || null, imageHeight: modal.imageHeight || null,
+      reason: String(modal.reason).trim(),
+    };
+    await api(modal.id ? API_PATHS.memberFrames.update(modal.id) : API_PATHS.memberFrames.create, { method: modal.id ? 'PATCH' : 'POST', body });
+    closeModal();
+    await refreshAfterAdminMutation(modal.id ? 'Member frame updated.' : 'Member frame created.');
+  } catch (error) {
+    modal.loading = false; setMessage(toFriendlyErrorMessage(error, 'Unable to save member frame.'), true); render();
+  }
 }
 
 function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = false) {

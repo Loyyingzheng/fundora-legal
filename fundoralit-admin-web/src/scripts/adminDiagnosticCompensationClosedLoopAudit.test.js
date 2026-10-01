@@ -1,0 +1,10 @@
+const fs = require('fs');
+const app = fs.readFileSync('src/app.js', 'utf8');
+const assert = (v, m) => { if (!v) throw new Error(m); };
+assert(app.includes('diagnosticCompensationPreview'), 'Diagnostic compensation preview route is missing.');
+assert(app.includes('diagnosticCompensation: (id)'), 'Diagnostic compensation grant route is missing.');
+assert(app.includes('openDiagnosticCompensationModal'), 'Diagnostic compensation review flow is missing.');
+assert(app.includes('Review compensation'), 'Diagnostic item must expose remediation review.');
+assert(app.includes('Notify user after entitlement is confirmed'), 'Admin UI must make notification timing explicit.');
+assert(app.includes("['Grant ID', view.entitlementGrantId]"), 'Subscription support must surface the grant audit id.');
+console.log('PASS admin diagnostic compensation closed-loop audit');
