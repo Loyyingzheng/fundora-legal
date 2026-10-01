@@ -152,6 +152,7 @@ const API_PATHS = {
     create: '/api/admin/member-frames',
     update: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}`,
     uploadAsset: '/api/admin/member-frames/assets',
+    uploadAssetRaw: '/api/admin/member-frames/assets/raw',
     preview: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}/preview-ticket`,
   },
   mobilePolicy: {
@@ -3170,7 +3171,10 @@ async function executeApiRequest(path, options = {}) {
 
   let body;
   let requestOptions = options;
-  if (options.formData instanceof FormData) {
+  if (options.rawBody !== undefined) {
+    body = options.rawBody;
+    requestOptions = options;
+  } else if (options.formData instanceof FormData) {
     const encoded = await encodeDeterministicMultipart(options.formData);
     body = encoded.body;
     requestOptions = {
@@ -13712,6 +13716,61 @@ function formatHmTime(value) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
+function memberFrameDateParts(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { day: 1, month: 1, year: new Date().getFullYear() };
+  return { day: date.getDate(), month: date.getMonth() + 1, year: date.getFullYear() };
+}
+
+function memberFrameDateSelect(value, min, max, onChange, label) {
+  const node = el('select', { 'aria-label': label });
+  for (let current = min; current <= max; current += 1) {
+    node.appendChild(el('option', { value: String(current), text: String(current).padStart(2, '0') }));
+  }
+  node.value = String(value);
+  node.addEventListener('change', () => onChange(Number(node.value)));
+  return node;
+}
+
+function memberFrameYearSelect(value, onChange, label) {
+  const node = el('select', { 'aria-label': label });
+  const current = new Date().getFullYear();
+  for (let year = current - 1; year <= current + 10; year += 1) {
+    node.appendChild(el('option', { value: String(year), text: String(year) }));
+  }
+  if (![...node.options].some((option) => Number(option.value) === Number(value))) {
+    node.appendChild(el('option', { value: String(value), text: String(value) }));
+  }
+  node.value = String(value);
+  node.addEventListener('change', () => onChange(Number(node.value)));
+  return node;
+}
+
+function memberFrameDatePicker(parts, onChange, prefix) {
+  const day = memberFrameDateSelect(parts.day, 1, 31, (value) => onChange({ ...parts, day: value }), `${prefix} day`);
+  const month = memberFrameDateSelect(parts.month, 1, 12, (value) => onChange({ ...parts, month: value }), `${prefix} month`);
+  const year = memberFrameYearSelect(parts.year, (value) => onChange({ ...parts, year: value }), `${prefix} year`);
+  return el('div', { class: 'member-frame-date-parts' }, [
+    el('div', { class: 'member-frame-date-part' }, [el('span', { text: 'Day' }), day]),
+    el('div', { class: 'member-frame-date-part' }, [el('span', { text: 'Month' }), month]),
+    el('div', { class: 'member-frame-date-part year' }, [el('span', { text: 'Year' }), year]),
+  ]);
+}
+
+function parseMemberFrameParts(parts, timeText) {
+  const day = Number(parts?.day);
+  const month = Number(parts?.month);
+  const year = Number(parts?.year);
+  const time = String(timeText || '00:00').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!time || year < 2020 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const hour = Number(time[1]);
+  const minute = Number(time[2]);
+  if (hour > 23 || minute > 59) return null;
+  const local = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (local.getFullYear() !== year || local.getMonth() !== month - 1 || local.getDate() !== day) return null;
+  return local.toISOString();
+}
+
 function parseDmyDateTime(dateText, timeText) {
   const match = String(dateText || '').trim().match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
   const time = String(timeText || '00:00').trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -13799,8 +13858,10 @@ function openMemberFrameModal(item) {
     claimStartAt: item?.claimStartAt || item?.claim_start_at || defaults.start,
     claimEndAt: item?.claimEndAt || item?.claim_end_at || defaults.end,
     claimStartDateText: formatDmyDate(item?.claimStartAt || item?.claim_start_at || defaults.start),
+    claimStartParts: memberFrameDateParts(item?.claimStartAt || item?.claim_start_at || defaults.start),
     claimStartTimeText: formatHmTime(item?.claimStartAt || item?.claim_start_at || defaults.start),
     claimEndDateText: formatDmyDate(item?.claimEndAt || item?.claim_end_at || defaults.end),
+    claimEndParts: memberFrameDateParts(item?.claimEndAt || item?.claim_end_at || defaults.end),
     claimEndTimeText: formatHmTime(item?.claimEndAt || item?.claim_end_at || defaults.end),
     enabled: item ? item?.enabled === true : true,
     featured: item?.featured === true,
@@ -13832,16 +13893,14 @@ function renderMemberFrameModal() {
   const year = el('input', { type: 'number', min: '2026', max: '2200', value: modal.releaseYear || new Date().getFullYear() });
   year.addEventListener('input', () => { modal.releaseYear = year.value; });
   const eligibility = memberFrameEligibilitySelect(modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
-  const startDate = el('input', { type: 'text', inputmode: 'numeric', maxlength: '10', placeholder: 'DD/MM/YYYY', value: modal.claimStartDateText || '' });
-  startDate.addEventListener('input', () => { modal.claimStartDateText = startDate.value; });
   const startTime = el('input', { type: 'time', value: modal.claimStartTimeText || '00:00' });
   startTime.addEventListener('input', () => { modal.claimStartTimeText = startTime.value; });
-  const endDate = el('input', { type: 'text', inputmode: 'numeric', maxlength: '10', placeholder: 'DD/MM/YYYY', value: modal.claimEndDateText || '' });
-  endDate.addEventListener('input', () => { modal.claimEndDateText = endDate.value; });
   const endTime = el('input', { type: 'time', value: modal.claimEndTimeText || '23:59' });
   endTime.addEventListener('input', () => { modal.claimEndTimeText = endTime.value; });
-  const start = el('div', { class: 'member-frame-date-time' }, [startDate, startTime]);
-  const end = el('div', { class: 'member-frame-date-time' }, [endDate, endTime]);
+  const startDate = memberFrameDatePicker(modal.claimStartParts, (next) => { modal.claimStartParts = next; }, 'Claim opens');
+  const endDate = memberFrameDatePicker(modal.claimEndParts, (next) => { modal.claimEndParts = next; }, 'Claim closes');
+  const start = el('div', { class: 'member-frame-date-time member-frame-date-time-readable' }, [startDate, el('div', { class: 'member-frame-time-part' }, [el('span', { text: 'Time' }), startTime])]);
+  const end = el('div', { class: 'member-frame-date-time member-frame-date-time-readable' }, [endDate, el('div', { class: 'member-frame-time-part' }, [el('span', { text: 'Time' }), endTime])]);
   const enabled = el('input', { type: 'checkbox' });
   enabled.checked = Boolean(modal.enabled);
   enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
@@ -13919,16 +13978,20 @@ async function submitMemberFrameModal() {
   modal.error = '';
   if (!String(modal.title || '').trim()) return setMemberFrameModalError('Display name is required.');
   if (!modal.assetFile && !modal.assetPath) return setMemberFrameModalError('Choose a transparent PNG frame.');
-  const claimStartIso = parseDmyDateTime(modal.claimStartDateText, modal.claimStartTimeText);
-  const claimEndIso = parseDmyDateTime(modal.claimEndDateText, modal.claimEndTimeText);
-  if (!claimStartIso) return setMemberFrameModalError('Claim opens must use DD/MM/YYYY and a valid time.');
-  if (!claimEndIso) return setMemberFrameModalError('Claim closes must use DD/MM/YYYY and a valid time.');
+  const claimStartIso = parseMemberFrameParts(modal.claimStartParts, modal.claimStartTimeText);
+  const claimEndIso = parseMemberFrameParts(modal.claimEndParts, modal.claimEndTimeText);
+  if (!claimStartIso) return setMemberFrameModalError('Choose a valid claim open date and time.');
+  if (!claimEndIso) return setMemberFrameModalError('Choose a valid claim close date and time.');
   if (new Date(claimStartIso).getTime() >= new Date(claimEndIso).getTime()) return setMemberFrameModalError('Claim close must be later than claim open.');
   modal.loading = true; render();
   try {
     if (modal.assetFile) {
-      const formData = new FormData(); formData.append('file', modal.assetFile);
-      const uploaded = normalizeAdminObjectResponse(await api(API_PATHS.memberFrames.uploadAsset, { method: 'POST', formData }));
+      const rawBody = new Uint8Array(await modal.assetFile.arrayBuffer());
+      const uploaded = normalizeAdminObjectResponse(await api(API_PATHS.memberFrames.uploadAssetRaw, {
+        method: 'POST',
+        rawBody,
+        headers: { 'Content-Type': 'image/png' },
+      }));
       modal.assetBucket = uploaded.assetBucket || uploaded.asset_bucket;
       modal.assetPath = uploaded.assetPath || uploaded.asset_path;
       modal.assetSha256 = uploaded.sha256;
