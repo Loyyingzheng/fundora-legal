@@ -147,6 +147,10 @@ const API_PATHS = {
     disable: (id) => `/api/admin/announcements/${encodeURIComponent(id)}/disable`,
     uploadMedia: '/api/admin/announcements/media',
   },
+  memberSupport: {
+    user: '/api/admin/member-support/users',
+    override: (id) => `/api/admin/member-support/users/${encodeURIComponent(id)}/override`,
+  },
   memberFrames: {
     list: '/api/admin/member-frames',
     create: '/api/admin/member-frames',
@@ -1635,6 +1639,7 @@ const NAV_GROUPS = [
     items: [
       { id: 'usage', label: 'Usage & Quota', helper: 'Support lookup', description: 'Check user usage counters, usage events, remaining quota, and safe quota adjustment history.', info: 'Usage views are for support and debugging. Adjustments should be rare and always require an audit reason.' },
       { id: 'subscriptionSupport', label: 'Subscription Support', helper: 'Entitlement approval', description: 'Search user subscription state, derived Member identity benefits, request entitlement corrections, and approve high-risk subscription support actions.', info: 'Support admins can request only and need a separate reviewer. Super admins can request and self-approve emergency corrections. Do not duplicate this workflow in Reward Surveys, Feedback, Usage, or Feature Limits.' },
+      { id: 'memberSupport', label: 'Member Support', helper: 'Member entitlement', description: 'Search standalone Fundoralit Member status and apply audited emergency Member overrides.', info: 'Member is independent from Fundoralit Pro. Google Play Member products and admin overrides affect Member identity only.' },
     ],
   },
   {
@@ -4069,6 +4074,12 @@ async function loadAdminControlData(loadRequest) {
     }, loadRequest);
     return;
   }
+  if (state.activeTab === 'memberSupport') {
+    const email = state.adminFilters.userEmail;
+    response = email ? await api(API_PATHS.memberSupport.user, { params: { email } }) : { data: null };
+    state.data = { memberSupport: response?.data || response?.result || response || null };
+    return;
+  }
   if (state.activeTab === 'subscriptionSupport') {
     const requestParams = { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail };
     const requestPromise = api(API_PATHS.subscriptionSupport.requests, { params: requestParams });
@@ -5169,7 +5180,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements', 'memberFrames'].includes(tab);
+  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'memberSupport', 'featureAnalytics', 'auditLogs', 'announcements', 'memberFrames'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -7270,6 +7281,7 @@ function renderAdminModal() {
   if (state.modal.kind === 'usageAdjust') return renderUsageAdjustModal();
   if (state.modal.kind === 'subscriptionSupportRequest') return renderSubscriptionSupportRequestModal();
   if (state.modal.kind === 'subscriptionSupportReview') return renderSubscriptionSupportReviewModal();
+  if (state.modal.kind === 'memberOverride') return renderMemberOverrideModal();
   if (state.modal.kind === 'announcementEdit') return renderAnnouncementModal();
   if (state.modal.kind === 'memberFrameEdit') return renderMemberFrameModal();
   if (state.modal.kind === 'emergencyAction') return renderEmergencyActionModal();
@@ -13515,6 +13527,8 @@ function renderAdminControlPage() {
       children.push(renderStats(items));
       children.push(renderControlList(items, renderSubscriptionSupportRequestItem, 'No subscription support requests match the selected filters.'));
     }
+  } else if (state.activeTab === 'memberSupport') {
+    children.push(renderMemberSupportPage());
   } else if (state.activeTab === 'featureAnalytics') {
     children.push(renderAdminControlHero('Feature Analytics', 'Privacy-safe product interaction summaries for UI/UX decisions.', 'The app uploads daily aggregated counts only. It must not upload click-by-click raw events, transaction text, notification text, OCR text, payee, merchant, or expense note.'));
     children.push(renderFeatureAnalyticsToolbar());
@@ -14325,3 +14339,66 @@ if (headerMenuButton) {
 }
 
 boot();
+
+function renderMemberSupportPage() {
+  const payload = state.data?.memberSupport || null;
+  const user = payload?.userId ? payload : null;
+  const member = user?.member || null;
+  const email = el('input', { type: 'email', placeholder: 'User email', value: state.adminFilters.userEmail || '' });
+  email.addEventListener('input', () => { state.adminFilters.userEmail = email.value.trim(); });
+  const search = el('form', { class: 'toolbar' }, [email, el('button', { class: 'btn primary', type: 'submit', text: 'Find user' })]);
+  search.addEventListener('submit', async (event) => { event.preventDefault(); await loadData({ force: true }); render(); });
+
+  const body = [
+    renderAdminControlHero('Member Support', 'Standalone Fundoralit Member entitlement.', 'Member is independent from Fundoralit Pro. Google Play Member products and admin overrides affect Member identity only.'),
+    search,
+  ];
+  if (!user) {
+    body.push(el('div', { class: 'empty-state', text: 'Search a user to review standalone Member entitlement.' }));
+    return el('div', { class: 'page-stack' }, body);
+  }
+  body.push(el('section', { class: 'card' }, [
+    el('p', { class: 'eyebrow', text: 'Member entitlement' }),
+    el('h2', { text: user.email || 'User' }),
+    renderMetaGrid([
+      ['Effective state', member?.active ? 'MEMBER ACTIVE' : 'NON-MEMBER'],
+      ['Provider', member?.provider || 'NONE'],
+      ['Billing cycle', member?.billingCycle || 'NONE'],
+      ['Product', member?.productId || '-'],
+      ['Expires', member?.expiresAt ? formatDateTime(member.expiresAt) : '-'],
+      ['Admin override', member?.adminOverrideMode || 'NONE'],
+    ]),
+    el('div', { class: 'button-row' }, [
+      el('button', { class: 'btn primary', text: 'Force Member', onclick: () => openMemberOverrideModal(user, 'FORCE_MEMBER') }),
+      el('button', { class: 'btn ghost', text: 'Force non-Member', onclick: () => openMemberOverrideModal(user, 'FORCE_NON_MEMBER') }),
+      el('button', { class: 'btn ghost', text: 'Clear override', onclick: () => openMemberOverrideModal(user, 'NONE') }),
+    ]),
+  ]));
+  return el('div', { class: 'page-stack' }, body);
+}
+function openMemberOverrideModal(user, mode) {
+  state.modal = { kind: 'memberOverride', user, mode, reason: '', expiresAt: '', submitLabel: mode === 'NONE' ? 'Clear override' : 'Apply override' };
+  render();
+}
+function renderMemberOverrideModal() {
+  const m = state.modal;
+  const reason = el('textarea', { rows: '4', placeholder: m.mode === 'NONE' ? 'No reason required when clearing.' : 'Required audit reason.', 'data-field-key': 'reason' });
+  reason.value = m.reason || ''; reason.addEventListener('input', () => { m.reason = reason.value; });
+  const expiry = el('input', { type: 'datetime-local', 'data-field-key': 'expiresAt' });
+  expiry.value = m.expiresAt || ''; expiry.addEventListener('input', () => { m.expiresAt = expiry.value; });
+  return renderControlModal('Member override', 'Member Entitlement', [
+    renderPolicySafetyNote('This changes only Fundoralit Member identity access. It does not grant or revoke Fundoralit Pro.'),
+    renderMetaGrid([['User', m.user?.email || '-'], ['Action', m.mode]]),
+    el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
+    el('div', { class: modalFieldClass('expiresAt') }, [el('label', { text: 'Override expiry · optional' }), expiry, renderFieldError('expiresAt')]),
+  ], submitMemberOverrideModal, true);
+}
+async function submitMemberOverrideModal() {
+  const m = state.modal;
+  const reason = normalizedTrim(m.reason);
+  if (m.mode !== 'NONE' && !reason) return validationError('Audit reason is required.', 'reason');
+  const expiresAt = m.expiresAt ? fromDateTimeLocalValue(m.expiresAt) : null;
+  await api(API_PATHS.memberSupport.override(m.user.userId), { method: 'POST', body: { mode: m.mode, reason: m.mode === 'NONE' ? null : reason, expiresAt } });
+  closeModal();
+  await refreshAfterAdminMutation('Member entitlement updated.');
+}
