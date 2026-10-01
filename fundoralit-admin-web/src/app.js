@@ -1638,8 +1638,7 @@ const NAV_GROUPS = [
     title: 'User & Usage',
     items: [
       { id: 'usage', label: 'Usage & Quota', helper: 'Support lookup', description: 'Check user usage counters, usage events, remaining quota, and safe quota adjustment history.', info: 'Usage views are for support and debugging. Adjustments should be rare and always require an audit reason.' },
-      { id: 'subscriptionSupport', label: 'Subscription Support', helper: 'Entitlement approval', description: 'Search user subscription state, derived Member identity benefits, request entitlement corrections, and approve high-risk subscription support actions.', info: 'Support admins can request only and need a separate reviewer. Super admins can request and self-approve emergency corrections. Do not duplicate this workflow in Reward Surveys, Feedback, Usage, or Feature Limits.' },
-      { id: 'memberSupport', label: 'Member Support', helper: 'Member entitlement', description: 'Search standalone Fundoralit Member status and apply audited emergency Member overrides.', info: 'Member is independent from Fundoralit Pro. Google Play Member products and admin overrides affect Member identity only.' },
+      { id: 'subscriptionSupport', label: 'Subscription Support', helper: 'Pro + Member entitlements', description: 'Search one user and support both Fundoralit Pro and standalone Fundoralit Member entitlements from one audited workspace.', info: 'Pro and Member remain independent entitlements. This page centralizes lookup, errors, approval workflows, Member emergency overrides, and audit-safe support actions without merging their underlying authority.' },
     ],
   },
   {
@@ -1720,7 +1719,11 @@ function toggleNavigation() {
 }
 
 function normalizeAdminTab(tabId) {
-  return tabId === 'featureLimits' ? 'planMatrix' : tabId;
+  if (tabId === 'featureLimits') return 'planMatrix';
+  // Backward-compatible deep link: standalone Member Support was merged into
+  // Subscription Support so entitlement support has one operational surface.
+  if (tabId === 'memberSupport') return 'subscriptionSupport';
+  return tabId;
 }
 
 function setActiveTab(tabId) {
@@ -4074,28 +4077,24 @@ async function loadAdminControlData(loadRequest) {
     }, loadRequest);
     return;
   }
-  if (state.activeTab === 'memberSupport') {
-    const email = state.adminFilters.userEmail;
-    response = email ? await api(API_PATHS.memberSupport.user, { params: { email } }) : { data: null };
-    state.data = { memberSupport: response?.data || response?.result || response || null };
-    return;
-  }
   if (state.activeTab === 'subscriptionSupport') {
     const requestParams = { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail };
     const requestPromise = api(API_PATHS.subscriptionSupport.requests, { params: requestParams });
     const pendingPromise = filters.subscriptionRequestStatus === 'PENDING'
       ? requestPromise
       : api(API_PATHS.subscriptionSupport.requests, { params: { status: 'PENDING', userEmail: filters.userEmail } });
-    const [requests, pendingRequestsResponse, users, user] = await Promise.all([
+    const [requests, pendingRequestsResponse, users, user, memberUser] = await Promise.all([
       requestPromise,
       pendingPromise,
       api(API_PATHS.subscriptionSupport.usersList, { params: { email: filters.userEmail, tier: filters.subscriptionUserTier, status: filters.subscriptionUserStatus } }),
-      filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'User not found.') })) : Promise.resolve(null),
+      filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Pro subscription lookup failed.') })) : Promise.resolve(null),
+      filters.userEmail ? api(API_PATHS.memberSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Member entitlement lookup failed.') })) : Promise.resolve(null),
     ]);
     const requestPayload = normalizeAdminObjectResponse(requests);
     const pendingPayload = normalizeAdminObjectResponse(pendingRequestsResponse);
     const userPayload = normalizeAdminObjectResponse(users);
     const exactUserPayload = user && !user.lookupError ? normalizeAdminObjectResponse(user) : {};
+    const exactMemberPayload = memberUser && !memberUser.lookupError ? normalizeAdminObjectResponse(memberUser) : {};
     const requestItems = Array.isArray(requestPayload.items) ? requestPayload.items : normalizeAdminListResponse(requests);
     const pendingRequests = Array.isArray(pendingPayload.items) ? pendingPayload.items : normalizeAdminListResponse(pendingRequestsResponse);
     const subscriptionUsers = (Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users)).map(normalizeSubscriptionUserSummary);
@@ -4107,6 +4106,8 @@ async function loadAdminControlData(loadRequest) {
       subscriptionUsers,
       userSummary: user && !user.lookupError ? normalizeSubscriptionUserSummary(exactUser) : null,
       lookupError: user?.lookupError || '',
+      memberSupportUser: memberUser && !memberUser.lookupError ? (exactMemberPayload.user || exactMemberPayload.item || exactMemberPayload) : null,
+      memberLookupError: memberUser?.lookupError || '',
       permissions: { ...(userPayload.permissions || {}), ...(exactUserPayload.permissions || {}), ...(pendingPayload.permissions || {}), ...(requestPayload.permissions || {}) },
       page: 0,
       size: 200,
@@ -5180,7 +5181,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'memberSupport', 'featureAnalytics', 'auditLogs', 'announcements', 'memberFrames'].includes(tab);
+  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements', 'memberFrames'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -9080,7 +9081,7 @@ function renderSubscriptionSupportViewTabs() {
     el('span', { class: 'subscription-support-view-count', text: extra ? `${count} · ${extra}` : String(count) }),
   ]);
   return el('div', { class: 'subscription-support-view-tabs', role: 'tablist', 'aria-label': 'Subscription support views' }, [
-    tab('users', 'User subscriptions', 'View effective Free / Pro entitlement and valid actions', userCount),
+    tab('users', 'User entitlements', 'View Pro + Member state from one exact user lookup', userCount),
     tab('requests', 'Approval requests', 'Review, approve, reject, or cancel admin requests', requestCount, pendingCount ? `${pendingCount} pending` : ''),
   ]);
 }
@@ -9140,10 +9141,6 @@ function renderSubscriptionUserItem(summary) {
         ['Admin Override', normalizedSummary?.adminOverrideMode || 'NONE'], ['Override Expiry', formatDate(normalizedSummary?.adminOverrideExpiresAt)], ['Override Updated By', normalizedSummary?.adminOverrideUpdatedByEmail],
         ['Base Tier', normalizedSummary?.baseTier], ['Base Status', normalizedSummary?.baseStatus], ['Base Billing', normalizedSummary?.baseBillingCycle], ['Base Expiry', formatDate(normalizedSummary?.baseExpiresAt)], ['Base Provider', normalizedSummary?.baseProvider],
         ['Underlying Service Credit', normalizedSummary?.underlyingServiceCreditActive ? `Active until ${formatDate(normalizedSummary?.underlyingServiceCreditExpiresAt)}` : 'Inactive'],
-        ['Member Layer', normalizedSummary?.membershipActive ? `${normalizedSummary.membershipTier || 'PRO_MEMBER'} · Active` : 'Inactive'],
-        ['Member Expiry', formatDate(normalizedSummary?.membershipExpiresAt)],
-        ['Member Benefit Contract', normalizedSummary?.membershipBenefitVersion || '-'],
-        ['Member Benefits', normalizedSummary?.membershipBenefits?.length ? normalizedSummary.membershipBenefits.join(', ') : '-'],
         ['Provider Customer', normalizedSummary?.providerCustomerId], ['Provider Entitlement', normalizedSummary?.providerEntitlementId ? 'Stored' : '-'], ['Updated', formatDate(normalizedSummary?.updatedAt)],
         ['Cancelled At', formatDate(normalizedSummary?.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary?.cancellationEffectiveAt)],
         ['Trial Used', normalizedSummary?.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary?.trialExpiresAt)],
@@ -9188,10 +9185,6 @@ function renderSubscriptionSupportSummary(summary, permissions = {}) {
       ['Admin Override', normalizedSummary.adminOverrideMode || 'NONE'], ['Override Expiry', formatDate(normalizedSummary.adminOverrideExpiresAt)], ['Override Reason', normalizedSummary.adminOverrideReason], ['Override Updated By', normalizedSummary.adminOverrideUpdatedByEmail],
       ['Base Tier', normalizedSummary.baseTier], ['Base Status', normalizedSummary.baseStatus], ['Base Billing', normalizedSummary.baseBillingCycle], ['Base Expiry', formatDate(normalizedSummary.baseExpiresAt)], ['Base Provider', normalizedSummary.baseProvider],
       ['Underlying Service Credit', normalizedSummary.underlyingServiceCreditActive ? `Active until ${formatDate(normalizedSummary.underlyingServiceCreditExpiresAt)}` : 'Inactive'],
-      ['Member Layer', normalizedSummary.membershipActive ? `${normalizedSummary.membershipTier || 'PRO_MEMBER'} · Active` : 'Inactive'],
-      ['Member Expiry', formatDate(normalizedSummary.membershipExpiresAt)],
-      ['Member Benefit Contract', normalizedSummary.membershipBenefitVersion || '-'],
-      ['Member Benefits', normalizedSummary.membershipBenefits?.length ? normalizedSummary.membershipBenefits.join(', ') : '-'],
       ['Provider Customer', normalizedSummary.providerCustomerId], ['Provider Entitlement', normalizedSummary.providerEntitlementId ? 'Stored' : '-'], ['Updated', formatDate(normalizedSummary.updatedAt)],
       ['Cancelled At', formatDate(normalizedSummary.cancelledAt)], ['Cancellation Effective', formatDate(normalizedSummary.cancellationEffectiveAt)],
       ['Trial Used', normalizedSummary.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary.trialExpiresAt)],
@@ -13502,15 +13495,20 @@ function renderAdminControlPage() {
     children.push(renderUsageEvents(state.data?.events || []));
   } else if (state.activeTab === 'subscriptionSupport') {
     const activeView = state.subscriptionSupport.activeView || 'users';
-    children.push(renderAdminControlHero('Subscription Support', 'Separate effective user entitlement from admin approval requests.', 'User subscriptions and approval requests now have independent views, filters, guidance, and actions. Every applied entitlement change remains audited.'));
+    children.push(renderAdminControlHero('Subscription Support', 'One support workspace for Fundoralit Pro and Member.', 'Search a user once to inspect both independent entitlements. Pro approval requests and Member emergency overrides stay isolated, audited, and protected by their existing authorization paths.'));
     children.push(renderSubscriptionSupportViewTabs());
     children.push(renderSubscriptionSupportToolbar(activeView));
     if (activeView === 'users') {
       children.push(el('div', { class: 'privacy-note' }, [
-        el('span', { text: 'User view: verify the effective Free / Pro state first. Free users never show an end-Pro button; active Pro users never show a Pro-fix button. Pending duplicate actions are disabled automatically.' }),
+        el('span', { text: 'User view: one exact email loads both Pro and standalone Member. Each entitlement keeps its own provider truth, override rules, and actions; partial lookup failures are shown without hiding the healthy entitlement.' }),
       ]));
       if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
-      children.push(renderSubscriptionSupportSummary(state.data?.userSummary, state.data?.permissions || {}));
+      if (state.data?.memberLookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.memberLookupError }));
+      children.push(renderUnifiedEntitlementSupportWorkspace(
+        state.data?.userSummary,
+        state.data?.memberSupportUser,
+        state.data?.permissions || {},
+      ));
       children.push(el('div', { class: 'section-title-row subscription-section-title' }, [
         el('div', {}, [el('h2', { text: 'User subscriptions' }), el('p', { class: 'muted section-helper', text: 'Effective entitlement records from the subscription user source of truth.' })]),
         el('span', { class: 'badge neutral', text: String(state.data?.subscriptionUsers?.length || 0) }),
@@ -13527,8 +13525,6 @@ function renderAdminControlPage() {
       children.push(renderStats(items));
       children.push(renderControlList(items, renderSubscriptionSupportRequestItem, 'No subscription support requests match the selected filters.'));
     }
-  } else if (state.activeTab === 'memberSupport') {
-    children.push(renderMemberSupportPage());
   } else if (state.activeTab === 'featureAnalytics') {
     children.push(renderAdminControlHero('Feature Analytics', 'Privacy-safe product interaction summaries for UI/UX decisions.', 'The app uploads daily aggregated counts only. It must not upload click-by-click raw events, transaction text, notification text, OCR text, payee, merchant, or expense note.'));
     children.push(renderFeatureAnalyticsToolbar());
@@ -14340,42 +14336,113 @@ if (headerMenuButton) {
 
 boot();
 
-function renderMemberSupportPage() {
-  const payload = state.data?.memberSupport || null;
-  const user = payload?.userId ? payload : null;
-  const member = user?.member || null;
-  const email = el('input', { type: 'email', placeholder: 'User email', value: state.adminFilters.userEmail || '' });
-  email.addEventListener('input', () => { state.adminFilters.userEmail = email.value.trim(); });
-  const search = el('form', { class: 'toolbar' }, [email, el('button', { class: 'btn primary', type: 'submit', text: 'Find user' })]);
-  search.addEventListener('submit', async (event) => { event.preventDefault(); await loadData({ force: true }); render(); });
 
-  const body = [
-    renderAdminControlHero('Member Support', 'Standalone Fundoralit Member entitlement.', 'Member is independent from Fundoralit Pro. Google Play Member products and admin overrides affect Member identity only.'),
-    search,
-  ];
-  if (!user) {
-    body.push(el('div', { class: 'empty-state', text: 'Search a user to review standalone Member entitlement.' }));
-    return el('div', { class: 'page-stack' }, body);
+function renderMemberEntitlementSupportCard(memberUser) {
+  if (!memberUser) {
+    return el('section', { class: 'card entitlement-support-card member-entitlement-card entitlement-empty-card' }, [
+      el('div', { class: 'entitlement-card-heading' }, [
+        el('div', {}, [
+          el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
+          el('h3', { text: 'Standalone identity entitlement' }),
+        ]),
+        el('span', { class: 'badge neutral', text: 'NO RESULT' }),
+      ]),
+      el('p', { class: 'muted', text: 'Search an exact user email to inspect Member state. Member is independent from Fundoralit Pro.' }),
+    ]);
   }
-  body.push(el('section', { class: 'card' }, [
-    el('p', { class: 'eyebrow', text: 'Member entitlement' }),
-    el('h2', { text: user.email || 'User' }),
+  const member = memberUser?.member || memberUser?.entitlement || {};
+  const active = Boolean(member?.active);
+  const stateLabel = active ? 'MEMBER ACTIVE' : 'NON-MEMBER';
+  return el('section', { class: 'card entitlement-support-card member-entitlement-card' }, [
+    el('div', { class: 'entitlement-card-heading' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
+        el('h3', { text: memberUser.email || 'Member entitlement' }),
+        el('p', { class: 'muted', text: 'Identity entitlement · independent from Pro feature access' }),
+      ]),
+      el('span', { class: active ? 'badge active' : 'badge neutral', text: stateLabel }),
+    ]),
     renderMetaGrid([
-      ['Effective state', member?.active ? 'MEMBER ACTIVE' : 'NON-MEMBER'],
+      ['User ID', memberUser.userId || memberUser.id || '-'],
+      ['Effective state', stateLabel],
       ['Provider', member?.provider || 'NONE'],
       ['Billing cycle', member?.billingCycle || 'NONE'],
       ['Product', member?.productId || '-'],
       ['Expires', member?.expiresAt ? formatDateTime(member.expiresAt) : '-'],
+      ['Auto renewing', member?.autoRenewing === true ? 'Yes' : member?.autoRenewing === false ? 'No' : '-'],
       ['Admin override', member?.adminOverrideMode || 'NONE'],
+      ['Override expiry', member?.adminOverrideExpiresAt ? formatDateTime(member.adminOverrideExpiresAt) : '-'],
     ]),
-    el('div', { class: 'button-row' }, [
-      el('button', { class: 'btn primary', text: 'Force Member', onclick: () => openMemberOverrideModal(user, 'FORCE_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Force non-Member', onclick: () => openMemberOverrideModal(user, 'FORCE_NON_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Clear override', onclick: () => openMemberOverrideModal(user, 'NONE') }),
+    el('div', { class: 'entitlement-action-divider' }),
+    el('p', { class: 'muted entitlement-action-helper', text: 'Emergency overrides affect Member identity only. Google Play provider data remains intact underneath the override.' }),
+    el('div', { class: 'button-row entitlement-action-row' }, [
+      el('button', { class: 'btn primary', text: 'Force Member', disabled: member?.adminOverrideMode === 'FORCE_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_MEMBER') }),
+      el('button', { class: 'btn ghost', text: 'Force non-Member', disabled: member?.adminOverrideMode === 'FORCE_NON_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_NON_MEMBER') }),
+      el('button', { class: 'btn ghost', text: 'Clear override', disabled: !member?.adminOverrideMode || member?.adminOverrideMode === 'NONE', onclick: () => openMemberOverrideModal(memberUser, 'NONE') }),
     ]),
-  ]));
-  return el('div', { class: 'page-stack' }, body);
+  ]);
 }
+
+function renderProEntitlementSupportCard(summary, permissions = {}) {
+  if (!summary) {
+    return el('section', { class: 'card entitlement-support-card pro-entitlement-card entitlement-empty-card' }, [
+      el('div', { class: 'entitlement-card-heading' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Fundoralit Pro' }), el('h3', { text: 'Feature entitlement' })]),
+        el('span', { class: 'badge neutral', text: 'NO RESULT' }),
+      ]),
+      el('p', { class: 'muted', text: 'Search an exact user email to inspect Pro state and available support actions.' }),
+    ]);
+  }
+  const normalizedSummary = normalizeSubscriptionUserSummary(summary);
+  const status = normalizedSubscriptionStatus(normalizedSummary);
+  return el('section', { class: 'card entitlement-support-card pro-entitlement-card' }, [
+    el('div', { class: 'entitlement-card-heading' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Fundoralit Pro' }),
+        el('h3', { text: normalizedSummary.email || 'Pro entitlement' }),
+        el('p', { class: 'muted', text: `Feature entitlement · ${normalizedSubscriptionTier(normalizedSummary)} / ${status}` }),
+      ]),
+      el('span', { class: getStatusClass(status), text: status }),
+    ]),
+    renderMetaGrid([
+      ['User ID', normalizedSummary.userId],
+      ['Effective Tier', normalizedSubscriptionTier(normalizedSummary)],
+      ['Effective Status', status],
+      ['Effective Source', normalizedSummary.effectiveEntitlementSource],
+      ['Provider', normalizedSummary.provider],
+      ['Expires', formatDate(normalizedSummary.expiresAt)],
+      ['Admin Override', normalizedSummary.adminOverrideMode || 'NONE'],
+      ['Override Expiry', formatDate(normalizedSummary.adminOverrideExpiresAt)],
+      ['Base Billing', normalizedSummary.baseBillingCycle],
+      ['Base Provider', normalizedSummary.baseProvider],
+      ['Trial Used', normalizedSummary.trialUsed ? 'Yes' : 'No'],
+    ]),
+    renderSubscriptionSupportActions(normalizedSummary, permissions),
+  ]);
+}
+
+function renderUnifiedEntitlementSupportWorkspace(proSummary, memberUser, permissions = {}) {
+  if (!proSummary && !memberUser && !state.adminFilters.userEmail) {
+    return el('div', { class: 'card empty-state compact-empty subscription-lookup-empty' }, [
+      el('strong', { text: 'Search one exact email for all paid entitlements.' }),
+      el('p', { class: 'muted', text: 'One lookup shows Fundoralit Pro and standalone Fundoralit Member side by side while keeping their authority, provider data, and actions independent.' }),
+    ]);
+  }
+  return el('section', { class: 'entitlement-support-workspace' }, [
+    el('div', { class: 'entitlement-workspace-header' }, [
+      el('div', {}, [
+        el('p', { class: 'eyebrow', text: 'Unified entitlement workspace' }),
+        el('h2', { text: state.adminFilters.userEmail || proSummary?.email || memberUser?.email || 'User entitlements' }),
+        el('p', { class: 'muted', text: 'Support Pro and Member from one user context. Actions remain isolated by entitlement so a Member override cannot mutate Pro billing, and a Pro correction cannot grant Member identity.' }),
+      ]),
+    ]),
+    el('div', { class: 'entitlement-support-grid' }, [
+      renderProEntitlementSupportCard(proSummary, permissions),
+      renderMemberEntitlementSupportCard(memberUser),
+    ]),
+  ]);
+}
+
 function openMemberOverrideModal(user, mode) {
   state.modal = { kind: 'memberOverride', user, mode, reason: '', expiresAt: '', submitLabel: mode === 'NONE' ? 'Clear override' : 'Apply override' };
   render();

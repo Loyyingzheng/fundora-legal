@@ -13,7 +13,7 @@ function assert(condition, message) {
 }
 
 assert(app.includes("activeView: 'users'"), 'Subscription Support should default to the user entitlement view.');
-assert(app.includes("tab('users', 'User subscriptions'"), 'User subscriptions tab is missing.');
+assert(app.includes("tab('users', 'User entitlements'"), 'Unified user entitlements tab is missing.');
 assert(app.includes("tab('requests', 'Approval requests'"), 'Approval requests tab is missing.');
 assert(app.includes("} else if (effectivePro) {\n    addAction('GRANT_COMPENSATION_DAYS'"), 'Effective Pro action branch is missing.');
 assert(app.includes("if (!cancellationScheduled) addAction('CORRECT_TO_FREE'"), 'End-Pro action must be gated by cancellation state.');
