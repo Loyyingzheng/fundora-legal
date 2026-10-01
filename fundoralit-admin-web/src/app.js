@@ -2982,9 +2982,46 @@ function criticalActionFields(reason, confirmPhrase, idempotencyPrefix = 'critic
 }
 
 async function sha256Hex(value) {
-  const bytes = new TextEncoder().encode(String(value || ''));
+  let bytes;
+  if (value instanceof Blob) {
+    bytes = new Uint8Array(await value.arrayBuffer());
+  } else if (value instanceof ArrayBuffer) {
+    bytes = new Uint8Array(value);
+  } else if (ArrayBuffer.isView(value)) {
+    bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  } else {
+    bytes = new TextEncoder().encode(String(value || ''));
+  }
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function escapeMultipartToken(value) {
+  return String(value || '').replace(/[\r\n"]/g, (ch) => ch === '"' ? '%22' : '');
+}
+
+async function encodeDeterministicMultipart(formData) {
+  const boundary = `----FundoralitAdminBoundary${crypto.randomUUID().replace(/-/g, '')}`;
+  const encoder = new TextEncoder();
+  const chunks = [];
+  for (const [name, value] of formData.entries()) {
+    chunks.push(encoder.encode(`--${boundary}\r\n`));
+    if (value instanceof File || value instanceof Blob) {
+      const filename = value instanceof File ? value.name : 'blob';
+      chunks.push(encoder.encode(`Content-Disposition: form-data; name="${escapeMultipartToken(name)}"; filename="${escapeMultipartToken(filename)}"\r\n`));
+      chunks.push(encoder.encode(`Content-Type: ${value.type || 'application/octet-stream'}\r\n\r\n`));
+      chunks.push(new Uint8Array(await value.arrayBuffer()));
+      chunks.push(encoder.encode('\r\n'));
+    } else {
+      chunks.push(encoder.encode(`Content-Disposition: form-data; name="${escapeMultipartToken(name)}"\r\n\r\n${String(value ?? '')}\r\n`));
+    }
+  }
+  chunks.push(encoder.encode(`--${boundary}--\r\n`));
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` };
 }
 
 async function applyAdminRequestIntegrityHeaders(headers, path, method, body) {
@@ -2994,7 +3031,7 @@ async function applyAdminRequestIntegrityHeaders(headers, path, method, body) {
     'X-Fundora-Request-Id': createAdminIdempotencyKey('fundora_request'),
     'X-Fundora-Timestamp': new Date().toISOString(),
     'X-Fundora-Nonce': createAdminIdempotencyKey('fundora_nonce'),
-    'X-Fundora-Body-SHA256': await sha256Hex(typeof body === 'string' ? body : ''),
+    'X-Fundora-Body-SHA256': await sha256Hex(body ?? ''),
   };
 }
 
@@ -3013,7 +3050,7 @@ async function applyTrustedDeviceHeaders(headers, path, method, body) {
   if (!identity?.privateKey || !identity?.deviceKeyId) return headers;
   const timestamp = new Date().toISOString();
   const nonce = createAdminIdempotencyKey('admin_device_nonce');
-  const bodyHash = await sha256Hex(typeof body === 'string' ? body : '');
+  const bodyHash = await sha256Hex(body ?? '');
   const canonical = `${String(method || 'GET').toUpperCase()}\n${String(path || '/')}\n${timestamp}\n${nonce}\n${bodyHash}`;
   const signed = await signAdminDevicePayload(canonical, identity);
   if (!signed?.signature) return headers;
@@ -3132,14 +3169,20 @@ async function executeApiRequest(path, options = {}) {
   });
 
   let body;
+  let requestOptions = options;
   if (options.formData instanceof FormData) {
-    body = options.formData;
+    const encoded = await encodeDeterministicMultipart(options.formData);
+    body = encoded.body;
+    requestOptions = {
+      ...options,
+      headers: { ...(options.headers || {}), 'Content-Type': encoded.contentType },
+    };
   } else if (options.body !== undefined) {
     body = JSON.stringify(options.body);
   }
 
   const method = options.method || 'GET';
-  let headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, options, body, options.forceTokenRefresh === true);
+  let headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, requestOptions, body, options.forceTokenRefresh === true);
   let response = await fetch(url.toString(), { method, headers, body });
   let parsed = await readApiResponsePayload(response);
 
@@ -3147,7 +3190,7 @@ async function executeApiRequest(path, options = {}) {
   // such as ADMIN_MFA_REQUIRED must be surfaced as-is and must never be replayed.
   if (options.forceTokenRefresh !== true && isRetryableFirebaseTokenFailure(response.status, parsed.json)) {
     try {
-      headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, options, body, true);
+      headers = await createAuthenticatedApiHeaders(`${url.pathname}${url.search}`, requestOptions, body, true);
       response = await fetch(url.toString(), { method, headers, body });
       parsed = await readApiResponsePayload(response);
     } catch (error) {
@@ -13654,6 +13697,47 @@ function renderMemberFrameItem(item) {
   });
 }
 
+function formatDmyDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const dd = String(date.getDate()).padStart(2, '0');
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const yyyy = date.getFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+}
+
+function formatHmTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function parseDmyDateTime(dateText, timeText) {
+  const match = String(dateText || '').trim().match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+  const time = String(timeText || '00:00').trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match || !time) return null;
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const hour = Number(time[1]);
+  const minute = Number(time[2]);
+  if (year < 2020 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+  const local = new Date(year, month - 1, day, hour, minute, 0, 0);
+  if (local.getFullYear() !== year || local.getMonth() !== month - 1 || local.getDate() !== day) return null;
+  return local.toISOString();
+}
+
+function setMemberFrameModalError(message) {
+  if (!state.modal || state.modal.kind !== 'memberFrameEdit') return;
+  state.modal.error = toFriendlyErrorMessage(message, 'Unable to save member frame.');
+  state.modal.loading = false;
+  render();
+  requestAnimationFrame(() => {
+    const body = document.querySelector('.modal-card .modal-body');
+    if (body && typeof body.scrollTo === 'function') body.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+}
+
 function memberFrameDefaultWindow() {
   const now = new Date();
   now.setSeconds(0, 0);
@@ -13714,6 +13798,10 @@ function openMemberFrameModal(item) {
     eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
     claimStartAt: item?.claimStartAt || item?.claim_start_at || defaults.start,
     claimEndAt: item?.claimEndAt || item?.claim_end_at || defaults.end,
+    claimStartDateText: formatDmyDate(item?.claimStartAt || item?.claim_start_at || defaults.start),
+    claimStartTimeText: formatHmTime(item?.claimStartAt || item?.claim_start_at || defaults.start),
+    claimEndDateText: formatDmyDate(item?.claimEndAt || item?.claim_end_at || defaults.end),
+    claimEndTimeText: formatHmTime(item?.claimEndAt || item?.claim_end_at || defaults.end),
     enabled: item ? item?.enabled === true : true,
     featured: item?.featured === true,
     assetBucket: item?.assetBucket || item?.asset_bucket || '',
@@ -13744,10 +13832,16 @@ function renderMemberFrameModal() {
   const year = el('input', { type: 'number', min: '2026', max: '2200', value: modal.releaseYear || new Date().getFullYear() });
   year.addEventListener('input', () => { modal.releaseYear = year.value; });
   const eligibility = memberFrameEligibilitySelect(modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
-  const start = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.claimStartAt) });
-  start.addEventListener('input', () => { modal.claimStartAt = start.value; });
-  const end = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.claimEndAt) });
-  end.addEventListener('input', () => { modal.claimEndAt = end.value; });
+  const startDate = el('input', { type: 'text', inputmode: 'numeric', maxlength: '10', placeholder: 'DD/MM/YYYY', value: modal.claimStartDateText || '' });
+  startDate.addEventListener('input', () => { modal.claimStartDateText = startDate.value; });
+  const startTime = el('input', { type: 'time', value: modal.claimStartTimeText || '00:00' });
+  startTime.addEventListener('input', () => { modal.claimStartTimeText = startTime.value; });
+  const endDate = el('input', { type: 'text', inputmode: 'numeric', maxlength: '10', placeholder: 'DD/MM/YYYY', value: modal.claimEndDateText || '' });
+  endDate.addEventListener('input', () => { modal.claimEndDateText = endDate.value; });
+  const endTime = el('input', { type: 'time', value: modal.claimEndTimeText || '23:59' });
+  endTime.addEventListener('input', () => { modal.claimEndTimeText = endTime.value; });
+  const start = el('div', { class: 'member-frame-date-time' }, [startDate, startTime]);
+  const end = el('div', { class: 'member-frame-date-time' }, [endDate, endTime]);
   const enabled = el('input', { type: 'checkbox' });
   enabled.checked = Boolean(modal.enabled);
   enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
@@ -13758,8 +13852,8 @@ function renderMemberFrameModal() {
   asset.addEventListener('change', () => {
     const file = asset.files && asset.files[0] ? asset.files[0] : null;
     if (!file) return;
-    if (file.type !== 'image/png') { setMessage('Member frame must be a PNG file.', true); asset.value = ''; return; }
-    if (file.size > 5 * 1024 * 1024) { setMessage('Member frame PNG must be 5MB or smaller.', true); asset.value = ''; return; }
+    if (file.type !== 'image/png') { asset.value = ''; return setMemberFrameModalError('Member frame must be a PNG file.'); }
+    if (file.size > 5 * 1024 * 1024) { asset.value = ''; return setMemberFrameModalError('Member frame PNG must be 5MB or smaller.'); }
     if (modal.localPreviewUrl) URL.revokeObjectURL(modal.localPreviewUrl);
     modal.assetFile = file;
     modal.assetFileName = file.name;
@@ -13822,9 +13916,14 @@ function renderMemberFrameModal() {
 
 async function submitMemberFrameModal() {
   const modal = state.modal;
-  if (!String(modal.title || '').trim()) return setMessage('Display name is required.', true);
-  if (!modal.assetFile && !modal.assetPath) return setMessage('Choose a transparent PNG frame.', true);
-  if (modal.claimStartAt && modal.claimEndAt && new Date(modal.claimStartAt).getTime() > new Date(modal.claimEndAt).getTime()) return setMessage('Claim close must be later than claim open.', true);
+  modal.error = '';
+  if (!String(modal.title || '').trim()) return setMemberFrameModalError('Display name is required.');
+  if (!modal.assetFile && !modal.assetPath) return setMemberFrameModalError('Choose a transparent PNG frame.');
+  const claimStartIso = parseDmyDateTime(modal.claimStartDateText, modal.claimStartTimeText);
+  const claimEndIso = parseDmyDateTime(modal.claimEndDateText, modal.claimEndTimeText);
+  if (!claimStartIso) return setMemberFrameModalError('Claim opens must use DD/MM/YYYY and a valid time.');
+  if (!claimEndIso) return setMemberFrameModalError('Claim closes must use DD/MM/YYYY and a valid time.');
+  if (new Date(claimStartIso).getTime() >= new Date(claimEndIso).getTime()) return setMemberFrameModalError('Claim close must be later than claim open.');
   modal.loading = true; render();
   try {
     if (modal.assetFile) {
@@ -13847,8 +13946,8 @@ async function submitMemberFrameModal() {
       eligibilityType: modal.eligibilityType || 'MEMBER',
       enabled: Boolean(modal.enabled),
       featured: Boolean(modal.featured),
-      claimStartAt: fromDateTimeLocalValue(modal.claimStartAt),
-      claimEndAt: fromDateTimeLocalValue(modal.claimEndAt),
+      claimStartAt: claimStartIso,
+      claimEndAt: claimEndIso,
       assetBucket: modal.assetBucket || null,
       assetPath: modal.assetPath || null,
       assetSha256: modal.assetSha256 || null,
@@ -13864,7 +13963,7 @@ async function submitMemberFrameModal() {
     closeModal();
     await refreshAfterAdminMutation(modal.id ? 'Member frame updated.' : 'Member frame created.');
   } catch (error) {
-    modal.loading = false; setMessage(toFriendlyErrorMessage(error, 'Unable to save member frame.'), true); render();
+    setMemberFrameModalError(error);
   }
 }
 
