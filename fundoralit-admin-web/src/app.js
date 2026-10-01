@@ -152,6 +152,7 @@ const API_PATHS = {
     create: '/api/admin/member-frames',
     update: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}`,
     uploadAsset: '/api/admin/member-frames/assets',
+    preview: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}/preview-ticket`,
   },
   mobilePolicy: {
     current: '/api/config/mobile-policy',
@@ -13630,18 +13631,21 @@ function memberFrameStatus(item) {
 
 function renderMemberFrameItem(item) {
   const status = memberFrameStatus(item);
+  const eligibility = (item.eligibilityType || item.eligibility_type || 'MEMBER') === 'ALL' ? 'All users' : 'Members only';
   return renderCollapsibleItem({
-    title: item.title || item.code || 'Member frame',
-    subtitle: `${item.code || '-'} · ${item.releaseYear || item.release_year || '-'} · ${item.eligibilityType || item.eligibility_type || 'MEMBER'}`,
+    title: item.title || 'Member frame',
+    subtitle: `${item.releaseYear || item.release_year || '-'} · ${eligibility}${item.featured ? ' · Featured' : ''}`,
     statusNode: el('span', { class: `badge ${status.tone}`, text: status.text }),
     children: [
       renderMetaGrid([
-        ['Code', item.code], ['Collection', item.collection], ['Release year', item.releaseYear || item.release_year],
-        ['Eligibility', item.eligibilityType || item.eligibility_type], ['Featured', item.featured ? 'Yes' : 'No'], ['Enabled', item.enabled ? 'Yes' : 'No'],
-        ['Claim start', formatDate(item.claimStartAt || item.claim_start_at)], ['Claim end', formatDate(item.claimEndAt || item.claim_end_at)],
-        ['Asset version', item.assetVersion || item.asset_version], ['SHA-256', item.assetSha256 || item.asset_sha256],
+        ['Release year', item.releaseYear || item.release_year], ['Who can claim', eligibility],
+        ['Claim opens', formatDate(item.claimStartAt || item.claim_start_at)], ['Claim closes', formatDate(item.claimEndAt || item.claim_end_at)],
         ['PNG size', `${item.imageWidth || item.image_width || '-'} × ${item.imageHeight || item.image_height || '-'}`],
-        ['Updated', formatDate(item.updatedAt || item.updated_at)],
+        ['Asset version', item.assetVersion || item.asset_version], ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      el('details', { class: 'member-frame-advanced' }, [
+        el('summary', { text: 'System metadata' }),
+        renderMetaGrid([['Stable code', item.code || '—'], ['Collection', item.collection || 'YEARLY'], ['SHA-256', item.assetSha256 || item.asset_sha256 || '—']]),
       ]),
       el('div', { class: 'actions' }, [
         el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openMemberFrameModal(item) }),
@@ -13650,7 +13654,56 @@ function renderMemberFrameItem(item) {
   });
 }
 
+function memberFrameDefaultWindow() {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  const end = new Date(now.getTime() + (30 * 24 * 60 * 60 * 1000));
+  return { start: toDateTimeLocalValue(now.toISOString()), end: toDateTimeLocalValue(end.toISOString()) };
+}
+
+function memberFrameTitleFromFileName(name) {
+  const raw = String(name || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!raw) return '';
+  return raw.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function memberFrameYearFromText(value) {
+  const match = String(value || '').match(/\b(20\d{2}|21\d{2})\b/);
+  return match ? Number(match[1]) : null;
+}
+
+function memberFrameEligibilitySelect(current, onChange) {
+  const node = el('select');
+  [
+    ['MEMBER', 'Members only'],
+    ['ALL', 'All users'],
+  ].forEach(([value, text]) => node.appendChild(el('option', { value, text })));
+  node.value = current || 'MEMBER';
+  node.addEventListener('change', () => onChange(node.value));
+  return node;
+}
+
+async function loadMemberFramePreview(id) {
+  if (!id || state.modal?.id !== id || state.modal?.previewLoading) return;
+  state.modal.previewLoading = true;
+  try {
+    const data = normalizeAdminObjectResponse(await api(API_PATHS.memberFrames.preview(id), { method: 'POST' }));
+    if (state.modal?.id === id) {
+      state.modal.remotePreviewUrl = data.url || '';
+      state.modal.previewLoading = false;
+      render();
+    }
+  } catch (_) {
+    if (state.modal?.id === id) {
+      state.modal.previewLoading = false;
+      state.modal.previewUnavailable = true;
+      render();
+    }
+  }
+}
+
 function openMemberFrameModal(item) {
+  const defaults = memberFrameDefaultWindow();
   state.modal = {
     kind: 'memberFrameEdit',
     id: item?.id || null,
@@ -13659,9 +13712,9 @@ function openMemberFrameModal(item) {
     collection: item?.collection || '',
     releaseYear: item?.releaseYear || item?.release_year || new Date().getFullYear(),
     eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
-    claimStartAt: item?.claimStartAt || item?.claim_start_at || '',
-    claimEndAt: item?.claimEndAt || item?.claim_end_at || '',
-    enabled: item?.enabled === true,
+    claimStartAt: item?.claimStartAt || item?.claim_start_at || defaults.start,
+    claimEndAt: item?.claimEndAt || item?.claim_end_at || defaults.end,
+    enabled: item ? item?.enabled === true : true,
     featured: item?.featured === true,
     assetBucket: item?.assetBucket || item?.asset_bucket || '',
     assetPath: item?.assetPath || item?.asset_path || '',
@@ -13673,66 +13726,105 @@ function openMemberFrameModal(item) {
     imageHeight: item?.imageHeight || item?.image_height || null,
     assetFile: null,
     assetFileName: '',
-    reason: '',
+    localPreviewUrl: '',
+    remotePreviewUrl: '',
+    previewLoading: false,
+    previewUnavailable: false,
+    internalNote: '',
     submitLabel: item ? 'Save frame' : 'Create frame',
   };
   render();
+  if (item?.id) loadMemberFramePreview(item.id);
 }
 
 function renderMemberFrameModal() {
   const modal = state.modal;
-  const field = (key, label, attrs = {}) => {
-    const input = el('input', { value: modal[key] ?? '', ...attrs });
-    input.addEventListener('input', () => { modal[key] = input.value; });
-    return el('div', { class: 'field' }, [el('label', { text: label }), input]);
-  };
-  const eligibility = select(['MEMBER', 'ALL'], modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
+  const title = el('input', { value: modal.title || '', placeholder: 'e.g. Founding 2026' });
+  title.addEventListener('input', () => { modal.title = title.value; });
+  const year = el('input', { type: 'number', min: '2026', max: '2200', value: modal.releaseYear || new Date().getFullYear() });
+  year.addEventListener('input', () => { modal.releaseYear = year.value; });
+  const eligibility = memberFrameEligibilitySelect(modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
   const start = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.claimStartAt) });
   start.addEventListener('input', () => { modal.claimStartAt = start.value; });
   const end = el('input', { type: 'datetime-local', value: toDateTimeLocalValue(modal.claimEndAt) });
   end.addEventListener('input', () => { modal.claimEndAt = end.value; });
-  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
-  const featured = el('input', { type: 'checkbox' }); featured.checked = Boolean(modal.featured); featured.addEventListener('change', () => { modal.featured = featured.checked; });
+  const enabled = el('input', { type: 'checkbox' });
+  enabled.checked = Boolean(modal.enabled);
+  enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const featured = el('input', { type: 'checkbox' });
+  featured.checked = Boolean(modal.featured);
+  featured.addEventListener('change', () => { modal.featured = featured.checked; });
   const asset = el('input', { type: 'file', accept: 'image/png' });
   asset.addEventListener('change', () => {
     const file = asset.files && asset.files[0] ? asset.files[0] : null;
     if (!file) return;
     if (file.type !== 'image/png') { setMessage('Member frame must be a PNG file.', true); asset.value = ''; return; }
     if (file.size > 5 * 1024 * 1024) { setMessage('Member frame PNG must be 5MB or smaller.', true); asset.value = ''; return; }
-    modal.assetFile = file; modal.assetFileName = file.name; render();
+    if (modal.localPreviewUrl) URL.revokeObjectURL(modal.localPreviewUrl);
+    modal.assetFile = file;
+    modal.assetFileName = file.name;
+    modal.localPreviewUrl = URL.createObjectURL(file);
+    if (!String(modal.title || '').trim()) modal.title = memberFrameTitleFromFileName(file.name);
+    const inferredYear = memberFrameYearFromText(file.name) || memberFrameYearFromText(modal.title);
+    if (inferredYear) modal.releaseYear = inferredYear;
+    render();
   });
-  const reason = el('textarea', { rows: '3', placeholder: 'Required audit reason' });
-  reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  const internalNote = el('textarea', { rows: '2', placeholder: 'Optional internal note' });
+  internalNote.value = modal.internalNote || '';
+  internalNote.addEventListener('input', () => { modal.internalNote = internalNote.value; });
 
-  return renderControlModal(modal.id ? 'Edit member frame' : 'Create member frame', 'Private member-frame asset', [
-    renderPolicySafetyNote('PNG is stored privately and never embedded into the AAB. A short-lived signed delivery URL is created only when mobile actually needs the frame. Keep the center transparent and use a square canvas.'),
-    el('div', { class: 'form-grid two' }, [
-      field('code', 'Stable code', { placeholder: 'founding_2026' }),
-      field('title', 'Display title', { placeholder: 'Founding 2026' }),
-      field('collection', 'Collection', { placeholder: 'FOUNDING' }),
-      field('releaseYear', 'Release year', { type: 'number', min: '2026', max: '2200' }),
-      el('div', { class: 'field' }, [el('label', { text: 'Eligibility' }), eligibility]),
-      el('div', { class: 'field' }, [el('label', { text: 'Claim start' }), start]),
-      el('div', { class: 'field' }, [el('label', { text: 'Claim end' }), end]),
+  const previewUrl = modal.localPreviewUrl || modal.remotePreviewUrl;
+  const preview = el('div', { class: 'member-frame-preview-shell' }, [
+    previewUrl
+      ? el('img', { class: 'member-frame-preview-image', src: previewUrl, alt: 'Member frame preview' })
+      : el('div', { class: 'member-frame-preview-empty' }, [
+          el('strong', { text: modal.previewLoading ? 'Loading frame preview…' : 'Choose a transparent PNG' }),
+          el('span', { text: modal.previewUnavailable ? 'Stored preview is temporarily unavailable.' : 'Square canvas · transparent center · max 5 MB' }),
+        ]),
+  ]);
+
+  const autoSummary = modal.id
+    ? `Technical code is managed by the system and stays stable: ${modal.code || '—'}. Collection is inferred automatically unless it already exists.`
+    : 'Stable code, collection, audit reason, and default claim window are generated automatically. You only choose the business-facing settings.';
+
+  return renderControlModal(modal.id ? 'Edit member frame' : 'Create member frame', 'Member frame campaign', [
+    preview,
+    el('div', { class: 'member-frame-upload-row' }, [
+      el('div', { class: 'field' }, [
+        el('label', { text: modal.assetPath ? 'Frame artwork' : 'Frame artwork · required' }),
+        el('div', { class: 'member-frame-file-picker' }, [
+          asset,
+          el('button', { class: 'btn secondary', type: 'button', text: modal.assetFileName ? 'Choose another PNG' : (modal.assetPath ? 'Replace PNG' : 'Choose PNG'), onclick: () => asset.click() }),
+          el('span', { class: 'member-frame-file-name', text: modal.assetFileName || (modal.assetPath ? 'Current private PNG' : 'No PNG selected') }),
+        ]),
+        el('small', { class: 'field-help', text: modal.assetFileName ? 'Preview shown above. The PNG is validated again by the backend before storage.' : (modal.assetPath ? 'Current private asset is kept unless you replace it.' : 'Transparent square PNG · max 5 MB · not bundled into the AAB.') }),
+      ]),
     ]),
     el('div', { class: 'form-grid two' }, [
-      el('label', { class: 'check-row' }, [enabled, el('span', { text: 'Enabled' })]),
-      el('label', { class: 'check-row' }, [featured, el('span', { text: 'Featured / current-year priority' })]),
+      el('div', { class: 'field' }, [el('label', { text: 'Display name' }), title, el('small', { class: 'field-help', text: 'Shown to users. If blank when you choose a file, the file name is used as a starting point.' })]),
+      el('div', { class: 'field' }, [el('label', { text: 'Release year' }), year]),
+      el('div', { class: 'field' }, [el('label', { text: 'Who can claim it' }), eligibility]),
+      el('div', { class: 'field' }, [el('label', { text: 'Claim opens' }), start]),
+      el('div', { class: 'field' }, [el('label', { text: 'Claim closes' }), end]),
     ]),
-    el('div', { class: 'field' }, [
-      el('label', { text: modal.assetPath ? 'Replace PNG asset · optional' : 'PNG asset · required' }),
-      asset,
-      el('p', { class: 'muted', text: modal.assetFileName || modal.assetPath || 'No asset selected yet.' }),
+    el('div', { class: 'member-frame-publish-grid' }, [
+      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: 'Available' }), el('small', { text: ' Users can discover this frame during its claim window.' })])]),
+      el('label', { class: 'check-row' }, [featured, el('span', {}, [el('strong', { text: 'Feature this frame' }), el('small', { text: ' Makes it the current highlighted yearly frame.' })])]),
     ]),
-    el('div', { class: 'field' }, [el('label', { text: 'Audit reason' }), reason]),
+    el('details', { class: 'member-frame-advanced' }, [
+      el('summary', { text: 'System-managed details' }),
+      el('p', { class: 'muted', text: autoSummary }),
+      modal.id ? renderMetaGrid([['Stable code', modal.code || '—'], ['Collection', modal.collection || 'Auto'], ['Asset version', modal.assetVersion || 1]]) : null,
+    ].filter(Boolean)),
+    el('div', { class: 'field' }, [el('label', { text: 'Internal note · optional' }), internalNote, el('small', { class: 'field-help', text: 'Audit reason is generated automatically; add a note only when there is useful operational context.' })]),
   ], submitMemberFrameModal, true);
 }
 
 async function submitMemberFrameModal() {
   const modal = state.modal;
-  if (!String(modal.code || '').trim()) return setMessage('Stable frame code is required.', true);
-  if (!String(modal.title || '').trim()) return setMessage('Frame title is required.', true);
-  if (!String(modal.reason || '').trim()) return setMessage('Audit reason is required.', true);
+  if (!String(modal.title || '').trim()) return setMessage('Display name is required.', true);
+  if (!modal.assetFile && !modal.assetPath) return setMessage('Choose a transparent PNG frame.', true);
+  if (modal.claimStartAt && modal.claimEndAt && new Date(modal.claimStartAt).getTime() > new Date(modal.claimEndAt).getTime()) return setMessage('Claim close must be later than claim open.', true);
   modal.loading = true; render();
   try {
     if (modal.assetFile) {
@@ -13747,16 +13839,28 @@ async function submitMemberFrameModal() {
       modal.imageHeight = uploaded.height;
       modal.assetVersion = Math.max(1, Number(modal.assetVersion || 1) + (modal.id ? 1 : 0));
     }
-    if (!modal.id && (!modal.assetPath || !modal.assetSha256)) throw new Error('A private PNG asset is required before creating this frame.');
     const body = {
-      code: String(modal.code).trim().toLowerCase(), title: String(modal.title).trim(), collection: String(modal.collection || '').trim() || null,
-      releaseYear: Number(modal.releaseYear) || null, eligibilityType: modal.eligibilityType || 'MEMBER', enabled: Boolean(modal.enabled), featured: Boolean(modal.featured),
-      claimStartAt: fromDateTimeLocalValue(modal.claimStartAt), claimEndAt: fromDateTimeLocalValue(modal.claimEndAt),
-      assetBucket: modal.assetBucket || null, assetPath: modal.assetPath || null, assetSha256: modal.assetSha256 || null, assetVersion: modal.assetFile ? Math.max(1, Number(modal.assetVersion) || 1) : null,
-      mimeType: modal.mimeType || 'image/png', assetBytes: Number(modal.assetBytes) || 0, imageWidth: modal.imageWidth || null, imageHeight: modal.imageHeight || null,
-      reason: String(modal.reason).trim(),
+      code: modal.id ? (modal.code || null) : null,
+      title: String(modal.title).trim(),
+      collection: modal.id ? (modal.collection || null) : null,
+      releaseYear: Number(modal.releaseYear) || null,
+      eligibilityType: modal.eligibilityType || 'MEMBER',
+      enabled: Boolean(modal.enabled),
+      featured: Boolean(modal.featured),
+      claimStartAt: fromDateTimeLocalValue(modal.claimStartAt),
+      claimEndAt: fromDateTimeLocalValue(modal.claimEndAt),
+      assetBucket: modal.assetBucket || null,
+      assetPath: modal.assetPath || null,
+      assetSha256: modal.assetSha256 || null,
+      assetVersion: modal.assetFile ? Math.max(1, Number(modal.assetVersion) || 1) : null,
+      mimeType: modal.mimeType || 'image/png',
+      assetBytes: Number(modal.assetBytes) || 0,
+      imageWidth: modal.imageWidth || null,
+      imageHeight: modal.imageHeight || null,
+      reason: String(modal.internalNote || '').trim() || null,
     };
     await api(modal.id ? API_PATHS.memberFrames.update(modal.id) : API_PATHS.memberFrames.create, { method: modal.id ? 'PATCH' : 'POST', body });
+    if (modal.localPreviewUrl) URL.revokeObjectURL(modal.localPreviewUrl);
     closeModal();
     await refreshAfterAdminMutation(modal.id ? 'Member frame updated.' : 'Member frame created.');
   } catch (error) {
