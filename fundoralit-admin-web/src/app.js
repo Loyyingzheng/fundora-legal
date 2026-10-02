@@ -900,7 +900,8 @@ const LIMITS = ADMIN_LIMITS; // Backward-compatible alias for legacy modal rende
 
 const ANNOUNCEMENT_CTA_MODES = ['NONE', 'INTERNAL', 'EXTERNAL_URL', 'CUSTOM'];
 const ANNOUNCEMENT_MEDIA_TYPES = ['NONE', 'IMAGE'];
-const ANNOUNCEMENT_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+const ANNOUNCEMENT_IMAGE_TARGET_BYTES = 550 * 1024;
+const ANNOUNCEMENT_IMAGE_MAX_LONG_SIDE = 1600;
 const ANNOUNCEMENT_IMAGE_ALLOWED_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const ANNOUNCEMENT_INTERNAL_DESTINATIONS = [
   { value: '', label: 'Select destination' },
@@ -953,10 +954,93 @@ function isExternalAnnouncementUrl(value) {
 
 function validateAnnouncementImageFile(file) {
   if (!file) return { ok: false, message: 'Please choose an announcement image.' };
-  if (file.size > ANNOUNCEMENT_IMAGE_MAX_BYTES) return { ok: false, message: 'Announcement image must be 3MB or smaller.' };
   const type = String(file.type || '').toLowerCase();
   if (!ANNOUNCEMENT_IMAGE_ALLOWED_TYPES.has(type)) return { ok: false, message: 'Only JPG, PNG, or WebP announcement images are allowed.' };
   return { ok: true };
+}
+
+function loadBrowserImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => resolve({ image, objectUrl });
+    image.onerror = () => {
+      try { URL.revokeObjectURL(objectUrl); } catch (_) {}
+      reject(new Error('Announcement image could not be decoded.'));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve) => {
+    canvas.toBlob((blob) => resolve(blob || null), type, quality);
+  });
+}
+
+async function compressAnnouncementImageFile(file) {
+  const validation = validateAnnouncementImageFile(file);
+  if (!validation.ok) throw new Error(validation.message);
+
+  if (Number(file.size || 0) > 0 && Number(file.size || 0) <= ANNOUNCEMENT_IMAGE_TARGET_BYTES) {
+    return file;
+  }
+
+  const loaded = await loadBrowserImageFromFile(file);
+  try {
+    const sourceWidth = Number(loaded.image.naturalWidth || loaded.image.width || 0);
+    const sourceHeight = Number(loaded.image.naturalHeight || loaded.image.height || 0);
+    if (!(sourceWidth > 0) || !(sourceHeight > 0)) {
+      throw new Error('Announcement image dimensions could not be read.');
+    }
+
+    const attempts = [
+      { maxLongSide: 1600, quality: 0.82 },
+      { maxLongSide: 1440, quality: 0.78 },
+      { maxLongSide: 1280, quality: 0.74 },
+      { maxLongSide: 1120, quality: 0.68 },
+      { maxLongSide: 960, quality: 0.62 },
+      { maxLongSide: 840, quality: 0.56 },
+    ];
+
+    let best = null;
+    for (const attempt of attempts) {
+      const scale = Math.min(1, attempt.maxLongSide / Math.max(sourceWidth, sourceHeight));
+      const width = Math.max(1, Math.round(sourceWidth * scale));
+      const height = Math.max(1, Math.round(sourceHeight * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d', { alpha: true });
+      if (!context) throw new Error('Announcement image compressor is unavailable.');
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(loaded.image, 0, 0, width, height);
+
+      let blob = await canvasToBlob(canvas, 'image/webp', attempt.quality);
+      if (!blob || !String(blob.type || '').toLowerCase().includes('webp')) {
+        blob = await canvasToBlob(canvas, 'image/jpeg', attempt.quality);
+      }
+      if (!blob || blob.size <= 0) continue;
+
+      if (!best || blob.size < best.size) best = blob;
+      if (blob.size <= ANNOUNCEMENT_IMAGE_TARGET_BYTES) break;
+    }
+
+    if (!best) throw new Error('Announcement image could not be optimized.');
+
+    const originalBase = String(file.name || `announcement-${Date.now()}`)
+      .replace(/\.[^.]+$/, '')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .slice(0, 120) || `announcement-${Date.now()}`;
+    const extension = String(best.type || '').toLowerCase().includes('webp') ? 'webp' : 'jpg';
+    return new File([best], `${originalBase}.${extension}`, {
+      type: best.type || (extension === 'webp' ? 'image/webp' : 'image/jpeg'),
+      lastModified: Date.now(),
+    });
+  } finally {
+    try { URL.revokeObjectURL(loaded.objectUrl); } catch (_) {}
+  }
 }
 
 function formatBytes(bytes) {
@@ -968,10 +1052,9 @@ function formatBytes(bytes) {
 }
 
 async function uploadAnnouncementMediaFile(file) {
-  const validation = validateAnnouncementImageFile(file);
-  if (!validation.ok) throw new Error(validation.message);
+  const optimizedFile = await compressAnnouncementImageFile(file);
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('file', optimizedFile);
   return api(API_PATHS.announcements.uploadMedia, { method: 'POST', formData });
 }
 
@@ -10487,6 +10570,7 @@ function openAnnouncementModal(item) {
     mediaUploadPreviewUrl: '',
     mediaUploadName: '',
     mediaUploadSize: 0,
+    mediaUploadOriginalSize: 0,
     reason: '',
   };
   render();
@@ -10574,7 +10658,7 @@ function renderAnnouncementModal() {
   const mediaAltInput = el('input', { value: modal.mediaAltText || '', placeholder: 'Short image description for accessibility', 'data-field-key': 'mediaAltText' });
   mediaAltInput.addEventListener('input', () => { modal.mediaAltText = mediaAltInput.value; });
   const mediaFileInput = el('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp', 'data-field-key': 'mediaUrl' });
-  mediaFileInput.addEventListener('change', () => {
+  mediaFileInput.addEventListener('change', async () => {
     const file = mediaFileInput.files && mediaFileInput.files[0] ? mediaFileInput.files[0] : null;
     if (!file) return;
     const validation = validateAnnouncementImageFile(file);
@@ -10583,18 +10667,25 @@ function renderAnnouncementModal() {
       mediaFileInput.value = '';
       return;
     }
-    if (modal.mediaUploadPreviewUrl) {
-      try { URL.revokeObjectURL(modal.mediaUploadPreviewUrl); } catch (_) {}
+    try {
+      const optimizedFile = await compressAnnouncementImageFile(file);
+      if (modal.mediaUploadPreviewUrl) {
+        try { URL.revokeObjectURL(modal.mediaUploadPreviewUrl); } catch (_) {}
+      }
+      modal.mediaType = 'IMAGE';
+      modal.mediaUploadFile = optimizedFile;
+      modal.mediaUploadPreviewUrl = URL.createObjectURL(optimizedFile);
+      modal.mediaUploadName = file.name;
+      modal.mediaUploadSize = optimizedFile.size;
+      modal.mediaUploadOriginalSize = file.size;
+      if (!normalizedTrim(modal.mediaAltText)) {
+        modal.mediaAltText = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
+      }
+      render();
+    } catch (error) {
+      validationError(toFriendlyErrorMessage(error, 'Announcement image could not be optimized.'), 'mediaUrl');
+      mediaFileInput.value = '';
     }
-    modal.mediaType = 'IMAGE';
-    modal.mediaUploadFile = file;
-    modal.mediaUploadPreviewUrl = URL.createObjectURL(file);
-    modal.mediaUploadName = file.name;
-    modal.mediaUploadSize = file.size;
-    if (!normalizedTrim(modal.mediaAltText)) {
-      modal.mediaAltText = file.name.replace(/\.[^.]+$/, '').replace(/[-_]+/g, ' ').trim();
-    }
-    render();
   });
   const clearMediaButton = el('button', {
     class: 'btn ghost small',
@@ -10611,6 +10702,7 @@ function renderAnnouncementModal() {
       modal.mediaUploadPreviewUrl = '';
       modal.mediaUploadName = '';
       modal.mediaUploadSize = 0;
+      modal.mediaUploadOriginalSize = 0;
       render();
     },
   });
@@ -10662,7 +10754,9 @@ function renderAnnouncementModal() {
         modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaUrl') }, [
           el('label', { text: 'Upload image' }),
           mediaFileInput,
-          el('p', { class: 'muted small', text: modal.mediaUploadFile ? `Selected: ${modal.mediaUploadName || modal.mediaUploadFile.name} · ${formatBytes(modal.mediaUploadSize || modal.mediaUploadFile.size)}` : 'JPG, PNG, or WebP. Max 3MB. The file uploads when you save.' }),
+          el('p', { class: 'muted small', text: modal.mediaUploadFile
+            ? `Selected: ${modal.mediaUploadName || modal.mediaUploadFile.name} · optimized ${formatBytes(modal.mediaUploadSize || modal.mediaUploadFile.size)}${modal.mediaUploadOriginalSize > modal.mediaUploadSize ? ` from ${formatBytes(modal.mediaUploadOriginalSize)}` : ''}`
+            : 'JPG, PNG, or WebP. Images are automatically optimized before upload to reduce storage use.' }),
           renderFieldError('mediaUrl'),
         ]) : null,
         modal.mediaType === 'IMAGE' ? el('div', { class: modalFieldClass('mediaAltText') }, [el('label', { text: 'Image alt text' }), mediaAltInput, renderFieldError('mediaAltText')]) : null,
@@ -14179,7 +14273,11 @@ async function submitMemberFrameModal() {
 }
 
 function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = false) {
-  return el('div', { class: 'modal-backdrop', onclick: (event) => { if (event.target.classList.contains('modal-backdrop')) closeModal(); } }, [
+  // A modal is an isolated interaction surface. Its action state must be driven
+  // only by modal-local work, never by background page/list loading. This avoids
+  // false "Saving..." states when a screen refresh is still in flight.
+  const modalBusy = Boolean(state.modal?.loading);
+  return el('div', { class: 'modal-backdrop', onclick: (event) => { if (event.target.classList.contains('modal-backdrop') && !modalBusy) closeModal(); } }, [
     el('section', { class: `modal-card ${wide ? 'modal-card-wide' : ''}`.trim(), role: 'dialog', 'aria-modal': 'true' }, [
       el('div', { class: 'modal-head' }, [
         el('div', {}, [el('p', { class: 'eyebrow', text: eyebrow }), el('h2', { text: title })]),
@@ -14187,8 +14285,13 @@ function renderControlModal(title, eyebrow, bodyChildren, submitHandler, wide = 
       ]),
       el('div', { class: 'modal-body' }, [renderModalNotice(), ...bodyChildren]),
       el('div', { class: 'modal-actions' }, [
-        el('button', { class: 'btn ghost', text: 'Cancel', onclick: closeModal }),
-        el('button', { class: state.modal?.submitClass || 'btn', text: (state.modal?.loading || state.loading) ? (state.modal?.loadingLabel || 'Saving...') : (state.modal?.submitLabel || 'Save changes'), disabled: state.modal?.loading || state.loading, onclick: submitHandler }),
+        el('button', { class: 'btn ghost', text: 'Cancel', disabled: modalBusy, onclick: closeModal }),
+        el('button', {
+          class: state.modal?.submitClass || 'btn',
+          text: modalBusy ? (state.modal?.loadingLabel || 'Saving...') : (state.modal?.submitLabel || 'Save changes'),
+          disabled: modalBusy,
+          onclick: submitHandler,
+        }),
       ]),
     ]),
   ]);
@@ -14596,7 +14699,18 @@ function renderUnifiedEntitlementSupportWorkspace(proSummary, memberUser, permis
 }
 
 function openMemberOverrideModal(user, mode) {
-  state.modal = { kind: 'memberOverride', user, mode, reason: '', expiresAt: '', submitLabel: mode === 'NONE' ? 'Clear override' : 'Apply override' };
+  // Modal state owns its own busy lifecycle. Background page/list refreshes must
+  // never make a newly opened critical-action modal look as if it is submitting.
+  state.modal = {
+    kind: 'memberOverride',
+    user,
+    mode,
+    reason: '',
+    expiresAt: '',
+    loading: false,
+    loadingLabel: '',
+    submitLabel: mode === 'NONE' ? 'Clear override' : 'Apply override',
+  };
   render();
 }
 function renderMemberOverrideModal() {
@@ -14634,6 +14748,7 @@ async function submitMemberOverrideModal() {
   if (m.expiresAt && !expiresAt) return validationError('Override expiry is invalid.', 'expiresAt');
 
   state.modal.loading = true;
+  state.modal.loadingLabel = 'Verifying…';
   state.modal.error = '';
   state.modal.message = '';
   state.modal.fieldErrors = {};
@@ -14647,13 +14762,27 @@ async function submitMemberOverrideModal() {
     idempotencyKey: createAdminIdempotencyKey('member_override'),
   };
 
-  const applyWithProof = (reauthToken) => api(API_PATHS.memberSupport.override(m.user.userId), {
-    method: 'POST',
-    body: { ...requestPayload, reauthToken },
-  });
+  const applyWithProof = (reauthToken) => {
+    if (state.modal?.kind === 'memberOverride') {
+      state.modal.loading = true;
+      state.modal.loadingLabel = 'Applying…';
+      state.modal.message = 'Applying the Member override…';
+      render();
+    }
+    return api(API_PATHS.memberSupport.override(m.user.userId), {
+      method: 'POST',
+      body: { ...requestPayload, reauthToken },
+    });
+  };
 
   const freshProof = async () => {
     state.criticalActionProof = null;
+    if (state.modal?.kind === 'memberOverride') {
+      state.modal.loading = true;
+      state.modal.loadingLabel = 'Verifying…';
+      state.modal.message = 'Administrator verification is required before this Member change.';
+      render();
+    }
     const verified = await promptCriticalActionReauthentication('MEMBER_OVERRIDE');
     if (!verified) throw new Error('Recent administrator verification is required.');
     const token = takeCriticalActionProofToken();
@@ -14691,6 +14820,7 @@ async function submitMemberOverrideModal() {
   } catch (error) {
     if (state.modal) {
       state.modal.loading = false;
+      state.modal.loadingLabel = '';
       setModalError(error, '');
     } else {
       setMessage(error, true);
