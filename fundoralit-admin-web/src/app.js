@@ -8967,6 +8967,10 @@ function normalizeSubscriptionUserSummary(item = {}) {
     membershipBenefits: Array.isArray(firstPresent(item.membershipBenefits, item.membership_benefits))
       ? firstPresent(item.membershipBenefits, item.membership_benefits)
       : [],
+    memberAppearanceContractVersion: firstPresent(item.memberAppearanceContractVersion, item.member_appearance_contract_version),
+    memberNameStyleIds: Array.isArray(firstPresent(item.memberNameStyleIds, item.member_name_style_ids))
+      ? firstPresent(item.memberNameStyleIds, item.member_name_style_ids)
+      : [],
     memberStatus: firstPresent(item.memberStatus, item.member_status),
     memberProvider: firstPresent(item.memberProvider, item.member_provider),
     memberBillingCycle: firstPresent(item.memberBillingCycle, item.member_billing_cycle),
@@ -9248,6 +9252,8 @@ function memberSupportUserFromSubscriptionSummary(summary = {}) {
       adminOverrideExpiresAt: normalized.memberAdminOverrideExpiresAt || null,
       benefitVersion: normalized.membershipBenefitVersion || null,
       benefits: Array.isArray(normalized.membershipBenefits) ? normalized.membershipBenefits : [],
+      appearanceContractVersion: normalized.memberAppearanceContractVersion || null,
+      nameStyleIds: Array.isArray(normalized.memberNameStyleIds) ? normalized.memberNameStyleIds : [],
     },
   };
 }
@@ -9323,6 +9329,8 @@ function mergeMemberSupportResultIntoSubscriptionUserList(result, fallbackUser =
       membershipExpiresAt: firstPresent(member.expiresAt, member.expires_at),
       membershipBenefitVersion: firstPresent(member.benefitVersion, member.benefit_version),
       membershipBenefits: Array.isArray(member.benefits) ? member.benefits : [],
+      memberAppearanceContractVersion: firstPresent(member.appearanceContractVersion, member.appearance_contract_version),
+      memberNameStyleIds: Array.isArray(firstPresent(member.nameStyleIds, member.name_style_ids)) ? firstPresent(member.nameStyleIds, member.name_style_ids) : [],
       memberStatus: firstPresent(member.status, member.memberStatus, member.member_status, member.active ? 'ACTIVE' : 'INACTIVE'),
       memberProvider: firstPresent(member.provider, member.memberProvider, member.member_provider, 'NONE'),
       memberBillingCycle: firstPresent(member.billingCycle, member.billing_cycle, member.memberBillingCycle, 'NONE'),
@@ -9348,6 +9356,7 @@ function renderEmbeddedMemberEntitlement(summary) {
     renderMetaGrid([
       ['Status', member.status], ['Provider', member.provider], ['Billing cycle', member.billingCycle], ['Product', member.productId || '-'],
       ['Expires', member.expiresAt ? formatDate(member.expiresAt) : '-'], ['Admin override', member.adminOverrideMode || 'NONE'],
+      ['Appearance contract', member.appearanceContractVersion || '-'], ['Name styles', Array.isArray(member.nameStyleIds) && member.nameStyleIds.length ? member.nameStyleIds.join(', ') : '-'],
     ]),
     renderMemberOverrideActions(memberUser, member),
   ]);
