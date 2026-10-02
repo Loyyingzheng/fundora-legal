@@ -1,0 +1,1 @@
+const fs=require('fs'); const path=require('path'); const app=fs.readFileSync(path.resolve(__dirname,'../app.js'),'utf8'); if(/collaboration[^\n]{0,120}member-appearance|member-appearance[^\n]{0,120}collaboration/i.test(app)) throw new Error('Admin must not route Member appearance management through Collaboration'); console.log('PASS Admin Member appearance Core boundary audit');
