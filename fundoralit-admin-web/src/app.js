@@ -14224,7 +14224,7 @@ function renderMemberFrameModal() {
           el('button', { class: 'btn secondary', type: 'button', text: modal.assetFileName ? 'Choose another PNG' : (modal.assetPath ? 'Replace PNG' : 'Choose PNG'), onclick: () => asset.click() }),
           el('span', { class: 'member-frame-file-name', text: modal.assetFileName || (modal.assetPath ? 'Current private PNG' : 'No PNG selected') }),
         ]),
-        el('small', { class: 'field-help', text: modal.assetFileName ? 'Preview shown above. The PNG is validated again by the backend before storage.' : (modal.assetPath ? 'Current private asset is kept unless you replace it.' : 'Transparent square PNG · max 5 MB · not bundled into the AAB.') }),
+        el('small', { class: 'field-help', text: modal.assetFileName ? 'Preview shown above. The backend validates a square transparent PNG and enforces the central 48% portrait safe zone before storage.' : (modal.assetPath ? 'Current private asset is kept unless you replace it.' : 'Transparent square PNG · max 5 MB · keep the central 48% portrait safe zone transparent · validated by backend · not bundled into the AAB.') }),
       ]),
     ]),
     el('div', { class: 'form-grid two' }, [
