@@ -9178,6 +9178,35 @@ function renderEmbeddedProEntitlement(summary, permissions = {}) {
   ]);
 }
 
+function resolveMemberOverridePrimaryAction(member = {}) {
+  const active = Boolean(member?.active)
+    || ['MEMBER', 'PRO_MEMBER'].includes(normalizedTrim(member?.tier).toUpperCase())
+    || ['ACTIVE', 'ADMIN_OVERRIDE_MEMBER'].includes(normalizedTrim(member?.status).toUpperCase());
+  return active
+    ? { mode: 'FORCE_NON_MEMBER', label: 'Force non-Member', tone: 'danger' }
+    : { mode: 'FORCE_MEMBER', label: 'Force Member', tone: 'primary' };
+}
+
+function renderMemberOverrideActions(memberUser, member = {}) {
+  const primary = resolveMemberOverridePrimaryAction(member);
+  const overrideMode = normalizedTrim(member?.adminOverrideMode || 'NONE').toUpperCase() || 'NONE';
+  const controls = [
+    el('button', {
+      class: `btn ${primary.tone === 'danger' ? 'danger' : 'primary'}`,
+      text: primary.label,
+      onclick: () => openMemberOverrideModal(memberUser, primary.mode),
+    }),
+  ];
+  if (overrideMode !== 'NONE') {
+    controls.push(el('button', {
+      class: 'btn ghost',
+      text: 'Clear override',
+      onclick: () => openMemberOverrideModal(memberUser, 'NONE'),
+    }));
+  }
+  return el('div', { class: 'button-row entitlement-action-row' }, controls);
+}
+
 function renderEmbeddedMemberEntitlement(summary) {
   const memberUser = memberSupportUserFromSubscriptionSummary(summary);
   const member = memberUser.member;
@@ -9191,11 +9220,7 @@ function renderEmbeddedMemberEntitlement(summary) {
       ['Status', member.status], ['Provider', member.provider], ['Billing cycle', member.billingCycle], ['Product', member.productId || '-'],
       ['Expires', member.expiresAt ? formatDateTime(member.expiresAt) : '-'], ['Admin override', member.adminOverrideMode || 'NONE'],
     ]),
-    el('div', { class: 'button-row entitlement-action-row' }, [
-      el('button', { class: 'btn primary', text: 'Force Member', disabled: member.adminOverrideMode === 'FORCE_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Force non-Member', disabled: member.adminOverrideMode === 'FORCE_NON_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_NON_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Clear override', disabled: !member.adminOverrideMode || member.adminOverrideMode === 'NONE', onclick: () => openMemberOverrideModal(memberUser, 'NONE') }),
-    ]),
+    renderMemberOverrideActions(memberUser, member),
   ]);
 }
 
@@ -14460,11 +14485,7 @@ function renderMemberEntitlementSupportCard(memberUser) {
     ]),
     el('div', { class: 'entitlement-action-divider' }),
     el('p', { class: 'muted entitlement-action-helper', text: 'Emergency overrides affect Member identity only. Google Play provider data remains intact underneath the override.' }),
-    el('div', { class: 'button-row entitlement-action-row' }, [
-      el('button', { class: 'btn primary', text: 'Force Member', disabled: member?.adminOverrideMode === 'FORCE_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Force non-Member', disabled: member?.adminOverrideMode === 'FORCE_NON_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_NON_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Clear override', disabled: !member?.adminOverrideMode || member?.adminOverrideMode === 'NONE', onclick: () => openMemberOverrideModal(memberUser, 'NONE') }),
-    ]),
+    renderMemberOverrideActions(memberUser, member),
   ]);
 }
 
@@ -14572,25 +14593,40 @@ async function submitMemberOverrideModal() {
   state.modal.fieldErrors = {};
   render();
 
-  try {
-    if (!state.criticalActionProof?.token) {
-      const verified = await promptCriticalActionReauthentication('MEMBER_OVERRIDE');
-      if (!verified) throw new Error('Recent administrator verification is required.');
-    }
-    const reauthToken = takeCriticalActionProofToken();
-    if (!reauthToken) throw new Error('Critical-action verification expired. Verify again and retry.');
+  const requestPayload = {
+    mode: m.mode,
+    reason: reasonCheck.value,
+    expiresAt,
+    confirmPhrase: memberOverrideConfirmPhrase(m.mode),
+    idempotencyKey: createAdminIdempotencyKey('member_override'),
+  };
 
-    await api(API_PATHS.memberSupport.override(m.user.userId), {
-      method: 'POST',
-      body: {
-        mode: m.mode,
-        reason: reasonCheck.value,
-        expiresAt,
-        confirmPhrase: memberOverrideConfirmPhrase(m.mode),
-        idempotencyKey: createAdminIdempotencyKey('member_override'),
-        reauthToken,
-      },
-    });
+  const applyWithProof = (reauthToken) => api(API_PATHS.memberSupport.override(m.user.userId), {
+    method: 'POST',
+    body: { ...requestPayload, reauthToken },
+  });
+
+  const freshProof = async () => {
+    state.criticalActionProof = null;
+    const verified = await promptCriticalActionReauthentication('MEMBER_OVERRIDE');
+    if (!verified) throw new Error('Recent administrator verification is required.');
+    const token = takeCriticalActionProofToken();
+    if (!token) throw new Error('Critical-action verification expired. Verify again and retry.');
+    return token;
+  };
+
+  try {
+    let reauthToken = takeCriticalActionProofToken();
+    if (!reauthToken) reauthToken = await freshProof();
+    try {
+      await applyWithProof(reauthToken);
+    } catch (error) {
+      const retryableSecurityFailure = isAdminRecentReauthenticationError(error) || isCriticalActionProofError(error);
+      if (!retryableSecurityFailure) throw error;
+      // Retry the exact Member override once with a fresh one-time critical proof.
+      reauthToken = await freshProof();
+      await applyWithProof(reauthToken);
+    }
     closeModal();
     await refreshAfterAdminMutation('Member entitlement updated.');
   } catch (error) {
