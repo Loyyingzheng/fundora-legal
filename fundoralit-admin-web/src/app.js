@@ -8884,6 +8884,13 @@ function normalizeSubscriptionUserSummary(item = {}) {
     membershipBenefits: Array.isArray(firstPresent(item.membershipBenefits, item.membership_benefits))
       ? firstPresent(item.membershipBenefits, item.membership_benefits)
       : [],
+    memberStatus: firstPresent(item.memberStatus, item.member_status),
+    memberProvider: firstPresent(item.memberProvider, item.member_provider),
+    memberBillingCycle: firstPresent(item.memberBillingCycle, item.member_billing_cycle),
+    memberProductId: firstPresent(item.memberProductId, item.member_product_id),
+    memberAutoRenewing: asBoolean(firstPresent(item.memberAutoRenewing, item.member_auto_renewing), false),
+    memberAdminOverrideMode: String(firstPresent(item.memberAdminOverrideMode, item.member_admin_override_mode, 'NONE') || 'NONE').toUpperCase(),
+    memberAdminOverrideExpiresAt: firstPresent(item.memberAdminOverrideExpiresAt, item.member_admin_override_expires_at),
   };
 }
 
@@ -9205,6 +9212,45 @@ function renderMemberOverrideActions(memberUser, member = {}) {
     }));
   }
   return el('div', { class: 'button-row entitlement-action-row' }, controls);
+}
+
+function mergeMemberSupportResultIntoSubscriptionUserList(result, fallbackUser = {}) {
+  const payload = normalizeAdminObjectResponse(result || {});
+  const userId = firstPresent(payload.userId, payload.user_id, payload.user?.userId, payload.user?.id, fallbackUser?.userId);
+  const email = firstPresent(payload.email, payload.userEmail, payload.user?.email, fallbackUser?.email);
+  const member = payload.member || payload.entitlement || payload.memberEntitlement || payload.member_entitlement || null;
+  if (!member || !state.data || state.dataScope !== 'subscriptionSupport') return false;
+
+  const match = (row) => {
+    const normalized = normalizeSubscriptionUserSummary(row || {});
+    if (userId && normalized.userId && String(normalized.userId) === String(userId)) return true;
+    if (email && normalized.email && normalizedEmail(normalized.email) === normalizedEmail(email)) return true;
+    return false;
+  };
+
+  let updated = false;
+  const rows = Array.isArray(state.data.subscriptionUsers) ? state.data.subscriptionUsers : [];
+  state.data.subscriptionUsers = rows.map((row) => {
+    if (!match(row)) return row;
+    updated = true;
+    return {
+      ...row,
+      membershipActive: Boolean(member.active),
+      membershipTier: firstPresent(member.tier, member.membershipTier, member.membership_tier, member.active ? 'MEMBER' : 'NONE'),
+      membershipExpiresAt: firstPresent(member.expiresAt, member.expires_at),
+      membershipBenefitVersion: firstPresent(member.benefitVersion, member.benefit_version),
+      membershipBenefits: Array.isArray(member.benefits) ? member.benefits : [],
+      memberStatus: firstPresent(member.status, member.memberStatus, member.member_status, member.active ? 'ACTIVE' : 'INACTIVE'),
+      memberProvider: firstPresent(member.provider, member.memberProvider, member.member_provider, 'NONE'),
+      memberBillingCycle: firstPresent(member.billingCycle, member.billing_cycle, member.memberBillingCycle, 'NONE'),
+      memberProductId: firstPresent(member.productId, member.product_id, member.memberProductId),
+      memberAutoRenewing: asBoolean(firstPresent(member.autoRenewing, member.auto_renewing), false),
+      memberAdminOverrideMode: String(firstPresent(member.adminOverrideMode, member.admin_override_mode, 'NONE') || 'NONE').toUpperCase(),
+      memberAdminOverrideExpiresAt: firstPresent(member.adminOverrideExpiresAt, member.admin_override_expires_at),
+    };
+  });
+  if (updated) invalidateAdminTabDataCache();
+  return updated;
 }
 
 function renderEmbeddedMemberEntitlement(summary) {
@@ -14618,17 +14664,30 @@ async function submitMemberOverrideModal() {
   try {
     let reauthToken = takeCriticalActionProofToken();
     if (!reauthToken) reauthToken = await freshProof();
+    let result;
     try {
-      await applyWithProof(reauthToken);
+      result = await applyWithProof(reauthToken);
     } catch (error) {
       const retryableSecurityFailure = isAdminRecentReauthenticationError(error) || isCriticalActionProofError(error);
       if (!retryableSecurityFailure) throw error;
+      if (state.modal) {
+        state.modal.message = 'Administrator verification completed. Applying the Member override…';
+        render();
+      }
       // Retry the exact Member override once with a fresh one-time critical proof.
       reauthToken = await freshProof();
-      await applyWithProof(reauthToken);
+      result = await applyWithProof(reauthToken);
     }
-    closeModal();
-    await refreshAfterAdminMutation('Member entitlement updated.');
+
+    // The override response is authoritative. Patch the visible user row immediately
+    // instead of waiting for the background list refresh, which can be delayed by
+    // provider reconciliation or a cold backend. This also makes it obvious that
+    // the post-TOTP continuation actually completed.
+    mergeMemberSupportResultIntoSubscriptionUserList(result, m.user);
+    await refreshAfterAdminMutation('Member entitlement updated.', {
+      path: API_PATHS.memberSupport.override(m.user.userId),
+      result,
+    });
   } catch (error) {
     if (state.modal) {
       state.modal.loading = false;
