@@ -6538,3 +6538,28 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+
+/* Unified Pro + Member entitlement operational consistency */
+.entitlement-consistency-strip {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border, #dfe3e8);
+  border-radius: 12px;
+  background: var(--surface-subtle, rgba(0, 0, 0, 0.02));
+}
+.entitlement-consistency-strip p {
+  margin: 6px 0 10px;
+}
+.entitlement-consistency-strip.active {
+  border-color: rgba(25, 135, 84, 0.35);
+}
+.entitlement-consistency-strip.warning {
+  border-color: rgba(180, 122, 0, 0.35);
+}
+.entitlement-consistency-strip.danger {
+  border-color: rgba(190, 45, 45, 0.45);
+}
+.entitlement-safety-block {
+  font-weight: 600;
+}
