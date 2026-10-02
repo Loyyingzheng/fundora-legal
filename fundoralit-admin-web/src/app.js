@@ -13804,7 +13804,7 @@ function renderAdminControlPage() {
     children.push(renderAdminControlHero('Member Frames', 'Operate yearly and limited avatar frames from the backend instead of the AAB.', 'Assets are uploaded to a private Supabase bucket. Users see metadata first; the app requests short-lived delivery only after claim or when an authenticated shared-group view needs to render that frame.'));
     children.push(renderMemberFrameToolbar());
     children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Use transparent square PNG files. Set a claim window and eligibility explicitly. “Featured” is only presentation priority; ownership remains permanent until an explicit future revoke workflow is used.'));
+    children.push(renderPolicySafetyNote('Use transparent square PNG files. Set a claim window and display access explicitly. Claim ownership is available to all users; eligibility controls who may apply/display the frame. “Featured” is only presentation priority; ownership remains permanent until an explicit future revoke workflow is used.'));
     children.push(renderControlList(items, renderMemberFrameItem, 'No member frames configured.'));
   } else if (state.activeTab === 'auditLogs') {
     children.push(renderAdminControlHero('Audit Logs', 'Review admin changes to policies, flags, limits, usage, version, and support actions.', 'Every control action should leave a reasoned audit trail: who changed it, what changed, before/after values, and when.'));
@@ -13959,7 +13959,7 @@ function renderMemberFrameItem(item) {
     statusNode: el('span', { class: `badge ${status.tone}`, text: status.text }),
     children: [
       renderMetaGrid([
-        ['Release year', item.releaseYear || item.release_year], ['Who can claim', eligibility],
+        ['Release year', item.releaseYear || item.release_year], ['Who can display', eligibility],
         ['Claim opens', formatDate(item.claimStartAt || item.claim_start_at)], ['Claim closes', formatDate(item.claimEndAt || item.claim_end_at)],
         ['PNG size', `${item.imageWidth || item.image_width || '-'} × ${item.imageHeight || item.image_height || '-'}`],
         ['Asset version', item.assetVersion || item.asset_version], ['Updated', formatDate(item.updatedAt || item.updated_at)],
@@ -14230,7 +14230,7 @@ function renderMemberFrameModal() {
     el('div', { class: 'form-grid two' }, [
       el('div', { class: 'field' }, [el('label', { text: 'Display name' }), title, el('small', { class: 'field-help', text: 'Shown to users. If blank when you choose a file, the file name is used as a starting point.' })]),
       el('div', { class: 'field' }, [el('label', { text: 'Release year' }), year]),
-      el('div', { class: 'field' }, [el('label', { text: 'Who can claim it' }), eligibility]),
+      el('div', { class: 'field' }, [el('label', { text: 'Who can display it' }), eligibility]),
       el('div', { class: 'field' }, [el('label', { text: 'Claim opens' }), start]),
       el('div', { class: 'field' }, [el('label', { text: 'Claim closes' }), end]),
     ]),
