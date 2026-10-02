@@ -6563,3 +6563,48 @@ body {
 .entitlement-safety-block {
   font-weight: 600;
 }
+
+/* User-first Pro + Member entitlement management */
+.user-entitlement-badges {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.user-entitlement-identity-strip {
+  margin-bottom: 12px;
+}
+.user-entitlement-sections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.embedded-entitlement-section {
+  min-width: 0;
+  border: 1px solid var(--border, #dbe4e7);
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.embedded-pro-section {
+  background: linear-gradient(180deg, rgba(239,246,255,.46), rgba(255,255,255,.98) 36%);
+}
+.embedded-member-section {
+  background: linear-gradient(180deg, rgba(236,253,245,.46), rgba(255,255,255,.98) 36%);
+}
+.embedded-entitlement-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.embedded-entitlement-heading strong {
+  display: block;
+  margin-top: 2px;
+}
+@media (max-width: 980px) {
+  .user-entitlement-sections { grid-template-columns: 1fr; }
+}

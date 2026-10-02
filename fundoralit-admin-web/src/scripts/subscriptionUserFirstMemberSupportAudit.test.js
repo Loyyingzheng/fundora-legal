@@ -1,0 +1,13 @@
+const fs = require('fs');
+const path = require('path');
+const app = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8');
+const styles = fs.readFileSync(path.join(__dirname, '..', 'styles.css'), 'utf8');
+const assert = (c,m)=>{if(!c) throw new Error(m)};
+assert(app.includes("placeholder: 'Filter users by email'"), 'User support should browse/filter rather than require exact email.');
+assert(app.includes('memberSupportUserFromSubscriptionSummary'), 'Missing unified user-row Member projection.');
+assert(app.includes("scope: 'subscriptionSupportUsers'"), 'User rows must be independently expandable.');
+assert(app.includes('renderEmbeddedProEntitlement') && app.includes('renderEmbeddedMemberEntitlement'), 'Expanded user row must expose both entitlements.');
+assert(app.includes("text: memberActive ? 'MEMBER' : 'NON-MEMBER'"), 'Collapsed row must surface Member state.');
+assert(!app.includes('one exact email loads both Pro and standalone Member'), 'Legacy exact-email-only support copy must be removed.');
+assert(styles.includes('.user-entitlement-sections'), 'Missing responsive user-first entitlement layout.');
+console.log('PASS subscription user-first Member support audit');
