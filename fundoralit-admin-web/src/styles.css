@@ -6608,3 +6608,22 @@ body {
 @media (max-width: 980px) {
   .user-entitlement-sections { grid-template-columns: 1fr; }
 }
+
+/* Fail-safe Admin rendering: keep last-known-good UI visible if a renderer throws. */
+.admin-render-failure-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--danger-border, #f3b4b4);
+  border-radius: 14px;
+  background: var(--danger-soft, #fff4f4);
+  box-shadow: 0 8px 22px rgba(17, 24, 39, 0.08);
+}
+.admin-render-failure-banner p { margin: 4px 0; }
+.entitlement-render-error { border-color: var(--danger-border, #f3b4b4); }

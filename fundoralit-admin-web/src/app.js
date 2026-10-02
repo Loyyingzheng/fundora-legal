@@ -9379,6 +9379,22 @@ function renderSubscriptionUserItem(summary) {
   });
 }
 
+function renderSubscriptionUserRenderFailure(summary, error) {
+  const normalized = normalizeSubscriptionUserSummary(summary || {});
+  const identity = normalized.email || normalized.userId || 'Unknown user';
+  console.error('[Admin] subscription user render failed', { identity, error });
+  return el('article', { class: 'card entitlement-render-error', role: 'alert' }, [
+    el('div', { class: 'section-title-row' }, [
+      el('div', {}, [
+        el('strong', { text: identity }),
+        el('p', { class: 'muted', text: 'This user could not be rendered, but the rest of Subscription Support is still available.' }),
+      ]),
+      el('span', { class: 'badge danger', text: 'RENDER ERROR' }),
+    ]),
+    el('button', { class: 'btn ghost small', text: 'Retry page', onclick: () => render() }),
+  ]);
+}
+
 function renderSubscriptionUserList(users = []) {
   if (state.loading && !users.length) {
     return renderLoadingState('Loading subscription users...', 'Please wait while the effective entitlement list is loaded.');
@@ -9390,7 +9406,14 @@ function renderSubscriptionUserList(users = []) {
       el('p', { class: 'muted', text: 'Clear the tier/status filters or search using the exact account email.' }),
     ]);
   }
-  return el('div', { class: 'list' }, users.map(renderSubscriptionUserItem));
+  const rows = users.map((summary) => {
+    try {
+      return renderSubscriptionUserItem(summary);
+    } catch (error) {
+      return renderSubscriptionUserRenderFailure(summary, error);
+    }
+  });
+  return el('div', { class: 'list' }, rows);
 }
 
 function renderSubscriptionSupportSummary(summary, permissions = {}) {
@@ -14460,14 +14483,53 @@ function renderSignedOut() {
   ]);
 }
 
+let lastRenderErrorMessage = '';
+
+function renderAdminRenderFailureOverlay(error) {
+  const message = toFriendlyErrorMessage(error, 'The Admin page could not refresh safely.');
+  lastRenderErrorMessage = message;
+  console.error('[Admin] atomic render failed; preserving last-known-good UI', error);
+  return el('div', { class: 'admin-render-failure-banner', role: 'alert', 'aria-live': 'assertive' }, [
+    el('div', {}, [
+      el('strong', { text: 'This page could not refresh' }),
+      el('p', { text: 'Your previous Admin view is still preserved. No entitlement action was reversed by this display error.' }),
+      el('small', { class: 'muted', text: message }),
+    ]),
+    el('button', { class: 'btn ghost small', text: 'Retry display', onclick: () => render() }),
+  ]);
+}
+
+function removeAdminRenderFailureOverlay() {
+  const existing = document.querySelector('.admin-render-failure-banner');
+  if (existing) existing.remove();
+}
+
+function showAdminRenderFailureOverlay(error) {
+  removeAdminRenderFailureOverlay();
+  const overlay = renderAdminRenderFailureOverlay(error);
+  if (mainContent.firstChild) mainContent.insertBefore(overlay, mainContent.firstChild);
+  else mainContent.appendChild(overlay);
+}
+
 function render() {
-  renderHeader();
-  renderAuth();
-  clear(mainContent);
-  mainContent.appendChild(state.user ? renderSignedIn() : renderSignedOut());
-  const modal = renderAdminModal();
-  if (modal) mainContent.appendChild(modal);
-  syncNavigationPresentation();
+  // Build the complete next view before touching the live DOM. If any renderer
+  // throws, the last-known-good Admin UI remains visible instead of becoming blank.
+  try {
+    renderHeader();
+    renderAuth();
+    const nextRoot = document.createDocumentFragment();
+    nextRoot.appendChild(state.user ? renderSignedIn() : renderSignedOut());
+    const modal = renderAdminModal();
+    if (modal) nextRoot.appendChild(modal);
+
+    clear(mainContent);
+    mainContent.appendChild(nextRoot);
+    lastRenderErrorMessage = '';
+    syncNavigationPresentation();
+  } catch (error) {
+    showAdminRenderFailureOverlay(error);
+    try { syncNavigationPresentation(); } catch (_) {}
+  }
 }
 
 function validateConfig() {
