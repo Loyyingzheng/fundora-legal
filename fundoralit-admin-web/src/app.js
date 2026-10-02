@@ -9347,7 +9347,7 @@ function renderEmbeddedMemberEntitlement(summary) {
     ]),
     renderMetaGrid([
       ['Status', member.status], ['Provider', member.provider], ['Billing cycle', member.billingCycle], ['Product', member.productId || '-'],
-      ['Expires', member.expiresAt ? formatDateTime(member.expiresAt) : '-'], ['Admin override', member.adminOverrideMode || 'NONE'],
+      ['Expires', member.expiresAt ? formatDate(member.expiresAt) : '-'], ['Admin override', member.adminOverrideMode || 'NONE'],
     ]),
     renderMemberOverrideActions(memberUser, member),
   ]);
@@ -14689,10 +14689,10 @@ function renderMemberEntitlementSupportCard(memberUser) {
       ['Provider', member?.provider || 'NONE'],
       ['Billing cycle', member?.billingCycle || 'NONE'],
       ['Product', member?.productId || '-'],
-      ['Expires', member?.expiresAt ? formatDateTime(member.expiresAt) : '-'],
+      ['Expires', member?.expiresAt ? formatDate(member.expiresAt) : '-'],
       ['Auto renewing', member?.autoRenewing === true ? 'Yes' : member?.autoRenewing === false ? 'No' : '-'],
       ['Admin override', member?.adminOverrideMode || 'NONE'],
-      ['Override expiry', member?.adminOverrideExpiresAt ? formatDateTime(member.adminOverrideExpiresAt) : '-'],
+      ['Override expiry', member?.adminOverrideExpiresAt ? formatDate(member.adminOverrideExpiresAt) : '-'],
     ]),
     el('div', { class: 'entitlement-action-divider' }),
     el('p', { class: 'muted entitlement-action-helper', text: 'Emergency overrides affect Member identity only. Google Play provider data remains intact underneath the override.' }),
