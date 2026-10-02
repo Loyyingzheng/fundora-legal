@@ -4078,62 +4078,110 @@ async function loadAdminControlData(loadRequest) {
     return;
   }
   if (state.activeTab === 'subscriptionSupport') {
-    const requestParams = { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail };
-    const requestPromise = api(API_PATHS.subscriptionSupport.requests, { params: requestParams });
-    const pendingPromise = filters.subscriptionRequestStatus === 'PENDING'
-      ? requestPromise
-      : api(API_PATHS.subscriptionSupport.requests, { params: { status: 'PENDING', userEmail: filters.userEmail } });
-    const [requests, pendingRequestsResponse, users, user, memberUser] = await Promise.all([
-      requestPromise,
-      pendingPromise,
-      api(API_PATHS.subscriptionSupport.usersList, { params: { email: filters.userEmail, tier: filters.subscriptionUserTier, status: filters.subscriptionUserStatus } }),
-      filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Pro subscription lookup failed.') })) : Promise.resolve(null),
-      filters.userEmail ? api(API_PATHS.memberSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Member entitlement lookup failed.') })) : Promise.resolve(null),
-    ]);
+    const activeView = state.subscriptionSupport.activeView || 'users';
+    const exactEmail = normalizedTrim(filters.userEmail);
+
+    // Keep the Users workspace fast and deterministic. It must not eagerly
+    // load the approval queue or the broad subscription list just to render
+    // the page shell. Exact Pro + Member authorities are fetched once and in
+    // parallel; pending requests are scoped to that exact account only.
+    if (activeView === 'users') {
+      if (!exactEmail) {
+        if (!isLoadRequestCurrent(loadRequest)) return;
+        setScopedData({
+          content: [],
+          pendingRequests: [],
+          subscriptionUsers: [],
+          userSummary: null,
+          lookupError: '',
+          memberSupportUser: null,
+          memberLookupError: '',
+          entitlementWorkspaceSnapshot: buildAdminEntitlementWorkspaceSnapshot(),
+          permissions: {},
+          page: 0,
+          size: 0,
+          totalElements: 0,
+          totalPages: 1,
+        }, loadRequest);
+        return;
+      }
+
+      const [user, memberUser, pendingRequestsResponse] = await Promise.all([
+        api(API_PATHS.subscriptionSupport.user, { params: { email: exactEmail } })
+          .catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Pro subscription lookup failed.') })),
+        api(API_PATHS.memberSupport.user, { params: { email: exactEmail } })
+          .catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Member entitlement lookup failed.') })),
+        api(API_PATHS.subscriptionSupport.requests, { params: { status: 'PENDING', userEmail: exactEmail } })
+          .catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Pending support request lookup failed.') })),
+      ]);
+
+      const exactUserPayload = user && !user.lookupError ? normalizeAdminObjectResponse(user) : {};
+      const exactMemberPayload = memberUser && !memberUser.lookupError ? normalizeAdminObjectResponse(memberUser) : {};
+      const pendingPayload = pendingRequestsResponse && !pendingRequestsResponse.lookupError
+        ? normalizeAdminObjectResponse(pendingRequestsResponse)
+        : {};
+      const exactUser = exactUserPayload.user || exactUserPayload.item || exactUserPayload.subscription || exactUserPayload;
+      const exactMemberUserBase = exactMemberPayload.user || exactMemberPayload.item || exactMemberPayload.account || exactMemberPayload;
+      const exactMemberEntitlement = exactMemberPayload.member
+        || exactMemberPayload.entitlement
+        || exactMemberUserBase?.member
+        || exactMemberUserBase?.entitlement
+        || null;
+      const exactMemberUser = memberUser && !memberUser.lookupError
+        ? normalizeMemberSupportUser({ ...exactMemberUserBase, ...(exactMemberEntitlement ? { member: exactMemberEntitlement } : {}) })
+        : null;
+      const normalizedExactUser = user && !user.lookupError ? normalizeSubscriptionUserSummary(exactUser) : null;
+      const pendingRequests = Array.isArray(pendingPayload.items)
+        ? pendingPayload.items
+        : (pendingRequestsResponse && !pendingRequestsResponse.lookupError ? normalizeAdminListResponse(pendingRequestsResponse) : []);
+      const entitlementWorkspaceSnapshot = buildAdminEntitlementWorkspaceSnapshot({
+        searchedEmail: exactEmail,
+        proSummary: normalizedExactUser,
+        memberUser: exactMemberUser,
+        proError: user?.lookupError || '',
+        memberError: memberUser?.lookupError || '',
+      });
+
+      if (!isLoadRequestCurrent(loadRequest)) return;
+      setScopedData({
+        content: [],
+        pendingRequests,
+        pendingLookupError: pendingRequestsResponse?.lookupError || '',
+        subscriptionUsers: normalizedExactUser ? [normalizedExactUser] : [],
+        userSummary: normalizedExactUser,
+        lookupError: user?.lookupError || '',
+        memberSupportUser: exactMemberUser,
+        memberLookupError: memberUser?.lookupError || '',
+        entitlementWorkspaceSnapshot,
+        permissions: {
+          ...(exactUserPayload.permissions || {}),
+          ...(exactMemberPayload.permissions || {}),
+          ...(exactMemberUserBase?.permissions || {}),
+          ...(pendingPayload.permissions || {}),
+        },
+        page: 0,
+        size: 1,
+        totalElements: normalizedExactUser ? 1 : 0,
+        totalPages: 1,
+      }, loadRequest);
+      return;
+    }
+
+    // Approval requests are a separate operational view. Load them only when
+    // the operator opens that tab instead of blocking the User Entitlements
+    // page on unrelated queue I/O.
+    const requestParams = { status: filters.subscriptionRequestStatus, userEmail: exactEmail };
+    const requests = await api(API_PATHS.subscriptionSupport.requests, { params: requestParams });
     const requestPayload = normalizeAdminObjectResponse(requests);
-    const pendingPayload = normalizeAdminObjectResponse(pendingRequestsResponse);
-    const userPayload = normalizeAdminObjectResponse(users);
-    const exactUserPayload = user && !user.lookupError ? normalizeAdminObjectResponse(user) : {};
-    const exactMemberPayload = memberUser && !memberUser.lookupError ? normalizeAdminObjectResponse(memberUser) : {};
     const requestItems = Array.isArray(requestPayload.items) ? requestPayload.items : normalizeAdminListResponse(requests);
-    const pendingRequests = Array.isArray(pendingPayload.items) ? pendingPayload.items : normalizeAdminListResponse(pendingRequestsResponse);
-    const subscriptionUsers = (Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users)).map(normalizeSubscriptionUserSummary);
-    const exactUser = exactUserPayload.user || exactUserPayload.item || exactUserPayload.subscription || exactUserPayload;
-    const exactMemberUserBase = exactMemberPayload.user || exactMemberPayload.item || exactMemberPayload.account || exactMemberPayload;
-    const exactMemberEntitlement = exactMemberPayload.member
-      || exactMemberPayload.entitlement
-      || exactMemberUserBase?.member
-      || exactMemberUserBase?.entitlement
-      || null;
-    const exactMemberUser = memberUser && !memberUser.lookupError
-      ? normalizeMemberSupportUser({ ...exactMemberUserBase, ...(exactMemberEntitlement ? { member: exactMemberEntitlement } : {}) })
-      : null;
-    const normalizedExactUser = user && !user.lookupError ? normalizeSubscriptionUserSummary(exactUser) : null;
-    const entitlementWorkspaceSnapshot = buildAdminEntitlementWorkspaceSnapshot({
-      searchedEmail: filters.userEmail,
-      proSummary: normalizedExactUser,
-      memberUser: exactMemberUser,
-      proError: user?.lookupError || '',
-      memberError: memberUser?.lookupError || '',
-    });
     if (!isLoadRequestCurrent(loadRequest)) return;
     setScopedData({
       content: requestItems,
-      pendingRequests,
-      subscriptionUsers,
-      userSummary: normalizedExactUser,
-      lookupError: user?.lookupError || '',
-      memberSupportUser: exactMemberUser,
-      memberLookupError: memberUser?.lookupError || '',
-      entitlementWorkspaceSnapshot,
-      permissions: {
-        ...(userPayload.permissions || {}),
-        ...(exactUserPayload.permissions || {}),
-        ...(exactMemberPayload.permissions || {}),
-        ...(exactMemberUserBase?.permissions || {}),
-        ...(pendingPayload.permissions || {}),
-        ...(requestPayload.permissions || {}),
-      },
+      pendingRequests: filters.subscriptionRequestStatus === 'PENDING' ? requestItems : [],
+      subscriptionUsers: [],
+      userSummary: null,
+      memberSupportUser: null,
+      permissions: requestPayload.permissions || {},
       page: 0,
       size: 200,
       totalElements: requestItems.length,
@@ -9191,7 +9239,11 @@ function setSubscriptionSupportView(view) {
   const normalizedView = view === 'requests' ? 'requests' : 'users';
   if (state.subscriptionSupport.activeView === normalizedView) return;
   state.subscriptionSupport.activeView = normalizedView;
+  // Paint the destination workspace immediately, then fetch only the data
+  // required by that view. This avoids a blank transition while network I/O
+  // or a Render wake-up is in progress.
   render();
+  loadData({ force: true }).catch(() => {});
 }
 
 function renderSubscriptionSupportViewTabs() {
@@ -9224,7 +9276,7 @@ function renderSubscriptionSupportToolbar(view = state.subscriptionSupport.activ
   email.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      loadData();
+      loadData({ force: true });
     }
   });
 
@@ -9239,7 +9291,7 @@ function renderSubscriptionSupportToolbar(view = state.subscriptionSupport.activ
     controls.push(el('div', {}, [el('label', { text: 'User status' }), userStatus]));
   }
 
-  controls.push(el('button', { class: 'btn', text: view === 'requests' ? 'Filter requests' : 'Search users', onclick: () => loadData() }));
+  controls.push(el('button', { class: 'btn', text: view === 'requests' ? 'Filter requests' : 'Search users', onclick: () => loadData({ force: true }) }));
   controls.push(el('button', {
     class: 'btn ghost',
     text: 'Clear filters',
