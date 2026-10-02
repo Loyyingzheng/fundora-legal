@@ -159,6 +159,12 @@ const API_PATHS = {
     uploadAssetRaw: '/api/admin/member-frames/assets/raw',
     preview: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}/preview-ticket`,
   },
+  memberNameStyles: {
+    list: '/api/admin/member-name-styles',
+    create: '/api/admin/member-name-styles',
+    update: (id) => `/api/admin/member-name-styles/${encodeURIComponent(id)}`,
+    uploadAssetRaw: '/api/admin/member-name-styles/assets/raw',
+  },
   mobilePolicy: {
     current: '/api/config/mobile-policy',
     revision: '/api/config/mobile-policy/revision',
@@ -1748,6 +1754,7 @@ const NAV_GROUPS = [
     items: [
       { id: 'announcements', label: 'Announcements', helper: 'Remote notices', description: 'Create user-facing app notices without shipping a new app version.', info: 'Use announcements for maintenance, updates, or important messages. Keep copy short; details are hidden in the app until users choose to read or act.' },
       { id: 'memberFrames', label: 'Member Frames', helper: 'Yearly avatar assets', description: 'Upload and schedule private yearly member avatar frames without shipping a new app build.', info: 'PNG assets stay in private storage. Admin controls claim windows and eligibility; mobile receives only metadata until a frame is claimed or needs authenticated display.' },
+      { id: 'memberNameStyles', label: 'Member Name Styles', helper: 'Dynamic font catalog', description: 'Upload licensed Member name fonts without shipping a new app build.', info: 'Mobile loads lightweight metadata/preview first and downloads the actual font only when a user chooses it or when a public Member identity needs rendering.' },
       { id: 'premium', label: 'Reward Surveys', helper: 'Trial reward', description: 'Review feedback-trial reward surveys and related service-credit workflows.', info: 'Use this section to verify survey submissions and keep reward decisions traceable.' },
       { id: 'review', label: 'Review Prompts', helper: 'Store prompt', description: 'Monitor app review prompt eligibility and outcomes.', info: 'Review prompt data helps tune rating prompts without showing private finance content.' },
       { id: 'featureAnalytics', label: 'Feature Analytics', helper: 'Summary events', description: 'See aggregated feature interaction summaries for UX and dashboard improvements.', info: 'This is summary analytics only. It should not contain raw click streams, merchant names, payees, OCR text, or notification content.' },
@@ -4160,6 +4167,13 @@ async function loadAdminControlData(loadRequest) {
     setScopedData({ content: frameItems, page: 0, size: 100, totalElements: frameItems.length, totalPages: 1 }, loadRequest);
     return;
   }
+  if (state.activeTab === 'memberNameStyles') {
+    response = await api(API_PATHS.memberNameStyles.list);
+    if (!isLoadRequestCurrent(loadRequest)) return;
+    const styleItems = normalizeAdminListResponse(response);
+    setScopedData({ content: styleItems, page: 0, size: 100, totalElements: styleItems.length, totalPages: 1 }, loadRequest);
+    return;
+  }
   if (state.activeTab === 'usage') {
     const counters = await api(API_PATHS.usage.list, {
       params: { userEmail: filters.userEmail, featureKey: filters.featureKey, periodKey: filters.periodKey },
@@ -5279,7 +5293,7 @@ function compactJson(value) {
 }
 
 function isAdminControlTab(tab = state.activeTab) {
-  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements', 'memberFrames'].includes(tab);
+  return ['myAccount', 'adminAccounts', 'systemOwnership', 'emergencyConsole', 'planMatrix', 'featureFlags', 'learningConsole', 'productPolicies', 'policyVersions', 'reviewPromptPolicy', 'rateLimitOverrides', 'smartCaptureRules', 'learningOps', 'learningHousekeeping', 'templateFamilies', 'usage', 'subscriptionSupport', 'featureAnalytics', 'auditLogs', 'announcements', 'memberFrames', 'memberNameStyles'].includes(tab);
 }
 
 const EMERGENCY_MODULES = [
@@ -7383,6 +7397,7 @@ function renderAdminModal() {
   if (state.modal.kind === 'memberOverride') return renderMemberOverrideModal();
   if (state.modal.kind === 'announcementEdit') return renderAnnouncementModal();
   if (state.modal.kind === 'memberFrameEdit') return renderMemberFrameModal();
+  if (state.modal.kind === 'memberNameStyleEdit') return renderMemberNameStyleModal();
   if (state.modal.kind === 'emergencyAction') return renderEmergencyActionModal();
   if (state.modal.kind === 'emergencyRuleAction') return renderEmergencyRuleActionModal();
   if (state.modal.kind === 'policyVersionView') return renderPolicyVersionViewModal();
@@ -13806,6 +13821,12 @@ function renderAdminControlPage() {
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Use transparent square PNG files. Set a claim window and display access explicitly. Claim ownership is available to all users; eligibility controls who may apply/display the frame. “Featured” is only presentation priority; ownership remains permanent until an explicit future revoke workflow is used.'));
     children.push(renderControlList(items, renderMemberFrameItem, 'No member frames configured.'));
+  } else if (state.activeTab === 'memberNameStyles') {
+    children.push(renderAdminControlHero('Member Name Styles', 'Operate the Member font catalog from Core without shipping a new app build.', 'Upload only licensed TTF/OTF files. Core generates a lightweight preview. Mobile downloads the real font lazily only after selection or when it must render a public Member identity.'));
+    children.push(renderMemberNameStyleToolbar());
+    children.push(renderStats(items));
+    children.push(renderPolicySafetyNote('Only enable a font when commercial use and redistribution are permitted. Keep supported scripts accurate so Mobile can fall back safely for names the font cannot render.'));
+    children.push(renderControlList(items, renderMemberNameStyleItem, 'No Member name styles configured.'));
   } else if (state.activeTab === 'auditLogs') {
     children.push(renderAdminControlHero('Audit Logs', 'Review admin changes to policies, flags, limits, usage, version, and support actions.', 'Every control action should leave a reasoned audit trail: who changed it, what changed, before/after values, and when.'));
     children.push(renderAuditToolbar());
@@ -13932,6 +13953,149 @@ function renderUsageAdjustModal() {
   ], submitUsageAdjustModal);
 }
 
+
+function renderMemberNameStyleToolbar() {
+  return renderControlToolbar([
+    el('button', { class: 'btn', text: 'Add name style', onclick: () => openMemberNameStyleModal(null) }),
+    el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
+  ]);
+}
+
+function renderMemberNameStyleItem(item) {
+  const enabled = Boolean(item.enabled);
+  const eligibility = String(item.eligibilityType || item.eligibility_type || 'MEMBER').toUpperCase() === 'ALL' ? 'All users' : 'Members only';
+  return renderCollapsibleItem({
+    title: item.title || item.code || 'Member name style',
+    subtitle: `${eligibility} · ${Array.isArray(item.supportedScripts) ? item.supportedScripts.join(', ') : (item.supported_scripts || 'LATIN')}`,
+    statusNode: el('span', { class: `badge ${enabled ? 'success' : 'neutral'}`, text: enabled ? 'Available' : 'Disabled' }),
+    children: [
+      item.previewUrl || item.preview_url ? el('img', { src: item.previewUrl || item.preview_url, alt: `${item.title || item.code} preview`, style: 'display:block;width:220px;max-width:100%;height:64px;object-fit:contain;border:1px solid #e5e7eb;border-radius:12px;background:#fff;margin:4px 0 12px;' }) : null,
+      renderMetaGrid([
+        ['Stable code', item.code || '—'], ['Asset version', item.assetVersion || item.asset_version || 1],
+        ['Font file', item.mimeType || item.mime_type || '—'], ['Sort order', item.sortOrder ?? item.sort_order ?? 0],
+        ['Commercial use', item.commercialUseAllowed || item.commercial_use_allowed ? 'Allowed' : 'Not confirmed'],
+        ['Redistribution', item.redistributionAllowed || item.redistribution_allowed ? 'Allowed' : 'Not confirmed'],
+        ['Updated', formatDate(item.updatedAt || item.updated_at)],
+      ]),
+      el('div', { class: 'actions' }, [el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openMemberNameStyleModal(item) })]),
+    ].filter(Boolean),
+  });
+}
+
+function openMemberNameStyleModal(item) {
+  state.modal = {
+    kind: 'memberNameStyleEdit',
+    id: item?.id || null,
+    code: item?.code || null,
+    title: item?.title || '',
+    description: item?.description || '',
+    eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
+    enabled: Boolean(item?.enabled),
+    featured: Boolean(item?.featured),
+    sortOrder: Number(item?.sortOrder ?? item?.sort_order ?? 0),
+    assetBucket: item?.assetBucket || item?.asset_bucket || null,
+    assetPath: item?.assetPath || item?.asset_path || null,
+    assetSha256: item?.assetSha256 || item?.asset_sha256 || null,
+    assetVersion: Number(item?.assetVersion ?? item?.asset_version ?? 1),
+    mimeType: item?.mimeType || item?.mime_type || null,
+    assetBytes: Number(item?.assetBytes ?? item?.asset_bytes ?? 0),
+    previewBucket: item?.previewBucket || item?.preview_bucket || null,
+    previewPath: item?.previewPath || item?.preview_path || null,
+    previewSha256: item?.previewSha256 || item?.preview_sha256 || null,
+    previewUrl: item?.previewUrl || item?.preview_url || null,
+    previewText: item?.previewText || item?.preview_text || 'Ying',
+    supportedScripts: Array.isArray(item?.supportedScripts) ? item.supportedScripts.join(',') : (item?.supported_scripts || 'LATIN'),
+    licenseType: item?.licenseType || item?.license_type || '',
+    licenseSource: item?.licenseSource || item?.license_source || '',
+    commercialUseAllowed: Boolean(item?.commercialUseAllowed || item?.commercial_use_allowed),
+    redistributionAllowed: Boolean(item?.redistributionAllowed || item?.redistribution_allowed),
+    attributionRequired: Boolean(item?.attributionRequired || item?.attribution_required),
+    assetFile: null,
+    assetFileName: '',
+    reason: '',
+    loading: false,
+    error: '',
+  };
+  render();
+}
+
+function renderMemberNameStyleModal() {
+  const modal = state.modal;
+  const title = el('input', { value: modal.title || '', placeholder: 'Royal / Luxury / Elegant…' }); title.addEventListener('input', () => { modal.title = title.value; });
+  const description = el('textarea', { rows: '2', placeholder: 'Short user-facing description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
+  const sortOrder = el('input', { type: 'number', value: String(modal.sortOrder || 0) }); sortOrder.addEventListener('input', () => { modal.sortOrder = Number(sortOrder.value || 0); });
+  const scripts = el('input', { value: modal.supportedScripts || 'LATIN', placeholder: 'LATIN,HAN' }); scripts.addEventListener('input', () => { modal.supportedScripts = scripts.value; });
+  const licenseType = el('input', { value: modal.licenseType || '', placeholder: 'OFL-1.1 / Commercial license' }); licenseType.addEventListener('input', () => { modal.licenseType = licenseType.value; });
+  const licenseSource = el('input', { value: modal.licenseSource || '', placeholder: 'License/source reference' }); licenseSource.addEventListener('input', () => { modal.licenseSource = licenseSource.value; });
+  const eligibility = select(['MEMBER', 'ALL'], modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const featured = el('input', { type: 'checkbox' }); featured.checked = Boolean(modal.featured); featured.addEventListener('change', () => { modal.featured = featured.checked; });
+  const commercial = el('input', { type: 'checkbox' }); commercial.checked = Boolean(modal.commercialUseAllowed); commercial.addEventListener('change', () => { modal.commercialUseAllowed = commercial.checked; });
+  const redistribute = el('input', { type: 'checkbox' }); redistribute.checked = Boolean(modal.redistributionAllowed); redistribute.addEventListener('change', () => { modal.redistributionAllowed = redistribute.checked; });
+  const attribution = el('input', { type: 'checkbox' }); attribution.checked = Boolean(modal.attributionRequired); attribution.addEventListener('change', () => { modal.attributionRequired = attribution.checked; });
+  const file = el('input', { type: 'file', accept: '.ttf,.otf,font/ttf,font/otf' });
+  file.addEventListener('change', () => { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 2 * 1024 * 1024) { file.value = ''; modal.error = 'Font must be 2 MB or smaller.'; return render(); } modal.assetFile = selected; modal.assetFileName = selected.name; render(); });
+  const reason = el('textarea', { rows: '2', placeholder: 'Optional operational note' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
+  return renderControlModal(modal.id ? 'Edit Member name style' : 'Add Member name style', 'Dynamic font catalog', [
+    modal.previewUrl ? el('img', { src: modal.previewUrl, alt: 'Font preview', style: 'display:block;width:320px;max-width:100%;height:78px;object-fit:contain;border:1px solid #e5e7eb;border-radius:12px;background:#fff;' }) : null,
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'Display name' }), title]),
+      el('div', { class: 'field' }, [el('label', { text: 'Who can use it' }), eligibility]),
+      el('div', { class: 'field' }, [el('label', { text: 'Sort order' }), sortOrder]),
+      el('div', { class: 'field' }, [el('label', { text: 'Supported scripts' }), scripts, el('small', { class: 'field-help', text: 'Example: LATIN or LATIN,HAN.' })]),
+    ]),
+    el('div', { class: 'field' }, [el('label', { text: 'Description' }), description]),
+    el('div', { class: 'field' }, [el('label', { text: modal.assetPath ? 'Font file' : 'Font file · required before enabling' }), file, el('small', { class: 'field-help', text: modal.assetFileName || (modal.assetPath ? 'Current private font is kept unless replaced.' : 'TTF/OTF only · max 2 MB. Core generates the lightweight picker preview.') })]),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'License type' }), licenseType]),
+      el('div', { class: 'field' }, [el('label', { text: 'License/source' }), licenseSource]),
+    ]),
+    el('div', { class: 'member-frame-publish-grid' }, [
+      el('label', { class: 'check-row' }, [commercial, el('span', {}, [el('strong', { text: 'Commercial use allowed' })])]),
+      el('label', { class: 'check-row' }, [redistribute, el('span', {}, [el('strong', { text: 'Redistribution allowed' })])]),
+      el('label', { class: 'check-row' }, [attribution, el('span', {}, [el('strong', { text: 'Attribution required' })])]),
+      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: 'Available in app' })])]),
+      el('label', { class: 'check-row' }, [featured, el('span', {}, [el('strong', { text: 'Featured' })])]),
+    ]),
+    el('div', { class: 'field' }, [el('label', { text: 'Internal note · optional' }), reason]),
+  ].filter(Boolean), submitMemberNameStyleModal, true);
+}
+
+async function submitMemberNameStyleModal() {
+  const modal = state.modal; modal.error = '';
+  if (!String(modal.title || '').trim()) { modal.error = 'Display name is required.'; return render(); }
+  if (modal.enabled && !modal.assetFile && !modal.assetPath) { modal.error = 'Upload a TTF/OTF font before enabling it.'; return render(); }
+  if (modal.enabled && (!modal.commercialUseAllowed || !modal.redistributionAllowed)) { modal.error = 'Enabled mobile fonts must allow commercial use and redistribution.'; return render(); }
+  modal.loading = true; render();
+  try {
+    if (modal.assetFile) {
+      const rawBody = new Uint8Array(await modal.assetFile.arrayBuffer());
+      const previewText = String(modal.title || 'Ying').trim() || 'Ying';
+      const uploadPath = `${API_PATHS.memberNameStyles.uploadAssetRaw}?previewText=${encodeURIComponent(previewText)}`;
+      const uploaded = normalizeAdminObjectResponse(await api(uploadPath, { method: 'POST', rawBody, headers: { 'Content-Type': 'application/octet-stream' } }));
+      modal.assetBucket = uploaded.assetBucket || uploaded.asset_bucket;
+      modal.assetPath = uploaded.assetPath || uploaded.asset_path;
+      modal.assetSha256 = uploaded.sha256;
+      modal.mimeType = uploaded.mimeType || uploaded.mime_type;
+      modal.assetBytes = uploaded.bytes || 0;
+      modal.previewBucket = uploaded.previewBucket || uploaded.preview_bucket;
+      modal.previewPath = uploaded.previewPath || uploaded.preview_path;
+      modal.previewSha256 = uploaded.previewSha256 || uploaded.preview_sha256;
+      modal.assetVersion = Math.max(1, Number(modal.assetVersion || 1) + (modal.id ? 1 : 0));
+    }
+    const body = {
+      code: modal.id ? modal.code : null,
+      title: String(modal.title || '').trim(), description: String(modal.description || '').trim() || null,
+      eligibilityType: modal.eligibilityType || 'MEMBER', enabled: Boolean(modal.enabled), featured: Boolean(modal.featured), sortOrder: Number(modal.sortOrder || 0),
+      assetBucket: modal.assetBucket || null, assetPath: modal.assetPath || null, assetSha256: modal.assetSha256 || null, assetVersion: modal.assetFile ? modal.assetVersion : null,
+      mimeType: modal.mimeType || null, assetBytes: Number(modal.assetBytes || 0), previewBucket: modal.previewBucket || null, previewPath: modal.previewPath || null, previewSha256: modal.previewSha256 || null,
+      previewText: String(modal.title || modal.previewText || 'Ying').trim(), supportedScripts: String(modal.supportedScripts || 'LATIN').trim(), licenseType: String(modal.licenseType || '').trim() || null,
+      licenseSource: String(modal.licenseSource || '').trim() || null, commercialUseAllowed: Boolean(modal.commercialUseAllowed), redistributionAllowed: Boolean(modal.redistributionAllowed), attributionRequired: Boolean(modal.attributionRequired), reason: String(modal.reason || '').trim() || null,
+    };
+    await api(modal.id ? API_PATHS.memberNameStyles.update(modal.id) : API_PATHS.memberNameStyles.create, { method: modal.id ? 'PATCH' : 'POST', body });
+    closeModal(); await refreshAfterAdminMutation(modal.id ? 'Member name style updated.' : 'Member name style created.');
+  } catch (error) { modal.error = toFriendlyErrorMessage(error, 'Unable to save Member name style.'); modal.loading = false; render(); }
+}
 
 function renderMemberFrameToolbar() {
   return renderControlToolbar([
