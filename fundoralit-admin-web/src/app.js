@@ -4078,110 +4078,37 @@ async function loadAdminControlData(loadRequest) {
     return;
   }
   if (state.activeTab === 'subscriptionSupport') {
-    const activeView = state.subscriptionSupport.activeView || 'users';
-    const exactEmail = normalizedTrim(filters.userEmail);
-
-    // Keep the Users workspace fast and deterministic. It must not eagerly
-    // load the approval queue or the broad subscription list just to render
-    // the page shell. Exact Pro + Member authorities are fetched once and in
-    // parallel; pending requests are scoped to that exact account only.
-    if (activeView === 'users') {
-      if (!exactEmail) {
-        if (!isLoadRequestCurrent(loadRequest)) return;
-        setScopedData({
-          content: [],
-          pendingRequests: [],
-          subscriptionUsers: [],
-          userSummary: null,
-          lookupError: '',
-          memberSupportUser: null,
-          memberLookupError: '',
-          entitlementWorkspaceSnapshot: buildAdminEntitlementWorkspaceSnapshot(),
-          permissions: {},
-          page: 0,
-          size: 0,
-          totalElements: 0,
-          totalPages: 1,
-        }, loadRequest);
-        return;
-      }
-
-      const [user, memberUser, pendingRequestsResponse] = await Promise.all([
-        api(API_PATHS.subscriptionSupport.user, { params: { email: exactEmail } })
-          .catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Pro subscription lookup failed.') })),
-        api(API_PATHS.memberSupport.user, { params: { email: exactEmail } })
-          .catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Member entitlement lookup failed.') })),
-        api(API_PATHS.subscriptionSupport.requests, { params: { status: 'PENDING', userEmail: exactEmail } })
-          .catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Pending support request lookup failed.') })),
-      ]);
-
-      const exactUserPayload = user && !user.lookupError ? normalizeAdminObjectResponse(user) : {};
-      const exactMemberPayload = memberUser && !memberUser.lookupError ? normalizeAdminObjectResponse(memberUser) : {};
-      const pendingPayload = pendingRequestsResponse && !pendingRequestsResponse.lookupError
-        ? normalizeAdminObjectResponse(pendingRequestsResponse)
-        : {};
-      const exactUser = exactUserPayload.user || exactUserPayload.item || exactUserPayload.subscription || exactUserPayload;
-      const exactMemberUserBase = exactMemberPayload.user || exactMemberPayload.item || exactMemberPayload.account || exactMemberPayload;
-      const exactMemberEntitlement = exactMemberPayload.member
-        || exactMemberPayload.entitlement
-        || exactMemberUserBase?.member
-        || exactMemberUserBase?.entitlement
-        || null;
-      const exactMemberUser = memberUser && !memberUser.lookupError
-        ? normalizeMemberSupportUser({ ...exactMemberUserBase, ...(exactMemberEntitlement ? { member: exactMemberEntitlement } : {}) })
-        : null;
-      const normalizedExactUser = user && !user.lookupError ? normalizeSubscriptionUserSummary(exactUser) : null;
-      const pendingRequests = Array.isArray(pendingPayload.items)
-        ? pendingPayload.items
-        : (pendingRequestsResponse && !pendingRequestsResponse.lookupError ? normalizeAdminListResponse(pendingRequestsResponse) : []);
-      const entitlementWorkspaceSnapshot = buildAdminEntitlementWorkspaceSnapshot({
-        searchedEmail: exactEmail,
-        proSummary: normalizedExactUser,
-        memberUser: exactMemberUser,
-        proError: user?.lookupError || '',
-        memberError: memberUser?.lookupError || '',
-      });
-
-      if (!isLoadRequestCurrent(loadRequest)) return;
-      setScopedData({
-        content: [],
-        pendingRequests,
-        pendingLookupError: pendingRequestsResponse?.lookupError || '',
-        subscriptionUsers: normalizedExactUser ? [normalizedExactUser] : [],
-        userSummary: normalizedExactUser,
-        lookupError: user?.lookupError || '',
-        memberSupportUser: exactMemberUser,
-        memberLookupError: memberUser?.lookupError || '',
-        entitlementWorkspaceSnapshot,
-        permissions: {
-          ...(exactUserPayload.permissions || {}),
-          ...(exactMemberPayload.permissions || {}),
-          ...(exactMemberUserBase?.permissions || {}),
-          ...(pendingPayload.permissions || {}),
-        },
-        page: 0,
-        size: 1,
-        totalElements: normalizedExactUser ? 1 : 0,
-        totalPages: 1,
-      }, loadRequest);
-      return;
-    }
-
-    // Approval requests are a separate operational view. Load them only when
-    // the operator opens that tab instead of blocking the User Entitlements
-    // page on unrelated queue I/O.
-    const requestParams = { status: filters.subscriptionRequestStatus, userEmail: exactEmail };
-    const requests = await api(API_PATHS.subscriptionSupport.requests, { params: requestParams });
+    const requestParams = { status: filters.subscriptionRequestStatus, userEmail: filters.userEmail };
+    const requestPromise = api(API_PATHS.subscriptionSupport.requests, { params: requestParams });
+    const pendingPromise = filters.subscriptionRequestStatus === 'PENDING'
+      ? requestPromise
+      : api(API_PATHS.subscriptionSupport.requests, { params: { status: 'PENDING', userEmail: filters.userEmail } });
+    const [requests, pendingRequestsResponse, users, user, memberUser] = await Promise.all([
+      requestPromise,
+      pendingPromise,
+      api(API_PATHS.subscriptionSupport.usersList, { params: { email: filters.userEmail, tier: filters.subscriptionUserTier, status: filters.subscriptionUserStatus } }),
+      filters.userEmail ? api(API_PATHS.subscriptionSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Pro subscription lookup failed.') })) : Promise.resolve(null),
+      filters.userEmail ? api(API_PATHS.memberSupport.user, { params: { email: filters.userEmail } }).catch((error) => ({ lookupError: toFriendlyErrorMessage(error, 'Member entitlement lookup failed.') })) : Promise.resolve(null),
+    ]);
     const requestPayload = normalizeAdminObjectResponse(requests);
+    const pendingPayload = normalizeAdminObjectResponse(pendingRequestsResponse);
+    const userPayload = normalizeAdminObjectResponse(users);
+    const exactUserPayload = user && !user.lookupError ? normalizeAdminObjectResponse(user) : {};
+    const exactMemberPayload = memberUser && !memberUser.lookupError ? normalizeAdminObjectResponse(memberUser) : {};
     const requestItems = Array.isArray(requestPayload.items) ? requestPayload.items : normalizeAdminListResponse(requests);
+    const pendingRequests = Array.isArray(pendingPayload.items) ? pendingPayload.items : normalizeAdminListResponse(pendingRequestsResponse);
+    const subscriptionUsers = (Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users)).map(normalizeSubscriptionUserSummary);
+    const exactUser = exactUserPayload.user || exactUserPayload.item || exactUserPayload.subscription || exactUserPayload;
     if (!isLoadRequestCurrent(loadRequest)) return;
     setScopedData({
       content: requestItems,
-      pendingRequests: filters.subscriptionRequestStatus === 'PENDING' ? requestItems : [],
-      subscriptionUsers: [],
-      userSummary: null,
-      memberSupportUser: null,
-      permissions: requestPayload.permissions || {},
+      pendingRequests,
+      subscriptionUsers,
+      userSummary: user && !user.lookupError ? normalizeSubscriptionUserSummary(exactUser) : null,
+      lookupError: user?.lookupError || '',
+      memberSupportUser: memberUser && !memberUser.lookupError ? (exactMemberPayload.user || exactMemberPayload.item || exactMemberPayload) : null,
+      memberLookupError: memberUser?.lookupError || '',
+      permissions: { ...(userPayload.permissions || {}), ...(exactUserPayload.permissions || {}), ...(pendingPayload.permissions || {}), ...(requestPayload.permissions || {}) },
       page: 0,
       size: 200,
       totalElements: requestItems.length,
@@ -4359,39 +4286,15 @@ function refreshCurrentAdminViewInBackground() {
 }
 
 async function refreshAfterAdminMutation(successMessage, { path = '', result = null } = {}) {
+  // The authoritative mutation has already committed on the server. Release the
+  // button/modal immediately and refresh the active tab in the background instead
+  // of making the user wait for a second full GET round-trip.
   applyFeedbackMutationResult(path, result);
   state.learningConsoleReadModel = null;
+  setMessage(successMessage || 'Updated successfully.');
   state.modal = null;
   state.actionLoadingKey = '';
   state.actionLoadingMessage = '';
-
-  // Entitlement mutations are safety-sensitive. Do not declare the operational
-  // workspace converged until both Pro and Member admin authorities have been
-  // re-read for the exact user. Other admin mutations keep the faster background
-  // refresh behavior.
-  if (state.activeTab === 'subscriptionSupport' && isEntitlementAdminMutationPath(path)) {
-    state.loading = true;
-    setMessage('Entitlement mutation committed. Verifying Pro + Member authority...');
-    render();
-    try {
-      await loadData({ force: true, background: true });
-      state.loading = false;
-      const snapshot = state.data?.entitlementWorkspaceSnapshot;
-      const suffix = snapshot?.consistency === 'VERIFIED'
-        ? ' Pro + Member identity verified.'
-        : snapshot?.consistency ? ` Workspace status: ${snapshot.consistency}.` : '';
-      setMessage(`${successMessage || 'Updated successfully.'}${suffix}`);
-      render();
-      return;
-    } catch (error) {
-      state.loading = false;
-      setMessage(`${successMessage || 'Updated successfully.'} The server mutation committed, but the post-mutation entitlement verification could not complete: ${toFriendlyErrorMessage(error)}`, true);
-      render();
-      return;
-    }
-  }
-
-  setMessage(successMessage || 'Updated successfully.');
   state.loading = false;
   render();
   refreshCurrentAdminViewInBackground();
@@ -8969,87 +8872,6 @@ function normalizeSubscriptionUserSummary(item = {}) {
   };
 }
 
-function normalizeMemberSupportUser(item = {}) {
-  if (!item || typeof item !== 'object') return null;
-  const member = item.member || item.entitlement || {};
-  return {
-    ...item,
-    userId: firstPresent(item.userId, item.user_id, item.id),
-    email: firstPresent(item.email, item.userEmail, item.user_email),
-    member: {
-      ...member,
-      active: asBoolean(firstPresent(member.active, member.membershipActive, member.membership_active), false),
-      tier: firstPresent(member.tier, member.membershipTier, member.membership_tier, 'NONE'),
-      status: firstPresent(member.status, member.membershipStatus, member.membership_status, member.active ? 'ACTIVE' : 'INACTIVE'),
-      provider: firstPresent(member.provider, member.subscriptionProvider, member.subscription_provider, 'NONE'),
-      billingCycle: firstPresent(member.billingCycle, member.billing_cycle, 'NONE'),
-      productId: firstPresent(member.productId, member.product_id),
-      expiresAt: firstPresent(member.expiresAt, member.expires_at),
-      autoRenewing: firstPresent(member.autoRenewing, member.auto_renewing),
-      adminOverrideMode: String(firstPresent(member.adminOverrideMode, member.admin_override_mode, 'NONE') || 'NONE').toUpperCase(),
-      adminOverrideExpiresAt: firstPresent(member.adminOverrideExpiresAt, member.admin_override_expires_at),
-      updatedAt: firstPresent(member.updatedAt, member.updated_at, item.updatedAt, item.updated_at),
-      revision: firstPresent(member.revision, member.memberRevision, member.member_revision, item.memberRevision, item.member_revision),
-    },
-  };
-}
-
-function buildAdminEntitlementWorkspaceSnapshot({ searchedEmail = '', proSummary = null, memberUser = null, proError = '', memberError = '' } = {}) {
-  const normalizedPro = proSummary ? normalizeSubscriptionUserSummary(proSummary) : null;
-  const normalizedMember = memberUser ? normalizeMemberSupportUser(memberUser) : null;
-  const proUserId = normalizedTrim(normalizedPro?.userId);
-  const memberUserId = normalizedTrim(normalizedMember?.userId);
-  const hasSearch = Boolean(normalizedTrim(searchedEmail));
-  const errors = [proError, memberError].filter(Boolean);
-
-  let consistency = 'READY';
-  let message = 'Pro and Member are resolved from independent authorities inside one operational user context.';
-  let blocksMutations = false;
-
-  if (!hasSearch) {
-    consistency = 'WAITING_FOR_SEARCH';
-    message = 'Search an exact account email to build a cross-authority entitlement snapshot.';
-  } else if (proUserId && memberUserId && proUserId !== memberUserId) {
-    consistency = 'IDENTITY_MISMATCH';
-    message = `Safety block: Pro resolved to ${proUserId} while Member resolved to ${memberUserId}. No entitlement mutation is allowed until the account identity mismatch is resolved.`;
-    blocksMutations = true;
-  } else if (errors.length) {
-    consistency = 'PARTIAL_LOOKUP';
-    message = 'One entitlement authority could not be confirmed. Healthy data stays visible, but cross-authority mutation safety cannot be fully confirmed.';
-    blocksMutations = Boolean(proUserId && memberUserId && proUserId !== memberUserId);
-  } else if (!normalizedPro && !normalizedMember) {
-    consistency = 'NO_RESULT';
-    message = 'No entitlement record was returned for this exact account lookup.';
-  } else if (!normalizedPro || !normalizedMember) {
-    consistency = 'PARTIAL';
-    message = 'Only one entitlement authority returned an account record. Treat the workspace as partial until both sides can be confirmed.';
-  } else if (proUserId && memberUserId && proUserId === memberUserId) {
-    consistency = 'VERIFIED';
-    message = 'Pro and Member resolve to the same account identity. Mutations remain isolated by entitlement authority.';
-  }
-
-  return {
-    searchedEmail: normalizedTrim(searchedEmail),
-    pro: normalizedPro,
-    member: normalizedMember,
-    proUserId,
-    memberUserId,
-    consistency,
-    message,
-    blocksMutations,
-    checkedAt: new Date().toISOString(),
-    proError: proError || '',
-    memberError: memberError || '',
-  };
-}
-
-function isEntitlementAdminMutationPath(path = '') {
-  const value = String(path || '');
-  if (value.startsWith('/api/admin/member-support/') && value.endsWith('/override')) return true;
-  if (value.startsWith('/api/admin/subscription-support/requests/') && value.endsWith('/approve')) return true;
-  return false;
-}
-
 const SUBSCRIPTION_REQUEST_COPY = Object.freeze({
   GRANT_TRIAL: {
     label: 'Request trial access',
@@ -9207,7 +9029,7 @@ function getSubscriptionSupportActionState(summary, permissions = {}) {
   return { summary: normalizedSummary, tier, status, effectivePro, cancellationScheduled, canRequest, actions, title, message, tone, blockingPending };
 }
 
-function renderSubscriptionSupportActions(summary, permissions = {}, { actionsBlockedReason = '' } = {}) {
+function renderSubscriptionSupportActions(summary, permissions = {}) {
   const actionState = getSubscriptionSupportActionState(summary, permissions);
   const buttons = actionState.actions.map((action) => {
     const button = el('button', {
@@ -9215,9 +9037,9 @@ function renderSubscriptionSupportActions(summary, permissions = {}, { actionsBl
       text: action.pending
         ? `${SUBSCRIPTION_REQUEST_COPY[action.type]?.shortLabel || action.label} pending`
         : action.blockingPending ? `${action.label} · locked` : action.label,
-      disabled: !action.enabled || Boolean(actionsBlockedReason),
-      title: actionsBlockedReason || (action.blockingPending ? 'Resolve or withdraw the existing pending subscription request before creating another action.' : action.description),
-      onclick: action.enabled && !actionsBlockedReason ? () => openSubscriptionSupportRequestModal(actionState.summary, action.type) : null,
+      disabled: !action.enabled,
+      title: action.blockingPending ? 'Resolve or withdraw the existing pending subscription request before creating another action.' : action.description,
+      onclick: action.enabled ? () => openSubscriptionSupportRequestModal(actionState.summary, action.type) : null,
     });
     return button;
   });
@@ -9227,11 +9049,9 @@ function renderSubscriptionSupportActions(summary, permissions = {}, { actionsBl
       el('strong', { text: actionState.title }),
       el('p', { class: 'muted', text: actionState.message }),
     ]),
-    actionsBlockedReason
-      ? el('p', { class: 'muted subscription-read-only-note entitlement-safety-block', text: actionsBlockedReason })
-      : actionState.canRequest
-        ? el('div', { class: 'subscription-action-buttons' }, buttons)
-        : el('p', { class: 'muted subscription-read-only-note', text: 'Your admin role has read-only access to subscription entitlement actions.' }),
+    actionState.canRequest
+      ? el('div', { class: 'subscription-action-buttons' }, buttons)
+      : el('p', { class: 'muted subscription-read-only-note', text: 'Your admin role has read-only access to subscription entitlement actions.' }),
   ]);
 }
 
@@ -9239,11 +9059,7 @@ function setSubscriptionSupportView(view) {
   const normalizedView = view === 'requests' ? 'requests' : 'users';
   if (state.subscriptionSupport.activeView === normalizedView) return;
   state.subscriptionSupport.activeView = normalizedView;
-  // Paint the destination workspace immediately, then fetch only the data
-  // required by that view. This avoids a blank transition while network I/O
-  // or a Render wake-up is in progress.
   render();
-  loadData({ force: true }).catch(() => {});
 }
 
 function renderSubscriptionSupportViewTabs() {
@@ -9276,7 +9092,7 @@ function renderSubscriptionSupportToolbar(view = state.subscriptionSupport.activ
   email.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
-      loadData({ force: true });
+      loadData();
     }
   });
 
@@ -9291,7 +9107,7 @@ function renderSubscriptionSupportToolbar(view = state.subscriptionSupport.activ
     controls.push(el('div', {}, [el('label', { text: 'User status' }), userStatus]));
   }
 
-  controls.push(el('button', { class: 'btn', text: view === 'requests' ? 'Filter requests' : 'Search users', onclick: () => loadData({ force: true }) }));
+  controls.push(el('button', { class: 'btn', text: view === 'requests' ? 'Filter requests' : 'Search users', onclick: () => loadData() }));
   controls.push(el('button', {
     class: 'btn ghost',
     text: 'Clear filters',
@@ -9330,7 +9146,7 @@ function renderSubscriptionUserItem(summary) {
         ['Trial Used', normalizedSummary?.trialUsed ? 'Yes' : 'No'], ['Trial Expires', formatDate(normalizedSummary?.trialExpiresAt)],
         ['Feedback Trial Used', normalizedSummary?.feedbackTrialUsed ? 'Yes' : 'No'], ['Feedback Trial Expires', formatDate(normalizedSummary?.feedbackTrialExpiresAt)],
       ]),
-      renderSubscriptionSupportActions(normalizedSummary, permissions, { actionsBlockedReason }),
+      renderSubscriptionSupportActions(normalizedSummary, permissions),
     ],
   });
 }
@@ -9538,7 +9354,7 @@ async function submitSubscriptionSupportReviewModal() {
   const note = normalizedTrim(modal.reviewNote);
   if (modal.decision === 'reject' && !note) return validationError('Review note is required when rejecting a request.', 'reviewNote');
   const path = modal.decision === 'approve' ? API_PATHS.subscriptionSupport.approve(modal.id) : API_PATHS.subscriptionSupport.reject(modal.id);
-  await performPostAction(path, modal.decision === 'approve' ? 'Subscription request approved. Entitlement workflow state refreshed.' : 'Subscription request rejected.', { reviewNote: note || null });
+  await performPostAction(path, modal.decision === 'approve' ? 'Subscription request approved and applied.' : 'Subscription request rejected.', { reviewNote: note || null });
 }
 
 function renderUsageToolbar() {
@@ -13687,11 +13503,11 @@ function renderAdminControlPage() {
         el('span', { text: 'User view: one exact email loads both Pro and standalone Member. Each entitlement keeps its own provider truth, override rules, and actions; partial lookup failures are shown without hiding the healthy entitlement.' }),
       ]));
       if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
+      if (state.data?.memberLookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.memberLookupError }));
       children.push(renderUnifiedEntitlementSupportWorkspace(
         state.data?.userSummary,
         state.data?.memberSupportUser,
         state.data?.permissions || {},
-        { proError: state.data?.lookupError || '', memberError: state.data?.memberLookupError || '' },
       ));
       children.push(el('div', { class: 'section-title-row subscription-section-title' }, [
         el('div', {}, [el('h2', { text: 'User subscriptions' }), el('p', { class: 'muted section-helper', text: 'Effective entitlement records from the subscription user source of truth.' })]),
@@ -14425,9 +14241,20 @@ function validateConfig() {
   return { missing, invalid };
 }
 
-function warmAdminBackend(baseUrl) {
+function normalizeHealthPath(value, fallback) {
+  const candidate = String(value || fallback || '').trim();
+  if (!candidate) return '';
+  return candidate.startsWith('/') ? candidate : `/${candidate}`;
+}
+
+function warmAdminBackend(baseUrl, healthPath) {
   if (!baseUrl) return;
-  fetch(`${baseUrl}/health`, {
+  const path = normalizeHealthPath(healthPath, '/health');
+  if (!path) return;
+
+  // Warm-up is deliberately best-effort and never participates in page readiness.
+  // It must not surface an error banner or block Subscription Support rendering.
+  fetch(`${baseUrl}${path}`, {
     method: 'GET',
     headers: { Accept: 'application/json' },
     cache: 'no-store',
@@ -14435,12 +14262,19 @@ function warmAdminBackend(baseUrl) {
 }
 
 function startAdminBackendWarmup() {
-  // Start Render wake-up while encrypted session restoration is still running.
-  // This overlaps cold-start time with local IndexedDB work instead of making
-  // the first visible module wait for both operations one after another.
-  warmAdminBackend(coreApiBaseUrl);
-  if (collaborationApiBaseUrl && collaborationApiBaseUrl !== coreApiBaseUrl) {
-    warmAdminBackend(collaborationApiBaseUrl);
+  // Core is the authority for admin auth, Pro, Member and Subscription Support,
+  // so waking Core during encrypted session restoration is useful.
+  warmAdminBackend(coreApiBaseUrl, config.coreHealthPath || '/health');
+
+  // Collaboration is not a dependency of Subscription Support. Do not wake it on
+  // every Admin boot unless deployment explicitly opts in. Collaboration-specific
+  // pages/actions will naturally wake that service when they are actually used.
+  if (
+    config.warmCollaborationOnBoot === true
+    && collaborationApiBaseUrl
+    && collaborationApiBaseUrl !== coreApiBaseUrl
+  ) {
+    warmAdminBackend(collaborationApiBaseUrl, config.collaborationHealthPath || '/api/health');
   }
 }
 
@@ -14521,46 +14355,27 @@ if (headerMenuButton) {
 boot();
 
 
-function renderMemberEntitlementSupportCard(memberUser, { error = '', searchedEmail = '', permissions = {}, actionsBlockedReason = '' } = {}) {
-  const hasSearch = Boolean(normalizedTrim(searchedEmail));
-  if (error) {
-    return el('section', { class: 'card entitlement-support-card member-entitlement-card entitlement-error-card' }, [
-      el('div', { class: 'entitlement-card-heading' }, [
-        el('div', {}, [
-          el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
-          el('h3', { text: searchedEmail || 'Standalone identity entitlement' }),
-          el('p', { class: 'muted', text: 'Member lookup failed independently. Pro support remains available.' }),
-        ]),
-        el('span', { class: 'badge danger', text: 'LOOKUP ERROR' }),
-      ]),
-      el('div', { class: 'notice warning inline-notice', text: error }),
-      el('div', { class: 'button-row entitlement-action-row' }, [
-        el('button', { class: 'btn ghost small', text: 'Retry Member lookup', onclick: () => loadData({ force: true }) }),
-      ]),
-    ]);
-  }
+function renderMemberEntitlementSupportCard(memberUser) {
   if (!memberUser) {
     return el('section', { class: 'card entitlement-support-card member-entitlement-card entitlement-empty-card' }, [
       el('div', { class: 'entitlement-card-heading' }, [
         el('div', {}, [
           el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
-          el('h3', { text: hasSearch ? searchedEmail : 'Standalone identity entitlement' }),
-          el('p', { class: 'muted', text: hasSearch ? 'No Member entitlement record was returned for this user.' : 'Search an exact user email to inspect Member state.' }),
+          el('h3', { text: 'Standalone identity entitlement' }),
         ]),
-        el('span', { class: 'badge neutral', text: hasSearch ? 'NO MEMBER RECORD' : 'READY' }),
+        el('span', { class: 'badge neutral', text: 'NO RESULT' }),
       ]),
-      el('p', { class: 'muted', text: 'Member is independent from Fundoralit Pro. A missing Member record must not be interpreted as Pro status.' }),
+      el('p', { class: 'muted', text: 'Search an exact user email to inspect Member state. Member is independent from Fundoralit Pro.' }),
     ]);
   }
   const member = memberUser?.member || memberUser?.entitlement || {};
   const active = Boolean(member?.active);
   const stateLabel = active ? 'MEMBER ACTIVE' : 'NON-MEMBER';
-  const memberActionAllowed = !actionsBlockedReason && permissions?.canManageMemberSupport !== false && permissions?.canOverrideMember !== false;
   return el('section', { class: 'card entitlement-support-card member-entitlement-card' }, [
     el('div', { class: 'entitlement-card-heading' }, [
       el('div', {}, [
         el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
-        el('h3', { text: memberUser.email || searchedEmail || 'Member entitlement' }),
+        el('h3', { text: memberUser.email || 'Member entitlement' }),
         el('p', { class: 'muted', text: 'Identity entitlement · independent from Pro feature access' }),
       ]),
       el('span', { class: active ? 'badge active' : 'badge neutral', text: stateLabel }),
@@ -14578,18 +14393,15 @@ function renderMemberEntitlementSupportCard(memberUser, { error = '', searchedEm
     ]),
     el('div', { class: 'entitlement-action-divider' }),
     el('p', { class: 'muted entitlement-action-helper', text: 'Emergency overrides affect Member identity only. Google Play provider data remains intact underneath the override.' }),
-    actionsBlockedReason ? el('div', { class: 'notice warning inline-notice entitlement-safety-block', text: actionsBlockedReason }) : null,
-    memberActionAllowed
-      ? el('div', { class: 'button-row entitlement-action-row' }, [
-          el('button', { class: 'btn primary', text: 'Force Member', disabled: member?.adminOverrideMode === 'FORCE_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_MEMBER') }),
-          el('button', { class: 'btn ghost', text: 'Force non-Member', disabled: member?.adminOverrideMode === 'FORCE_NON_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_NON_MEMBER') }),
-          el('button', { class: 'btn ghost', text: 'Clear override', disabled: !member?.adminOverrideMode || member?.adminOverrideMode === 'NONE', onclick: () => openMemberOverrideModal(memberUser, 'NONE') }),
-        ])
-      : el('p', { class: 'muted subscription-read-only-note', text: 'Your admin role has read-only access to Member entitlement actions.' }),
+    el('div', { class: 'button-row entitlement-action-row' }, [
+      el('button', { class: 'btn primary', text: 'Force Member', disabled: member?.adminOverrideMode === 'FORCE_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_MEMBER') }),
+      el('button', { class: 'btn ghost', text: 'Force non-Member', disabled: member?.adminOverrideMode === 'FORCE_NON_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_NON_MEMBER') }),
+      el('button', { class: 'btn ghost', text: 'Clear override', disabled: !member?.adminOverrideMode || member?.adminOverrideMode === 'NONE', onclick: () => openMemberOverrideModal(memberUser, 'NONE') }),
+    ]),
   ]);
 }
 
-function renderProEntitlementSupportCard(summary, permissions = {}, { actionsBlockedReason = '' } = {}) {
+function renderProEntitlementSupportCard(summary, permissions = {}) {
   if (!summary) {
     return el('section', { class: 'card entitlement-support-card pro-entitlement-card entitlement-empty-card' }, [
       el('div', { class: 'entitlement-card-heading' }, [
@@ -14627,43 +14439,24 @@ function renderProEntitlementSupportCard(summary, permissions = {}, { actionsBlo
   ]);
 }
 
-function renderUnifiedEntitlementSupportWorkspace(proSummary, memberUser, permissions = {}, errors = {}) {
-  const searchedEmail = normalizedTrim(state.adminFilters.userEmail);
-  const snapshot = state.data?.entitlementWorkspaceSnapshot || buildAdminEntitlementWorkspaceSnapshot({
-    searchedEmail,
-    proSummary,
-    memberUser,
-    proError: errors.proError || '',
-    memberError: errors.memberError || '',
-  });
-  const blockedReason = snapshot.blocksMutations ? snapshot.message : '';
-  const consistencyTone = snapshot.consistency === 'VERIFIED'
-    ? 'active'
-    : snapshot.consistency === 'IDENTITY_MISMATCH'
-      ? 'danger'
-      : ['PARTIAL_LOOKUP', 'PARTIAL'].includes(snapshot.consistency) ? 'warning' : 'neutral';
-
+function renderUnifiedEntitlementSupportWorkspace(proSummary, memberUser, permissions = {}) {
+  if (!proSummary && !memberUser && !state.adminFilters.userEmail) {
+    return el('div', { class: 'card empty-state compact-empty subscription-lookup-empty' }, [
+      el('strong', { text: 'Search one exact email for all paid entitlements.' }),
+      el('p', { class: 'muted', text: 'One lookup shows Fundoralit Pro and standalone Fundoralit Member side by side while keeping their authority, provider data, and actions independent.' }),
+    ]);
+  }
   return el('section', { class: 'entitlement-support-workspace' }, [
     el('div', { class: 'entitlement-workspace-header' }, [
       el('div', {}, [
         el('p', { class: 'eyebrow', text: 'Unified entitlement workspace' }),
         el('h2', { text: state.adminFilters.userEmail || proSummary?.email || memberUser?.email || 'User entitlements' }),
-        el('p', { class: 'muted', text: 'One operational snapshot across two independent authorities. Pro and Member keep separate provider/override rules; the Admin workspace verifies account identity before allowing cross-authority support actions.' }),
+        el('p', { class: 'muted', text: 'Support Pro and Member from one user context. Actions remain isolated by entitlement so a Member override cannot mutate Pro billing, and a Pro correction cannot grant Member identity.' }),
       ]),
-      el('span', { class: `badge ${consistencyTone}`, text: snapshot.consistency.replaceAll('_', ' ') }),
     ]),
-    searchedEmail ? el('div', { class: `entitlement-consistency-strip ${consistencyTone}` }, [
-      el('strong', { text: snapshot.consistency === 'VERIFIED' ? 'Authority identity verified' : 'Authority consistency check' }),
-      el('p', { text: snapshot.message }),
-      renderMetaGrid([
-        ['Pro User ID', snapshot.proUserId || '-'],
-        ['Member User ID', snapshot.memberUserId || '-'],
-        ['Checked', formatDateTime(snapshot.checkedAt)],
-      ]),
-    ]) : null,
     el('div', { class: 'entitlement-support-grid' }, [
-      renderProEntitlementSupportCard(proSummary, permissions, { actionsBlockedReason: blockedReason }),
-      renderMemberEntitlementSupportCard(memberUser, { error: errors.memberError || '', searchedEmail, permissions, actionsBlockedReason: blockedReason }),
+      renderProEntitlementSupportCard(proSummary, permissions),
+      renderMemberEntitlementSupportCard(memberUser),
     ]),
   ]);
 }
@@ -14690,8 +14483,7 @@ async function submitMemberOverrideModal() {
   const reason = normalizedTrim(m.reason);
   if (m.mode !== 'NONE' && !reason) return validationError('Audit reason is required.', 'reason');
   const expiresAt = m.expiresAt ? fromDateTimeLocalValue(m.expiresAt) : null;
-  const path = API_PATHS.memberSupport.override(m.user.userId);
-  const result = await api(path, { method: 'POST', body: { mode: m.mode, reason: m.mode === 'NONE' ? null : reason, expiresAt } });
+  await api(API_PATHS.memberSupport.override(m.user.userId), { method: 'POST', body: { mode: m.mode, reason: m.mode === 'NONE' ? null : reason, expiresAt } });
   closeModal();
-  await refreshAfterAdminMutation('Member entitlement updated.', { path, result });
+  await refreshAfterAdminMutation('Member entitlement updated.');
 }
