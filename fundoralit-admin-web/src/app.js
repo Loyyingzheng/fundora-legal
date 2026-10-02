@@ -1433,6 +1433,17 @@ function renderFieldError(fieldKey) {
   return message ? el('small', { class: 'field-error', text: message }) : null;
 }
 
+function clearModalFieldErrorLive(input, fieldKey) {
+  if (!state.modal?.fieldErrors || !fieldKey || !state.modal.fieldErrors[fieldKey]) return;
+  delete state.modal.fieldErrors[fieldKey];
+  if (state.modal.focusFieldKey === fieldKey) state.modal.focusFieldKey = '';
+  const field = input?.closest?.('.field');
+  if (field) {
+    field.classList.remove('invalid');
+    field.querySelector('.field-error')?.remove();
+  }
+}
+
 function renderModalNotice() {
   if (state.modal?.loading) {
     return el('div', { class: 'modal-alert success modal-loading-alert', role: 'status', 'aria-live': 'polite' }, [
@@ -2626,6 +2637,14 @@ function isCriticalActionProofError(error) {
   return code === 'ADMIN_CRITICAL_ACTION_PROOF_REQUIRED'
     || message.includes('critical action proof')
     || message.includes('critical-action verification is required');
+}
+
+function isAdminRecentReauthenticationError(error) {
+  const code = normalizedTrim(extractBackendCode(error)).toUpperCase();
+  const message = normalizedTrim(error?.message || error).toLowerCase();
+  return code === 'ADMIN_REAUTHENTICATION_REQUIRED'
+    || message.includes('recent re-authentication is required')
+    || message.includes('recent reauthentication is required');
 }
 
 async function promptCriticalActionReauthentication(context = 'ADMIN_CRITICAL') {
@@ -14468,11 +14487,19 @@ function openMemberOverrideModal(user, mode) {
 function renderMemberOverrideModal() {
   const m = state.modal;
   const reason = el('textarea', { rows: '4', placeholder: m.mode === 'NONE' ? 'No reason required when clearing.' : 'Required audit reason.', 'data-field-key': 'reason' });
-  reason.value = m.reason || ''; reason.addEventListener('input', () => { m.reason = reason.value; });
+  reason.value = m.reason || '';
+  reason.addEventListener('input', () => {
+    m.reason = reason.value;
+    clearModalFieldErrorLive(reason, 'reason');
+  });
   const expiry = el('input', { type: 'datetime-local', 'data-field-key': 'expiresAt' });
-  expiry.value = m.expiresAt || ''; expiry.addEventListener('input', () => { m.expiresAt = expiry.value; });
+  expiry.value = m.expiresAt || '';
+  expiry.addEventListener('input', () => {
+    m.expiresAt = expiry.value;
+    clearModalFieldErrorLive(expiry, 'expiresAt');
+  });
   return renderControlModal('Member override', 'Member Entitlement', [
-    renderPolicySafetyNote('This changes only Fundoralit Member identity access. It does not grant or revoke Fundoralit Pro.'),
+    renderPolicySafetyNote('This changes only Fundoralit Member identity access. It does not grant or revoke Fundoralit Pro. Critical Member changes require MFA and a recent Firebase re-authentication.'),
     renderMetaGrid([['User', m.user?.email || '-'], ['Action', m.mode]]),
     el('div', { class: modalFieldClass('reason') }, [el('label', { text: 'Audit reason' }), reason, renderFieldError('reason')]),
     el('div', { class: modalFieldClass('expiresAt') }, [el('label', { text: 'Override expiry · optional' }), expiry, renderFieldError('expiresAt')]),
@@ -14480,10 +14507,50 @@ function renderMemberOverrideModal() {
 }
 async function submitMemberOverrideModal() {
   const m = state.modal;
-  const reason = normalizedTrim(m.reason);
-  if (m.mode !== 'NONE' && !reason) return validationError('Audit reason is required.', 'reason');
+  const reasonCheck = m.mode === 'NONE'
+    ? { ok: true, value: '' }
+    : requireAuditReason(m.reason, 'the Member override');
+  if (!reasonCheck.ok) return validationError(reasonCheck.message, 'reason');
   const expiresAt = m.expiresAt ? fromDateTimeLocalValue(m.expiresAt) : null;
-  await api(API_PATHS.memberSupport.override(m.user.userId), { method: 'POST', body: { mode: m.mode, reason: m.mode === 'NONE' ? null : reason, expiresAt } });
-  closeModal();
-  await refreshAfterAdminMutation('Member entitlement updated.');
+  if (m.expiresAt && !expiresAt) return validationError('Override expiry is invalid.', 'expiresAt');
+
+  state.modal.loading = true;
+  state.modal.error = '';
+  state.modal.message = '';
+  state.modal.fieldErrors = {};
+  render();
+
+  let reauthenticationAttempted = false;
+  try {
+    while (true) {
+      try {
+        await api(API_PATHS.memberSupport.override(m.user.userId), {
+          method: 'POST',
+          body: {
+            mode: m.mode,
+            reason: m.mode === 'NONE' ? null : reasonCheck.value,
+            expiresAt,
+          },
+        });
+        closeModal();
+        await refreshAfterAdminMutation('Member entitlement updated.');
+        return;
+      } catch (error) {
+        if (!isAdminRecentReauthenticationError(error) || reauthenticationAttempted) throw error;
+        reauthenticationAttempted = true;
+        const verified = await promptCriticalActionReauthentication('MEMBER_OVERRIDE');
+        if (!verified) throw error;
+        // Backend recent-auth state and Firebase auth_time are now refreshed.
+        // Retry the exact Member override once; never replay other 401 responses.
+      }
+    }
+  } catch (error) {
+    if (state.modal) {
+      state.modal.loading = false;
+      setModalError(error, '');
+    } else {
+      setMessage(error, true);
+      render();
+    }
+  }
 }
