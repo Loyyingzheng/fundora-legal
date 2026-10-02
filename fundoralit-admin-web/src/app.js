@@ -4099,6 +4099,15 @@ async function loadAdminControlData(loadRequest) {
     const pendingRequests = Array.isArray(pendingPayload.items) ? pendingPayload.items : normalizeAdminListResponse(pendingRequestsResponse);
     const subscriptionUsers = (Array.isArray(userPayload.items) ? userPayload.items : normalizeAdminListResponse(users)).map(normalizeSubscriptionUserSummary);
     const exactUser = exactUserPayload.user || exactUserPayload.item || exactUserPayload.subscription || exactUserPayload;
+    const exactMemberUserBase = exactMemberPayload.user || exactMemberPayload.item || exactMemberPayload.account || exactMemberPayload;
+    const exactMemberEntitlement = exactMemberPayload.member
+      || exactMemberPayload.entitlement
+      || exactMemberUserBase?.member
+      || exactMemberUserBase?.entitlement
+      || null;
+    const exactMemberUser = memberUser && !memberUser.lookupError
+      ? { ...exactMemberUserBase, ...(exactMemberEntitlement ? { member: exactMemberEntitlement } : {}) }
+      : null;
     if (!isLoadRequestCurrent(loadRequest)) return;
     setScopedData({
       content: requestItems,
@@ -4106,9 +4115,16 @@ async function loadAdminControlData(loadRequest) {
       subscriptionUsers,
       userSummary: user && !user.lookupError ? normalizeSubscriptionUserSummary(exactUser) : null,
       lookupError: user?.lookupError || '',
-      memberSupportUser: memberUser && !memberUser.lookupError ? (exactMemberPayload.user || exactMemberPayload.item || exactMemberPayload) : null,
+      memberSupportUser: exactMemberUser,
       memberLookupError: memberUser?.lookupError || '',
-      permissions: { ...(userPayload.permissions || {}), ...(exactUserPayload.permissions || {}), ...(pendingPayload.permissions || {}), ...(requestPayload.permissions || {}) },
+      permissions: {
+        ...(userPayload.permissions || {}),
+        ...(exactUserPayload.permissions || {}),
+        ...(exactMemberPayload.permissions || {}),
+        ...(exactMemberUserBase?.permissions || {}),
+        ...(pendingPayload.permissions || {}),
+        ...(requestPayload.permissions || {}),
+      },
       page: 0,
       size: 200,
       totalElements: requestItems.length,
@@ -13503,11 +13519,11 @@ function renderAdminControlPage() {
         el('span', { text: 'User view: one exact email loads both Pro and standalone Member. Each entitlement keeps its own provider truth, override rules, and actions; partial lookup failures are shown without hiding the healthy entitlement.' }),
       ]));
       if (state.data?.lookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.lookupError }));
-      if (state.data?.memberLookupError) children.push(el('div', { class: 'notice warning inline-notice', text: state.data.memberLookupError }));
       children.push(renderUnifiedEntitlementSupportWorkspace(
         state.data?.userSummary,
         state.data?.memberSupportUser,
         state.data?.permissions || {},
+        { proError: state.data?.lookupError || '', memberError: state.data?.memberLookupError || '' },
       ));
       children.push(el('div', { class: 'section-title-row subscription-section-title' }, [
         el('div', {}, [el('h2', { text: 'User subscriptions' }), el('p', { class: 'muted section-helper', text: 'Effective entitlement records from the subscription user source of truth.' })]),
@@ -14337,27 +14353,46 @@ if (headerMenuButton) {
 boot();
 
 
-function renderMemberEntitlementSupportCard(memberUser) {
+function renderMemberEntitlementSupportCard(memberUser, { error = '', searchedEmail = '', permissions = {} } = {}) {
+  const hasSearch = Boolean(normalizedTrim(searchedEmail));
+  if (error) {
+    return el('section', { class: 'card entitlement-support-card member-entitlement-card entitlement-error-card' }, [
+      el('div', { class: 'entitlement-card-heading' }, [
+        el('div', {}, [
+          el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
+          el('h3', { text: searchedEmail || 'Standalone identity entitlement' }),
+          el('p', { class: 'muted', text: 'Member lookup failed independently. Pro support remains available.' }),
+        ]),
+        el('span', { class: 'badge danger', text: 'LOOKUP ERROR' }),
+      ]),
+      el('div', { class: 'notice warning inline-notice', text: error }),
+      el('div', { class: 'button-row entitlement-action-row' }, [
+        el('button', { class: 'btn ghost small', text: 'Retry Member lookup', onclick: () => loadData({ force: true }) }),
+      ]),
+    ]);
+  }
   if (!memberUser) {
     return el('section', { class: 'card entitlement-support-card member-entitlement-card entitlement-empty-card' }, [
       el('div', { class: 'entitlement-card-heading' }, [
         el('div', {}, [
           el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
-          el('h3', { text: 'Standalone identity entitlement' }),
+          el('h3', { text: hasSearch ? searchedEmail : 'Standalone identity entitlement' }),
+          el('p', { class: 'muted', text: hasSearch ? 'No Member entitlement record was returned for this user.' : 'Search an exact user email to inspect Member state.' }),
         ]),
-        el('span', { class: 'badge neutral', text: 'NO RESULT' }),
+        el('span', { class: 'badge neutral', text: hasSearch ? 'NO MEMBER RECORD' : 'READY' }),
       ]),
-      el('p', { class: 'muted', text: 'Search an exact user email to inspect Member state. Member is independent from Fundoralit Pro.' }),
+      el('p', { class: 'muted', text: 'Member is independent from Fundoralit Pro. A missing Member record must not be interpreted as Pro status.' }),
     ]);
   }
   const member = memberUser?.member || memberUser?.entitlement || {};
   const active = Boolean(member?.active);
   const stateLabel = active ? 'MEMBER ACTIVE' : 'NON-MEMBER';
+  const memberActionAllowed = permissions?.canManageMemberSupport !== false && permissions?.canOverrideMember !== false;
   return el('section', { class: 'card entitlement-support-card member-entitlement-card' }, [
     el('div', { class: 'entitlement-card-heading' }, [
       el('div', {}, [
         el('p', { class: 'eyebrow', text: 'Fundoralit Member' }),
-        el('h3', { text: memberUser.email || 'Member entitlement' }),
+        el('h3', { text: memberUser.email || searchedEmail || 'Member entitlement' }),
         el('p', { class: 'muted', text: 'Identity entitlement · independent from Pro feature access' }),
       ]),
       el('span', { class: active ? 'badge active' : 'badge neutral', text: stateLabel }),
@@ -14375,11 +14410,13 @@ function renderMemberEntitlementSupportCard(memberUser) {
     ]),
     el('div', { class: 'entitlement-action-divider' }),
     el('p', { class: 'muted entitlement-action-helper', text: 'Emergency overrides affect Member identity only. Google Play provider data remains intact underneath the override.' }),
-    el('div', { class: 'button-row entitlement-action-row' }, [
-      el('button', { class: 'btn primary', text: 'Force Member', disabled: member?.adminOverrideMode === 'FORCE_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Force non-Member', disabled: member?.adminOverrideMode === 'FORCE_NON_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_NON_MEMBER') }),
-      el('button', { class: 'btn ghost', text: 'Clear override', disabled: !member?.adminOverrideMode || member?.adminOverrideMode === 'NONE', onclick: () => openMemberOverrideModal(memberUser, 'NONE') }),
-    ]),
+    memberActionAllowed
+      ? el('div', { class: 'button-row entitlement-action-row' }, [
+          el('button', { class: 'btn primary', text: 'Force Member', disabled: member?.adminOverrideMode === 'FORCE_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_MEMBER') }),
+          el('button', { class: 'btn ghost', text: 'Force non-Member', disabled: member?.adminOverrideMode === 'FORCE_NON_MEMBER', onclick: () => openMemberOverrideModal(memberUser, 'FORCE_NON_MEMBER') }),
+          el('button', { class: 'btn ghost', text: 'Clear override', disabled: !member?.adminOverrideMode || member?.adminOverrideMode === 'NONE', onclick: () => openMemberOverrideModal(memberUser, 'NONE') }),
+        ])
+      : el('p', { class: 'muted subscription-read-only-note', text: 'Your admin role has read-only access to Member entitlement actions.' }),
   ]);
 }
 
@@ -14421,13 +14458,8 @@ function renderProEntitlementSupportCard(summary, permissions = {}) {
   ]);
 }
 
-function renderUnifiedEntitlementSupportWorkspace(proSummary, memberUser, permissions = {}) {
-  if (!proSummary && !memberUser && !state.adminFilters.userEmail) {
-    return el('div', { class: 'card empty-state compact-empty subscription-lookup-empty' }, [
-      el('strong', { text: 'Search one exact email for all paid entitlements.' }),
-      el('p', { class: 'muted', text: 'One lookup shows Fundoralit Pro and standalone Fundoralit Member side by side while keeping their authority, provider data, and actions independent.' }),
-    ]);
-  }
+function renderUnifiedEntitlementSupportWorkspace(proSummary, memberUser, permissions = {}, errors = {}) {
+  const searchedEmail = normalizedTrim(state.adminFilters.userEmail);
   return el('section', { class: 'entitlement-support-workspace' }, [
     el('div', { class: 'entitlement-workspace-header' }, [
       el('div', {}, [
@@ -14438,7 +14470,7 @@ function renderUnifiedEntitlementSupportWorkspace(proSummary, memberUser, permis
     ]),
     el('div', { class: 'entitlement-support-grid' }, [
       renderProEntitlementSupportCard(proSummary, permissions),
-      renderMemberEntitlementSupportCard(memberUser),
+      renderMemberEntitlementSupportCard(memberUser, { error: errors.memberError || '', searchedEmail, permissions }),
     ]),
   ]);
 }
