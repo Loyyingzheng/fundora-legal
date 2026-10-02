@@ -3572,10 +3572,10 @@ async function loadData(options = {}) {
   const loadRequest = beginLoadRequest(state.activeTab);
   if (state.activeTab === 'feedback') {
     if (state.feedbackView === 'SYSTEM_DIAGNOSTICS') {
-      loadDiagnosticQueueCounts(loadRequest).catch(() => {});
+      loadDiagnosticQueueCounts(loadRequest, { renderAfter: !background }).catch(() => {});
     } else {
       loadFeedbackOptions(loadRequest).catch(() => {});
-      loadFeedbackQueueCounts(loadRequest).catch(() => {});
+      loadFeedbackQueueCounts(loadRequest, { renderAfter: !background }).catch(() => {});
     }
   }
   state.loading = background ? false : true;
@@ -3631,7 +3631,7 @@ async function loadData(options = {}) {
     if (!getScopedData()) clearScopedData(loadRequest.tab);
     setMessage(toFriendlyErrorMessage(error, 'Failed to load admin data.'), true);
   } finally {
-    finishLoadRequest(loadRequest);
+    finishLoadRequest(loadRequest, { renderAfter: !background });
   }
 }
 
@@ -3646,13 +3646,13 @@ async function loadFeedbackOptions() {
   return state.feedbackOptions;
 }
 
-async function loadFeedbackQueueCounts(loadRequest = null) {
+async function loadFeedbackQueueCounts(loadRequest = null, { renderAfter = true } = {}) {
   if (!state.user || state.activeTab !== 'feedback') return state.feedbackQueueCounts;
   try {
     const response = await api(API_PATHS.feedback.queueCounts);
     if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
       state.feedbackQueueCounts = response || null;
-      render();
+      if (renderAfter) render();
     }
   } catch (_) {
     if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
@@ -3663,13 +3663,13 @@ async function loadFeedbackQueueCounts(loadRequest = null) {
 }
 
 
-async function loadDiagnosticQueueCounts(loadRequest = null) {
+async function loadDiagnosticQueueCounts(loadRequest = null, { renderAfter = true } = {}) {
   if (!state.user || state.activeTab !== 'feedback' || state.feedbackView !== 'SYSTEM_DIAGNOSTICS') return state.diagnosticQueueCounts;
   try {
     const response = await api(API_PATHS.feedback.diagnosticQueueCounts);
     if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
       state.diagnosticQueueCounts = response || null;
-      render();
+      if (renderAfter) render();
     }
   } catch (_) {
     if (!loadRequest || isLoadRequestCurrent(loadRequest)) {
@@ -3687,7 +3687,7 @@ async function loadDiagnosticDetail(issueId, { force = false, renderAfter = true
 
   const entry = { ...(current || {}), loading: true, error: '', data: current?.data || null };
   state.diagnosticDetails = { ...(state.diagnosticDetails || {}), [issueId]: entry };
-  if (renderAfter) render();
+  if (renderAfter && !rerenderScopedItem('diagnostic', issueId)) render();
 
   const promise = api(API_PATHS.feedback.diagnosticDetail(issueId))
     .then((response) => {
@@ -3695,7 +3695,7 @@ async function loadDiagnosticDetail(issueId, { force = false, renderAfter = true
         ...(state.diagnosticDetails || {}),
         [issueId]: { loading: false, error: '', data: response || null, promise: null },
       };
-      if (renderAfter) render();
+      if (renderAfter && !rerenderScopedItem('diagnostic', issueId)) render();
       return response || null;
     })
     .catch((error) => {
@@ -3708,7 +3708,7 @@ async function loadDiagnosticDetail(issueId, { force = false, renderAfter = true
           promise: null,
         },
       };
-      if (renderAfter) render();
+      if (renderAfter && !rerenderScopedItem('diagnostic', issueId)) render();
       throw error;
     });
 
@@ -3724,7 +3724,7 @@ async function loadFeedbackDetail(feedbackId, { force = false, renderAfter = tru
 
   const entry = { ...(current || {}), loading: true, error: '', data: current?.data || null };
   state.feedbackDetails = { ...(state.feedbackDetails || {}), [feedbackId]: entry };
-  if (renderAfter) render();
+  if (renderAfter && !rerenderScopedItem('feedback', feedbackId)) render();
 
   const promise = api(API_PATHS.feedback.detail(feedbackId))
     .then((response) => {
@@ -3732,7 +3732,7 @@ async function loadFeedbackDetail(feedbackId, { force = false, renderAfter = tru
         ...(state.feedbackDetails || {}),
         [feedbackId]: { loading: false, error: '', data: response || null, promise: null },
       };
-      if (renderAfter) render();
+      if (renderAfter && !rerenderScopedItem('feedback', feedbackId)) render();
       return response || null;
     })
     .catch((error) => {
@@ -3745,7 +3745,7 @@ async function loadFeedbackDetail(feedbackId, { force = false, renderAfter = tru
           promise: null,
         },
       };
-      if (renderAfter) render();
+      if (renderAfter && !rerenderScopedItem('feedback', feedbackId)) render();
       throw error;
     });
 
@@ -4372,13 +4372,13 @@ async function patchAction(path, successMessage, body) {
 }
 
 function applyFeedbackMutationResult(path, result) {
-  if (!String(path || '').startsWith('/api/feedback/admin/') || !result?.id) return;
+  if (!String(path || '').startsWith('/api/feedback/admin/') || !result?.id) return null;
   const previousDetail = state.feedbackDetails?.[result.id]?.data || null;
   const mergedDetail = previousDetail ? { ...previousDetail, ...result } : result;
   mergeFeedbackDetailIntoList(mergedDetail);
 
   const scoped = getScopedData();
-  if (!Array.isArray(scoped?.content)) return;
+  if (!Array.isArray(scoped?.content)) return { scope: 'feedback', itemId: String(result.id) };
   const isClose = String(path).endsWith('/close');
   const isReopen = String(path).endsWith('/reopen');
   const queue = String(state.feedbackQueue || '').toUpperCase();
@@ -4386,6 +4386,7 @@ function applyFeedbackMutationResult(path, result) {
     scoped.content = scoped.content.filter((item) => item?.id !== result.id);
     scoped.totalElements = Math.max(0, Number(scoped.totalElements || 0) - 1);
   }
+  return { scope: 'feedback', itemId: String(result.id), removed: !scoped.content.some((item) => String(item?.id ?? '') === String(result.id)) };
 }
 
 function refreshCurrentAdminViewInBackground() {
@@ -4398,17 +4399,24 @@ function refreshCurrentAdminViewInBackground() {
 }
 
 async function refreshAfterAdminMutation(successMessage, { path = '', result = null } = {}) {
-  // The authoritative mutation has already committed on the server. Release the
-  // button/modal immediately and refresh the active tab in the background instead
-  // of making the user wait for a second full GET round-trip.
-  applyFeedbackMutationResult(path, result);
+  // The mutation response is authoritative for the touched record. Merge it into
+  // the visible read model and repaint only that record whenever possible. The
+  // follow-up list refresh is silent: it refreshes cache/state without replacing
+  // the whole page, so scroll position, expanded rows, inputs and modal work are
+  // never interrupted by a mutation the admin already completed.
+  const feedbackTarget = applyFeedbackMutationResult(path, result);
+  const genericTarget = feedbackTarget || mergeMutationResultIntoCurrentList(result);
   state.learningConsoleReadModel = null;
   setMessage(successMessage || 'Updated successfully.');
   state.modal = null;
   state.actionLoadingKey = '';
   state.actionLoadingMessage = '';
   state.loading = false;
-  render();
+
+  const rowUpdated = genericTarget && !genericTarget.removed
+    ? rerenderScopedItem(genericTarget.scope, genericTarget.itemId)
+    : false;
+  if (!rowUpdated) render();
   refreshCurrentAdminViewInBackground();
 }
 
@@ -6594,7 +6602,68 @@ function renderCollapsibleItem({ title, subtitle, statusNode, children, scope = 
     setItemExpanded(scope, itemId, details.open);
     if (typeof onToggle === 'function') onToggle(details.open);
   });
-  return el('article', { class: 'item collapsible-item' }, [details]);
+  return el('article', {
+    class: 'item collapsible-item',
+    'data-admin-item-scope': scope || '',
+    'data-admin-item-id': itemId == null ? '' : String(itemId),
+  }, [details]);
+}
+
+
+function cssEscapeValue(value) {
+  const text = String(value ?? '');
+  if (globalThis.CSS?.escape) return globalThis.CSS.escape(text);
+  return text.replace(/([\\"'\[\]#.:>+~*=()])/g, '\\$1');
+}
+
+function findCurrentScopedItem(scope, itemId) {
+  const items = normalizeAdminListResponse(getScopedData());
+  const target = String(itemId ?? '');
+  if (!target) return null;
+  if (scope === 'diagnostic') {
+    return items.find((item) => String(item?.issueId ?? '') === target) || null;
+  }
+  return items.find((item) => String(item?.id ?? '') === target) || null;
+}
+
+function rendererForScopedItem(scope) {
+  if (scope === 'feedback') return renderFeedbackItem;
+  if (scope === 'diagnostic') return renderDiagnosticIssueItem;
+  if (scope === 'premium') return renderPremiumItem;
+  if (scope === 'reviewPrompt') return renderReviewPromptItem;
+  return null;
+}
+
+function rerenderScopedItem(scope, itemId) {
+  const renderer = rendererForScopedItem(scope);
+  const item = findCurrentScopedItem(scope, itemId);
+  if (!renderer || !item) return false;
+  const selector = `[data-admin-item-scope="${cssEscapeValue(scope)}"][data-admin-item-id="${cssEscapeValue(itemId)}"]`;
+  const current = mainContent.querySelector(selector);
+  if (!current) return false;
+  const next = renderer(item);
+  current.replaceWith(next);
+  syncNavigationPresentation();
+  return true;
+}
+
+function mergeMutationResultIntoCurrentList(result) {
+  if (!result || typeof result !== 'object') return null;
+  const scoped = getScopedData();
+  if (!Array.isArray(scoped?.content)) return null;
+  const resultKey = result.issueId ?? result.id;
+  if (resultKey == null || resultKey === '') return null;
+  const key = String(resultKey);
+  let matchedScope = null;
+  let changed = false;
+  scoped.content = scoped.content.map((item) => {
+    const itemKey = result.issueId != null ? item?.issueId : item?.id;
+    if (String(itemKey ?? '') !== key) return item;
+    changed = true;
+    matchedScope = result.issueId != null ? 'diagnostic' : state.activeTab === 'premium' ? 'premium' : state.activeTab === 'feedback' ? 'feedback' : 'reviewPrompt';
+    return { ...item, ...result };
+  });
+  return changed ? { scope: matchedScope, itemId: key } : null;
 }
 
 
@@ -6897,13 +6966,14 @@ async function updateDiagnosticIssueStatus(issueId, status, { resolutionNote = n
         ...(state.diagnosticDetails || {}),
         [result.issueId]: { loading: false, error: '', data: result, promise: null },
       };
+      mergeMutationResultIntoCurrentList(result);
     }
     state.diagnosticQueueCounts = null;
-    clearScopedData('feedback');
     setMessage(status === 'RESOLVED' ? 'System diagnostic resolved.' : `System diagnostic marked ${getStatusLabel(status).toLowerCase()}.`);
     state.actionLoadingKey = '';
     state.actionLoadingMessage = '';
-    await loadData({ force: true });
+    if (!rerenderScopedItem('diagnostic', result?.issueId || issueId)) render();
+    refreshCurrentAdminViewInBackground();
   } catch (error) {
     state.actionLoadingKey = '';
     state.actionLoadingMessage = '';
@@ -6929,11 +6999,17 @@ async function mergeDiagnosticIssues(targetIssueId, sourceIssueId) {
     };
     delete state.diagnosticDetails[sourceIssueId];
     state.diagnosticQueueCounts = null;
-    clearScopedData('feedback');
+    const scoped = getScopedData();
+    if (Array.isArray(scoped?.content)) {
+      scoped.content = scoped.content.filter((item) => String(item?.issueId || '') !== String(sourceIssueId));
+      if (result?.issueId) scoped.content = scoped.content.map((item) => String(item?.issueId || '') === String(result.issueId) ? { ...item, ...result } : item);
+      scoped.totalElements = Math.max(0, Number(scoped.totalElements || 0) - 1);
+    }
     state.actionLoadingKey = '';
     state.actionLoadingMessage = '';
     setMessage('Related diagnostic merged into the canonical issue.');
-    await loadData({ force: true });
+    render();
+    refreshCurrentAdminViewInBackground();
   } catch (error) {
     state.actionLoadingKey = '';
     state.actionLoadingMessage = '';
@@ -14685,6 +14761,18 @@ function showAdminRenderFailureOverlay(error) {
 }
 
 function render() {
+  // Full renders are reserved for structural changes (tab/filter/modal/list-shape).
+  // Preserve the admin's physical context so even those renders do not jump the
+  // viewport or unexpectedly move keyboard focus.
+  const previousScrollX = window.scrollX || 0;
+  const previousScrollY = window.scrollY || 0;
+  const active = document.activeElement;
+  const focusKey = active && mainContent.contains(active)
+    ? (active.getAttribute('data-field-key') || active.id || active.name || '')
+    : '';
+  const selectionStart = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+  const selectionEnd = active && typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
+
   // Build the complete next view before touching the live DOM. If any renderer
   // throws, the last-known-good Admin UI remains visible instead of becoming blank.
   try {
@@ -14699,6 +14787,19 @@ function render() {
     mainContent.appendChild(nextRoot);
     lastRenderErrorMessage = '';
     syncNavigationPresentation();
+    window.scrollTo(previousScrollX, previousScrollY);
+    if (focusKey) {
+      const escaped = cssEscapeValue(focusKey);
+      const nextFocus = mainContent.querySelector(`[data-field-key="${escaped}"]`)
+        || mainContent.querySelector(`#${escaped}`)
+        || mainContent.querySelector(`[name="${escaped}"]`);
+      if (nextFocus?.focus) {
+        nextFocus.focus({ preventScroll: true });
+        if (selectionStart != null && typeof nextFocus.setSelectionRange === 'function') {
+          try { nextFocus.setSelectionRange(selectionStart, selectionEnd ?? selectionStart); } catch (_) {}
+        }
+      }
+    }
   } catch (error) {
     showAdminRenderFailureOverlay(error);
     try { syncNavigationPresentation(); } catch (_) {}
