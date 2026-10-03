@@ -8434,7 +8434,7 @@ function renderPolicyDefinitionModal() {
   const supportsUnlimited = el('input', { type: 'checkbox' }); supportsUnlimited.checked = Boolean(modal.supportsUnlimited); supportsUnlimited.addEventListener('change', () => { modal.supportsUnlimited = supportsUnlimited.checked; });
   const supportsPeriod = el('input', { type: 'checkbox' }); supportsPeriod.checked = Boolean(modal.supportsPeriod); supportsPeriod.addEventListener('change', () => { modal.supportsPeriod = supportsPeriod.checked; });
   const visible = el('input', { type: 'checkbox' }); visible.checked = Boolean(modal.visibleInPlanMatrix); visible.addEventListener('change', () => { modal.visibleInPlanMatrix = visible.checked; });
-  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
+  const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; clearMemberNameStyleEnableErrorIfReady(modal); });
   return renderControlModal(modal.isCreate ? 'Add policy definition' : 'Edit policy definition', 'Policy Registry', [
     renderMetaGrid([['Mode', modal.isCreate ? 'Create' : 'Edit'], ['Policy ID', modal.id || 'New']]),
     el('div', { class: 'form-grid two' }, [
@@ -14044,6 +14044,21 @@ const MEMBER_NAME_STYLE_LICENSE_PRESETS = Object.freeze({
   'Custom': { label: 'Custom / other license', locked: false },
 });
 
+
+const MEMBER_NAME_STYLE_SCRIPT_SLOTS = Object.freeze([
+  { code: 'LATIN', label: 'English / Malay', sample: 'Fundoralit Member 123' },
+  { code: 'HAN', label: 'Chinese', sample: '会员名字 財務目標' },
+  { code: 'TAMIL', label: 'Tamil', sample: 'தமிழ் உறுப்பினர் பெயர்' },
+  { code: 'JAPANESE', label: 'Japanese', sample: 'ひらがな カタカナ 日本' },
+  { code: 'KOREAN', label: 'Korean', sample: '한글 회원 이름' },
+]);
+const memberNameStyleAssetsMap = (item = {}) => {
+  const out = {};
+  const rows = Array.isArray(item.assets) ? item.assets : [];
+  rows.forEach((asset) => { const code = String(asset?.scriptCode || asset?.script_code || '').toUpperCase(); if (code) out[code] = { ...asset, scriptCode: code, file: null, fileName: '' }; });
+  if (!out.LATIN && (item.assetPath || item.asset_path)) out.LATIN = { scriptCode:'LATIN', assetVersion:item.assetVersion||item.asset_version||1, assetBucket:item.assetBucket||item.asset_bucket, assetPath:item.assetPath||item.asset_path, assetSha256:item.assetSha256||item.asset_sha256, mimeType:item.mimeType||item.mime_type, assetBytes:item.assetBytes||item.asset_bytes||0, file:null, fileName:'' };
+  return out;
+};
 function normalizeMemberNameStyleLicensePreset(value) {
   const raw = String(value || '').trim();
   const upper = raw.toUpperCase();
@@ -14066,6 +14081,45 @@ function applyMemberNameStyleLicensePreset(modal, presetKey) {
     modal.redistributionAllowed = Boolean(preset.redistributionAllowed);
     modal.attributionRequired = Boolean(preset.attributionRequired);
   }
+}
+
+function memberNameStyleEffectiveLicensePolicy(source) {
+  const presetKey = normalizeMemberNameStyleLicensePreset(source?.licensePreset || source?.licenseType || source?.license_type || '');
+  const preset = MEMBER_NAME_STYLE_LICENSE_PRESETS[presetKey] || MEMBER_NAME_STYLE_LICENSE_PRESETS[''];
+  if (preset.locked) {
+    return {
+      presetKey,
+      licenseType: presetKey,
+      commercialUseAllowed: Boolean(preset.commercialUseAllowed),
+      redistributionAllowed: Boolean(preset.redistributionAllowed),
+      attributionRequired: Boolean(preset.attributionRequired),
+    };
+  }
+  return {
+    presetKey,
+    licenseType: source?.licenseType || source?.license_type || null,
+    commercialUseAllowed: Boolean(source?.commercialUseAllowed ?? source?.commercial_use_allowed),
+    redistributionAllowed: Boolean(source?.redistributionAllowed ?? source?.redistribution_allowed),
+    attributionRequired: Boolean(source?.attributionRequired ?? source?.attribution_required),
+  };
+}
+
+function memberNameStyleEnableReadiness(source) {
+  const policy = memberNameStyleEffectiveLicensePolicy(source || {});
+  const assets = source?.assetsByScript || memberNameStyleAssetsMap(source);
+  const latin = assets?.LATIN || {};
+  const hasAsset = Boolean(latin?.file || latin?.assetPath || latin?.asset_path || source?.assetFile || source?.assetPath || source?.asset_path);
+  return {
+    ready: hasAsset && policy.commercialUseAllowed && policy.redistributionAllowed,
+    hasAsset,
+    ...policy,
+  };
+}
+
+function clearMemberNameStyleEnableErrorIfReady(modal) {
+  if (!modal?.error) return;
+  const readiness = memberNameStyleEnableReadiness(modal);
+  if (readiness.ready && /font asset and license requirements/i.test(String(modal.error))) modal.error = '';
 }
 
 function memberNameStyleUpdateBody(item, overrides = {}) {
@@ -14100,14 +14154,25 @@ function memberNameStyleUpdateBody(item, overrides = {}) {
 
 async function setMemberNameStyleAvailability(item, nextEnabled) {
   if (!item?.id) return;
-  if (nextEnabled && (!(item.assetPath || item.asset_path) || !(item.commercialUseAllowed || item.commercial_use_allowed) || !(item.redistributionAllowed || item.redistribution_allowed))) {
+  const readiness = memberNameStyleEnableReadiness(item);
+  if (nextEnabled && !readiness.ready) {
     openMemberNameStyleModal(item);
     state.modal.enabled = true;
     state.modal.error = 'Complete the font asset and license requirements below before enabling this style.';
     return render();
   }
   try {
-    await api(API_PATHS.memberNameStyles.update(item.id), { method: 'PATCH', body: memberNameStyleUpdateBody(item, { enabled: Boolean(nextEnabled) }) });
+    const overrides = { enabled: Boolean(nextEnabled) };
+    // Known license presets are authoritative policy presets. Persist the derived flags in the same
+    // atomic PATCH that enables the style so legacy rows with stale false flags can recover without
+    // re-uploading an already valid font asset.
+    if (nextEnabled && readiness.presetKey && MEMBER_NAME_STYLE_LICENSE_PRESETS[readiness.presetKey]?.locked) {
+      overrides.licenseType = readiness.licenseType;
+      overrides.commercialUseAllowed = readiness.commercialUseAllowed;
+      overrides.redistributionAllowed = readiness.redistributionAllowed;
+      overrides.attributionRequired = readiness.attributionRequired;
+    }
+    await api(API_PATHS.memberNameStyles.update(item.id), { method: 'PATCH', body: memberNameStyleUpdateBody(item, overrides) });
     await refreshAfterAdminMutation(nextEnabled ? 'Member name style enabled.' : 'Member name style disabled.');
   } catch (error) {
     state.error = toFriendlyErrorMessage(error, nextEnabled ? 'Unable to enable Member name style.' : 'Unable to disable Member name style.');
@@ -14145,13 +14210,13 @@ function renderMemberNameStyleItem(item) {
   const eligibility = String(item.eligibilityType || item.eligibility_type || 'MEMBER').toUpperCase() === 'ALL' ? 'All users' : 'Members only';
   return renderCollapsibleItem({
     title: item.title || item.code || 'Member name style',
-    subtitle: `${eligibility} · ${Array.isArray(item.supportedScripts) ? item.supportedScripts.join(', ') : (item.supported_scripts || 'LATIN')}`,
+    subtitle: `${eligibility} · ${(Array.isArray(item.assets) ? item.assets.length : 0) || 1} language font asset(s)`,
     statusNode: el('span', { class: `badge ${enabled ? 'success' : 'neutral'}`, text: enabled ? 'Available' : 'Disabled' }),
     children: [
       item.previewUrl || item.preview_url ? el('img', { src: item.previewUrl || item.preview_url, alt: `${item.title || item.code} preview`, style: 'display:block;width:220px;max-width:100%;height:64px;object-fit:contain;border:1px solid #e5e7eb;border-radius:12px;background:#fff;margin:4px 0 12px;' }) : null,
       renderMetaGrid([
-        ['Stable code', item.code || '—'], ['Asset version', item.assetVersion || item.asset_version || 1],
-        ['Font file', item.mimeType || item.mime_type || '—'], ['Sort order', item.sortOrder ?? item.sort_order ?? 0],
+        ['Stable code', item.code || '—'], ['Languages', (Array.isArray(item.assets) ? item.assets.map((x)=>x.scriptCode||x.script_code).join(', ') : (item.supportedScripts||item.supported_scripts||['LATIN']).join?.(', ') || 'LATIN')],
+        ['Font assets', `${Array.isArray(item.assets) ? item.assets.length : (item.assetPath||item.asset_path?1:0)} / ${MEMBER_NAME_STYLE_SCRIPT_SLOTS.length}`], ['Sort order', item.sortOrder ?? item.sort_order ?? 0],
         ['Commercial use', item.commercialUseAllowed || item.commercial_use_allowed ? 'Allowed' : 'Not confirmed'],
         ['Redistribution', item.redistributionAllowed || item.redistribution_allowed ? 'Allowed' : 'Not confirmed'],
         ['Updated', formatDate(item.updatedAt || item.updated_at)],
@@ -14195,10 +14260,15 @@ function openMemberNameStyleModal(item) {
     attributionRequired: Boolean(item?.attributionRequired || item?.attribution_required),
     assetFile: null,
     assetFileName: '',
+    assetsByScript: memberNameStyleAssetsMap(item || {}),
     reason: '',
     loading: false,
     error: '',
   };
+  // Existing rows may predate license presets and therefore persist false policy flags even
+  // when licenseType is a known license such as OFL-1.1. Normalize the effective policy when
+  // opening the editor so the UI and enable gate reflect the license authority, not stale flags.
+  if (state.modal.licensePreset) applyMemberNameStyleLicensePreset(state.modal, state.modal.licensePreset);
   render();
 }
 
@@ -14206,7 +14276,7 @@ function openMemberNameStyleModal(item) {
 async function validateMemberNameStyleFontFile(file) {
   if (!file) throw new Error('Choose a TTF or OTF font file.');
   if (file.size <= 0) throw new Error('Font file is empty.');
-  if (file.size > 2 * 1024 * 1024) throw new Error('Font must be 2 MB or smaller.');
+  if (file.size > 20 * 1024 * 1024) throw new Error('Font must be 20 MB or smaller. Large CJK fonts should still be subsetted when possible.');
   const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
   if (bytes.length < 12) throw new Error('Font file is incomplete.');
   const isTtf = bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00;
@@ -14225,8 +14295,7 @@ function renderMemberNameStyleModal() {
   const title = el('input', { value: modal.title || '', placeholder: 'Royal / Luxury / Elegant…' }); title.addEventListener('input', () => { modal.title = title.value; });
   const description = el('textarea', { rows: '2', placeholder: 'Short user-facing description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
   const sortOrder = el('input', { type: 'number', value: String(modal.sortOrder || 0) }); sortOrder.addEventListener('input', () => { modal.sortOrder = Number(sortOrder.value || 0); });
-  const scripts = el('input', { value: modal.supportedScripts || 'LATIN', placeholder: 'LATIN,HAN' }); scripts.addEventListener('input', () => { modal.supportedScripts = scripts.value; });
-  const licensePreset = select(Object.keys(MEMBER_NAME_STYLE_LICENSE_PRESETS), modal.licensePreset || '', (value) => { applyMemberNameStyleLicensePreset(modal, value); render(); });
+  const licensePreset = select(Object.keys(MEMBER_NAME_STYLE_LICENSE_PRESETS), modal.licensePreset || '', (value) => { applyMemberNameStyleLicensePreset(modal, value); clearMemberNameStyleEnableErrorIfReady(modal); render(); });
   [...licensePreset.options].forEach((option) => { option.textContent = MEMBER_NAME_STYLE_LICENSE_PRESETS[option.value]?.label || option.value; });
   const activeLicensePreset = MEMBER_NAME_STYLE_LICENSE_PRESETS[modal.licensePreset || ''] || MEMBER_NAME_STYLE_LICENSE_PRESETS[''];
   const licenseType = el('input', { value: modal.licenseType || '', placeholder: 'OFL-1.1 / Commercial license', disabled: Boolean(activeLicensePreset.locked) }); licenseType.addEventListener('input', () => { modal.licenseType = licenseType.value; });
@@ -14237,22 +14306,22 @@ function renderMemberNameStyleModal() {
   const commercial = el('input', { type: 'checkbox', disabled: Boolean(activeLicensePreset.locked) }); commercial.checked = Boolean(modal.commercialUseAllowed); commercial.addEventListener('change', () => { modal.commercialUseAllowed = commercial.checked; });
   const redistribute = el('input', { type: 'checkbox', disabled: Boolean(activeLicensePreset.locked) }); redistribute.checked = Boolean(modal.redistributionAllowed); redistribute.addEventListener('change', () => { modal.redistributionAllowed = redistribute.checked; });
   const attribution = el('input', { type: 'checkbox', disabled: Boolean(activeLicensePreset.locked) }); attribution.checked = Boolean(modal.attributionRequired); attribution.addEventListener('change', () => { modal.attributionRequired = attribution.checked; });
-  const file = el('input', { type: 'file', accept: '.ttf,.otf,font/ttf,font/otf' });
-  file.addEventListener('change', async () => {
-    const selected = file.files?.[0];
-    if (!selected) return;
-    try {
-      await validateMemberNameStyleFontFile(selected);
-      modal.assetFile = selected;
-      modal.assetFileName = selected.name;
-      modal.error = '';
-    } catch (error) {
-      file.value = '';
-      modal.assetFile = null;
-      modal.assetFileName = '';
-      modal.error = error?.message || 'Font file is not compatible.';
-    }
-    render();
+  const scriptAssetRows = MEMBER_NAME_STYLE_SCRIPT_SLOTS.map((slot) => {
+    const current = modal.assetsByScript?.[slot.code] || { scriptCode: slot.code };
+    const input = el('input', { type: 'file', accept: '.ttf,.otf,font/ttf,font/otf' });
+    input.addEventListener('change', async () => {
+      const selected = input.files?.[0]; if (!selected) return;
+      try { await validateMemberNameStyleFontFile(selected); modal.assetsByScript = modal.assetsByScript || {}; modal.assetsByScript[slot.code] = { ...current, scriptCode: slot.code, file: selected, fileName: selected.name }; modal.error = ''; }
+      catch (error) { input.value=''; modal.error=error?.message||'Font file is not compatible.'; }
+      render();
+    });
+    const stateText = current?.fileName || (current?.assetPath || current?.asset_path ? `Ready · v${current?.assetVersion || current?.asset_version || 1}` : 'Not added');
+    return el('div', { class: 'field', style: 'border:1px solid #e5e7eb;border-radius:12px;padding:12px;' }, [
+      el('label', { text: slot.label }),
+      el('small', { class: 'field-help', text: `${slot.code} · ${stateText}` }),
+      input,
+      el('small', { class: 'field-help', text: `Coverage is verified by Core using: ${slot.sample}` }),
+    ]);
   });
   const reason = el('textarea', { rows: '2', placeholder: 'Optional operational note' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
   return renderControlModal(modal.id ? 'Edit Member name style' : 'Add Member name style', 'Dynamic font catalog', [
@@ -14261,10 +14330,9 @@ function renderMemberNameStyleModal() {
       el('div', { class: 'field' }, [el('label', { text: 'Display name' }), title]),
       el('div', { class: 'field' }, [el('label', { text: 'Who can use it' }), eligibility]),
       el('div', { class: 'field' }, [el('label', { text: 'Sort order' }), sortOrder]),
-      el('div', { class: 'field' }, [el('label', { text: 'Supported scripts' }), scripts, el('small', { class: 'field-help', text: 'Example: LATIN or LATIN,HAN.' })]),
     ]),
     el('div', { class: 'field' }, [el('label', { text: 'Description' }), description]),
-    el('div', { class: 'field' }, [el('label', { text: modal.assetPath ? 'Font file' : 'Font file · required before enabling' }), file, el('small', { class: 'field-help', text: modal.assetFileName || (modal.assetPath ? 'Current private font is kept unless replaced.' : 'TTF/OTF only · max 2 MB. Core generates the lightweight picker preview.') })]),
+    el('div', { class: 'field' }, [el('label', { text: 'Language font assets' }), el('small', { class: 'field-help', text: 'Script slots are system-defined. English and Malay share LATIN. Upload only the companion fonts this style supports.' }), ...scriptAssetRows]),
     el('div', { class: 'form-grid two' }, [
       el('div', { class: 'field' }, [el('label', { text: 'License preset' }), licensePreset, el('small', { class: 'field-help', text: activeLicensePreset.locked ? 'Known license rules are applied automatically.' : 'Commercial/custom licenses keep the policy fields editable.' })]),
       el('div', { class: 'field' }, [el('label', { text: 'License/source' }), licenseSource, el('small', { class: 'field-help', text: 'Where the font came from, e.g. Google Fonts - Cinzel.' })]),
@@ -14285,32 +14353,26 @@ function renderMemberNameStyleModal() {
 async function submitMemberNameStyleModal() {
   const modal = state.modal; modal.error = '';
   if (!String(modal.title || '').trim()) { modal.error = 'Display name is required.'; return render(); }
-  if (modal.enabled && !modal.assetFile && !modal.assetPath) { modal.error = 'Upload a TTF/OTF font before enabling it.'; return render(); }
+  const latin = modal.assetsByScript?.LATIN || {};
+  if (modal.enabled && !latin.file && !latin.assetPath && !latin.asset_path) { modal.error = 'Upload the English / Malay font before enabling it.'; return render(); }
   if (modal.enabled && (!modal.commercialUseAllowed || !modal.redistributionAllowed)) { modal.error = 'Enabled mobile fonts must allow commercial use and redistribution.'; return render(); }
   modal.loading = true; render();
   try {
-    if (modal.assetFile) {
-      const rawBody = new Uint8Array(await modal.assetFile.arrayBuffer());
-      const previewText = String(modal.title || 'Ying').trim() || 'Ying';
-      const uploadPath = `${API_PATHS.memberNameStyles.uploadAssetRaw}?previewText=${encodeURIComponent(previewText)}&supportedScripts=${encodeURIComponent(String(modal.supportedScripts || 'LATIN').trim())}`;
-      const uploaded = normalizeAdminObjectResponse(await api(uploadPath, { method: 'POST', rawBody, headers: { 'Content-Type': 'application/octet-stream' } }));
-      modal.assetBucket = uploaded.assetBucket || uploaded.asset_bucket;
-      modal.assetPath = uploaded.assetPath || uploaded.asset_path;
-      modal.assetSha256 = uploaded.sha256;
-      modal.mimeType = uploaded.mimeType || uploaded.mime_type;
-      modal.assetBytes = uploaded.bytes || 0;
-      modal.previewBucket = uploaded.previewBucket || uploaded.preview_bucket;
-      modal.previewPath = uploaded.previewPath || uploaded.preview_path;
-      modal.previewSha256 = uploaded.previewSha256 || uploaded.preview_sha256;
-      // Core is the only asset-version authority. Do not calculate a version in Admin.
+    modal.assetsByScript = modal.assetsByScript || {};
+    for (const slot of MEMBER_NAME_STYLE_SCRIPT_SLOTS) {
+      const current = modal.assetsByScript[slot.code]; if (!current?.file) continue;
+      const rawBody = new Uint8Array(await current.file.arrayBuffer());
+      const uploadPath = `${API_PATHS.memberNameStyles.uploadAssetRaw}?previewText=${encodeURIComponent(slot.sample)}&script=${encodeURIComponent(slot.code)}`;
+      const uploaded = normalizeAdminObjectResponse(await api(uploadPath, { method:'POST', rawBody, headers:{'Content-Type':'application/octet-stream'} }));
+      modal.assetsByScript[slot.code] = { ...current, scriptCode: slot.code, assetBucket: uploaded.assetBucket||uploaded.asset_bucket, assetPath: uploaded.assetPath||uploaded.asset_path, assetSha256: uploaded.sha256, mimeType: uploaded.mimeType||uploaded.mime_type, assetBytes: uploaded.bytes||0, previewBucket: uploaded.previewBucket||uploaded.preview_bucket, previewPath: uploaded.previewPath||uploaded.preview_path, previewSha256: uploaded.previewSha256||uploaded.preview_sha256, coverageVerified: uploaded.coverageVerified!==false, file:null };
     }
     const body = {
       code: modal.id ? modal.code : null,
       title: String(modal.title || '').trim(), description: String(modal.description || '').trim() || null,
       eligibilityType: modal.eligibilityType || 'MEMBER', enabled: Boolean(modal.enabled), featured: Boolean(modal.featured), sortOrder: Number(modal.sortOrder || 0),
-      assetBucket: modal.assetBucket || null, assetPath: modal.assetPath || null, assetSha256: modal.assetSha256 || null, assetVersion: null,
-      mimeType: modal.mimeType || null, assetBytes: Number(modal.assetBytes || 0), previewBucket: modal.previewBucket || null, previewPath: modal.previewPath || null, previewSha256: modal.previewSha256 || null,
-      previewText: String(modal.title || modal.previewText || 'Ying').trim(), supportedScripts: String(modal.supportedScripts || 'LATIN').trim(), licenseType: String(modal.licenseType || '').trim() || null,
+      assetBucket: (modal.assetsByScript?.LATIN?.assetBucket || modal.assetBucket || null), assetPath: (modal.assetsByScript?.LATIN?.assetPath || modal.assetPath || null), assetSha256: (modal.assetsByScript?.LATIN?.assetSha256 || modal.assetSha256 || null), assetVersion: null,
+      mimeType: (modal.assetsByScript?.LATIN?.mimeType || modal.mimeType || null), assetBytes: Number(modal.assetsByScript?.LATIN?.assetBytes || modal.assetBytes || 0), previewBucket: modal.previewBucket || null, previewPath: modal.previewPath || null, previewSha256: modal.previewSha256 || null,
+      previewText: String(modal.title || modal.previewText || 'Ying').trim(), supportedScripts: Object.keys(modal.assetsByScript || {}).join(','), assets: Object.values(modal.assetsByScript || {}).filter((x)=>x?.assetPath||x?.asset_path).map((x)=>({ scriptCode:x.scriptCode, assetBucket:x.assetBucket||x.asset_bucket, assetPath:x.assetPath||x.asset_path, assetSha256:x.assetSha256||x.asset_sha256, mimeType:x.mimeType||x.mime_type, assetBytes:Number(x.assetBytes||x.asset_bytes||0), previewBucket:x.previewBucket||x.preview_bucket||null, previewPath:x.previewPath||x.preview_path||null, previewSha256:x.previewSha256||x.preview_sha256||null })), licenseType: String(modal.licenseType || '').trim() || null,
       licenseSource: String(modal.licenseSource || '').trim() || null, commercialUseAllowed: Boolean(modal.commercialUseAllowed), redistributionAllowed: Boolean(modal.redistributionAllowed), attributionRequired: Boolean(modal.attributionRequired), reason: String(modal.reason || '').trim() || null,
     };
     await api(modal.id ? API_PATHS.memberNameStyles.update(modal.id) : API_PATHS.memberNameStyles.create, { method: modal.id ? 'PATCH' : 'POST', body });
