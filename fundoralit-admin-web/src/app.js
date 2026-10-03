@@ -4170,7 +4170,7 @@ async function loadAdminControlData(loadRequest) {
   if (state.activeTab === 'memberNameStyles') {
     response = await api(API_PATHS.memberNameStyles.list);
     if (!isLoadRequestCurrent(loadRequest)) return;
-    const styleItems = normalizeAdminListResponse(response);
+    const styleItems = sortMemberNameStyleItems(normalizeAdminListResponse(response));
     setScopedData({ content: styleItems, page: 0, size: 100, totalElements: styleItems.length, totalPages: 1 }, loadRequest);
     return;
   }
@@ -13900,6 +13900,10 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'memberNameStyles') {
     children.push(renderAdminControlHero('Member Name Styles', 'Operate the Member font catalog from Core without shipping a new app build.', 'Upload only licensed TTF/OTF files. Core generates a lightweight preview. Mobile downloads the real font lazily only after selection or when it must render a public Member identity.'));
     children.push(renderMemberNameStyleToolbar());
+    children.push(el('div', { class: 'compact-guidance' }, [
+      el('strong', { text: 'Display order' }),
+      renderInfoHint('The catalog list follows Sort order from lowest to highest. Items with the same value are ordered deterministically by display name, then stable code.', { compact: true, label: 'Member name style sorting details' }),
+    ]));
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Only enable a font when commercial use and redistribution are permitted. Keep supported scripts accurate so Mobile can fall back safely for names the font cannot render.'));
     children.push(renderControlList(items, renderMemberNameStyleItem, 'No Member name styles configured.'));
@@ -14029,6 +14033,24 @@ function renderUsageAdjustModal() {
   ], submitUsageAdjustModal);
 }
 
+
+function memberNameStyleSortOrder(item) {
+  const raw = item?.sortOrder ?? item?.sort_order;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : 100;
+}
+
+function sortMemberNameStyleItems(items) {
+  return [...(Array.isArray(items) ? items : [])].sort((a, b) => {
+    const orderDiff = memberNameStyleSortOrder(a) - memberNameStyleSortOrder(b);
+    if (orderDiff !== 0) return orderDiff;
+    const titleDiff = String(a?.title || '').localeCompare(String(b?.title || ''), undefined, { sensitivity: 'base' });
+    if (titleDiff !== 0) return titleDiff;
+    const codeDiff = String(a?.code || '').localeCompare(String(b?.code || ''), undefined, { sensitivity: 'base' });
+    if (codeDiff !== 0) return codeDiff;
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
+  });
+}
 
 function renderMemberNameStyleToolbar() {
   return renderControlToolbar([
