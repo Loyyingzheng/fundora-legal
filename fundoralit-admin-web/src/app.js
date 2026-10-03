@@ -163,6 +163,7 @@ const API_PATHS = {
     list: '/api/admin/member-name-styles',
     create: '/api/admin/member-name-styles',
     update: (id) => `/api/admin/member-name-styles/${encodeURIComponent(id)}`,
+    delete: (id) => `/api/admin/member-name-styles/${encodeURIComponent(id)}`,
     uploadAssetRaw: '/api/admin/member-name-styles/assets/raw',
   },
   mobilePolicy: {
@@ -586,7 +587,22 @@ const state = {
   loadRequestSeq: 0,
   activeLoadRequest: null,
   dataScope: '',
+  memberNameStyleBackgroundJobs: [],
+  memberNameStyleBackgroundJobSeq: 0,
+  memberNameStyleBackgroundQueueRunning: false,
 };
+
+function hasActiveMemberNameStyleBackgroundJobs() {
+  return (state.memberNameStyleBackgroundJobs || []).some((job) => ['QUEUED', 'UPLOADING', 'SAVING'].includes(job?.status));
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', (event) => {
+    if (!hasActiveMemberNameStyleBackgroundJobs()) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+}
 
 const authBox = document.getElementById('authBox');
 const mainContent = document.getElementById('mainContent');
@@ -13906,7 +13922,7 @@ function renderAdminControlPage() {
     ]));
     children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Only enable a font when commercial use and redistribution are permitted. Keep supported scripts accurate so Mobile can fall back safely for names the font cannot render.'));
-    children.push(renderControlList(items, renderMemberNameStyleItem, 'No Member name styles configured.'));
+    children.push(el('div', { id: 'memberNameStyleCatalogList' }, [renderControlList(items, renderMemberNameStyleItem, 'No Member name styles configured.')]));
   } else if (state.activeTab === 'auditLogs') {
     children.push(renderAdminControlHero('Audit Logs', 'Review admin changes to policies, flags, limits, usage, version, and support actions.', 'Every control action should leave a reasoned audit trail: who changed it, what changed, before/after values, and when.'));
     children.push(renderAuditToolbar());
@@ -14205,13 +14221,27 @@ function renderMemberNameStyleToolbar() {
   ]);
 }
 
+function activeMemberNameStyleBackgroundJob(item) {
+  const itemId = item?.id == null ? '' : String(item.id);
+  const itemCode = String(item?.code || '');
+  return (state.memberNameStyleBackgroundJobs || []).find((job) => {
+    if (!['QUEUED', 'UPLOADING', 'SAVING'].includes(job?.status)) return false;
+    const snapshotId = job?.snapshot?.id == null ? '' : String(job.snapshot.id);
+    const snapshotCode = String(job?.snapshot?.code || '');
+    return (itemId && snapshotId === itemId) || (itemCode && snapshotCode === itemCode);
+  }) || null;
+}
+
 function renderMemberNameStyleItem(item) {
   const enabled = Boolean(item.enabled);
+  const pendingJob = activeMemberNameStyleBackgroundJob(item);
   const eligibility = String(item.eligibilityType || item.eligibility_type || 'MEMBER').toUpperCase() === 'ALL' ? 'All users' : 'Members only';
   return renderCollapsibleItem({
     title: item.title || item.code || 'Member name style',
-    subtitle: `${eligibility} · ${(Array.isArray(item.assets) ? item.assets.length : 0) || 1} language font asset(s)`,
-    statusNode: el('span', { class: `badge ${enabled ? 'success' : 'neutral'}`, text: enabled ? 'Available' : 'Disabled' }),
+    subtitle: `${eligibility} · ${(Array.isArray(item.assets) ? item.assets.length : 0) || 1} language font asset(s)${pendingJob ? ' · Background save in progress' : ''}`,
+    statusNode: pendingJob
+      ? el('span', { class: 'badge info', text: pendingJob.status === 'SAVING' ? 'Finalizing…' : 'Uploading…' })
+      : el('span', { class: `badge ${enabled ? 'success' : 'neutral'}`, text: enabled ? 'Available' : 'Disabled' }),
     children: [
       item.previewUrl || item.preview_url ? el('img', { src: item.previewUrl || item.preview_url, alt: `${item.title || item.code} preview`, style: 'display:block;width:220px;max-width:100%;height:64px;object-fit:contain;border:1px solid #e5e7eb;border-radius:12px;background:#fff;margin:4px 0 12px;' }) : null,
       renderMetaGrid([
@@ -14222,11 +14252,30 @@ function renderMemberNameStyleItem(item) {
         ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
       el('div', { class: 'actions' }, [
-        el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openMemberNameStyleModal(item) }),
-        el('button', { class: enabled ? 'btn danger small' : 'btn success small', text: enabled ? 'Disable' : 'Enable', onclick: () => setMemberNameStyleAvailability(item, !enabled) }),
-      ]),
+        el('button', { class: 'btn ghost small', text: pendingJob ? 'Saving…' : 'Edit', disabled: Boolean(pendingJob), onclick: () => { if (!pendingJob) openMemberNameStyleModal(item); } }),
+        el('button', { class: enabled ? 'btn danger small' : 'btn success small', text: enabled ? 'Disable' : 'Enable', disabled: Boolean(pendingJob), onclick: () => { if (!pendingJob) setMemberNameStyleAvailability(item, !enabled); } }),
+        String(item.code || '').toLowerCase() !== 'system' ? el('button', { class: 'btn danger small', text: 'Delete', disabled: Boolean(pendingJob) || enabled, title: enabled ? 'Disable this style before deleting it.' : 'Delete this unused style and its stored font assets.', onclick: () => { if (!pendingJob && !enabled) deleteMemberNameStyle(item); } }) : null,
+      ].filter(Boolean)),
     ].filter(Boolean),
   });
+}
+
+async function deleteMemberNameStyle(item) {
+  if (!item?.id) return;
+  if (Boolean(item.enabled)) {
+    state.error = 'Disable this Member name style before deleting it.';
+    return render();
+  }
+  const label = item.title || item.code || 'this Member name style';
+  if (!window.confirm(`Delete “${label}”? This is allowed only when it is not referenced by any current or sticky member appearance.`)) return;
+  try {
+    await api(API_PATHS.memberNameStyles.delete(item.id), { method: 'DELETE' });
+    setMessage(`Deleted “${label}”.`);
+    await refreshMemberNameStyleCatalogSilently();
+  } catch (error) {
+    state.error = toFriendlyErrorMessage(error, 'Unable to delete Member name style.');
+    render();
+  }
 }
 
 function openMemberNameStyleModal(item) {
@@ -14261,6 +14310,8 @@ function openMemberNameStyleModal(item) {
     assetFile: null,
     assetFileName: '',
     assetsByScript: memberNameStyleAssetsMap(item || {}),
+    removedScripts: [],
+    removedAssetBackups: {},
     reason: '',
     loading: false,
     error: '',
@@ -14308,20 +14359,75 @@ function renderMemberNameStyleModal() {
   const attribution = el('input', { type: 'checkbox', disabled: Boolean(activeLicensePreset.locked) }); attribution.checked = Boolean(modal.attributionRequired); attribution.addEventListener('change', () => { modal.attributionRequired = attribution.checked; });
   const scriptAssetRows = MEMBER_NAME_STYLE_SCRIPT_SLOTS.map((slot) => {
     const current = modal.assetsByScript?.[slot.code] || { scriptCode: slot.code };
+    const hasSavedAsset = Boolean(current?.assetPath || current?.asset_path);
+    const hasSelectedFile = Boolean(current?.file);
+    const markedRemoved = Array.isArray(modal.removedScripts) && modal.removedScripts.includes(slot.code);
     const input = el('input', { type: 'file', accept: '.ttf,.otf,font/ttf,font/otf' });
     input.addEventListener('change', async () => {
       const selected = input.files?.[0]; if (!selected) return;
-      try { await validateMemberNameStyleFontFile(selected); modal.assetsByScript = modal.assetsByScript || {}; modal.assetsByScript[slot.code] = { ...current, scriptCode: slot.code, file: selected, fileName: selected.name }; modal.error = ''; }
+      try {
+        await validateMemberNameStyleFontFile(selected);
+        modal.assetsByScript = modal.assetsByScript || {};
+        modal.removedScripts = (modal.removedScripts || []).filter((code) => code !== slot.code);
+        modal.assetsByScript[slot.code] = { ...current, scriptCode: slot.code, file: selected, fileName: selected.name };
+        modal.error = '';
+      }
       catch (error) { input.value=''; modal.error=error?.message||'Font file is not compatible.'; }
       render();
     });
-    const stateText = current?.fileName || (current?.assetPath || current?.asset_path ? `Ready · v${current?.assetVersion || current?.asset_version || 1}` : 'Not added');
+    const stateText = markedRemoved
+      ? 'Will be removed when you save'
+      : (current?.fileName || (hasSavedAsset ? `Ready · v${current?.assetVersion || current?.asset_version || 1}` : 'Not added'));
+    const actions = [];
+    if (hasSelectedFile) {
+      actions.push(el('button', { class: 'btn ghost small', text: 'Clear selected file', onclick: () => {
+        const existing = modal.assetsByScript?.[slot.code] || {};
+        const restored = { ...existing, file: null, fileName: '' };
+        if (!restored.assetPath && !restored.asset_path) delete modal.assetsByScript[slot.code];
+        else modal.assetsByScript[slot.code] = restored;
+        render();
+      } }));
+    }
+    if (hasSavedAsset && !markedRemoved) {
+      actions.push(el('button', { class: 'btn danger small', text: 'Remove saved font', onclick: () => {
+        modal.assetsByScript = modal.assetsByScript || {};
+        modal.removedAssetBackups = modal.removedAssetBackups || {};
+        modal.removedAssetBackups[slot.code] = { ...current, file: null, fileName: '' };
+        modal.removedScripts = Array.from(new Set([...(modal.removedScripts || []), slot.code]));
+        delete modal.assetsByScript[slot.code];
+        if (slot.code === 'LATIN') {
+          modal.assetBucket = null; modal.assetPath = null; modal.assetSha256 = null; modal.mimeType = null; modal.assetBytes = 0;
+          modal.previewBucket = null; modal.previewPath = null; modal.previewSha256 = null;
+        }
+        render();
+      } }));
+    }
+    if (markedRemoved) {
+      actions.push(el('button', { class: 'btn ghost small', text: 'Undo remove', onclick: () => {
+        modal.removedScripts = (modal.removedScripts || []).filter((code) => code !== slot.code);
+        const backup = modal.removedAssetBackups?.[slot.code];
+        if (backup) {
+          modal.assetsByScript = modal.assetsByScript || {};
+          modal.assetsByScript[slot.code] = backup;
+          delete modal.removedAssetBackups[slot.code];
+          if (slot.code === 'LATIN') {
+            modal.assetBucket = backup.assetBucket || backup.asset_bucket || null;
+            modal.assetPath = backup.assetPath || backup.asset_path || null;
+            modal.assetSha256 = backup.assetSha256 || backup.asset_sha256 || null;
+            modal.mimeType = backup.mimeType || backup.mime_type || null;
+            modal.assetBytes = Number(backup.assetBytes || backup.asset_bytes || 0);
+          }
+        }
+        render();
+      } }));
+    }
     return el('div', { class: 'field', style: 'border:1px solid #e5e7eb;border-radius:12px;padding:12px;' }, [
       el('label', { text: slot.label }),
       el('small', { class: 'field-help', text: `${slot.code} · ${stateText}` }),
       input,
+      actions.length ? el('div', { class: 'actions', style: 'margin-top:8px;' }, actions) : null,
       el('small', { class: 'field-help', text: `Coverage is verified by Core using: ${slot.sample}` }),
-    ]);
+    ].filter(Boolean));
   });
   const reason = el('textarea', { rows: '2', placeholder: 'Optional operational note' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
   return renderControlModal(modal.id ? 'Edit Member name style' : 'Add Member name style', 'Dynamic font catalog', [
@@ -14350,34 +14456,312 @@ function renderMemberNameStyleModal() {
   ].filter(Boolean), submitMemberNameStyleModal, true);
 }
 
+function snapshotMemberNameStyleModal(modal) {
+  const assetsByScript = {};
+  Object.entries(modal?.assetsByScript || {}).forEach(([scriptCode, asset]) => {
+    if (!asset) return;
+    assetsByScript[scriptCode] = { ...asset, scriptCode };
+  });
+  return {
+    id: modal?.id || null,
+    code: modal?.code || null,
+    title: String(modal?.title || '').trim(),
+    description: String(modal?.description || '').trim(),
+    eligibilityType: modal?.eligibilityType || 'MEMBER',
+    enabled: Boolean(modal?.enabled),
+    featured: Boolean(modal?.featured),
+    sortOrder: Number(modal?.sortOrder || 0),
+    assetBucket: modal?.assetBucket || null,
+    assetPath: modal?.assetPath || null,
+    assetSha256: modal?.assetSha256 || null,
+    mimeType: modal?.mimeType || null,
+    assetBytes: Number(modal?.assetBytes || 0),
+    previewBucket: modal?.previewBucket || null,
+    previewPath: modal?.previewPath || null,
+    previewSha256: modal?.previewSha256 || null,
+    previewText: String(modal?.previewText || modal?.title || 'Ying').trim(),
+    licenseType: String(modal?.licenseType || '').trim(),
+    licenseSource: String(modal?.licenseSource || '').trim(),
+    commercialUseAllowed: Boolean(modal?.commercialUseAllowed),
+    redistributionAllowed: Boolean(modal?.redistributionAllowed),
+    attributionRequired: Boolean(modal?.attributionRequired),
+    reason: String(modal?.reason || '').trim(),
+    removedScripts: Array.from(new Set(modal?.removedScripts || [])),
+    assetsByScript,
+  };
+}
+
+function memberNameStyleBackgroundJobLabel(job) {
+  return String(job?.snapshot?.title || job?.snapshot?.code || 'Member name style');
+}
+
+function memberNameStyleBackgroundJobStatusText(job) {
+  const completed = Number(job?.completedFiles || 0);
+  const total = Number(job?.totalFiles || 0);
+  if (job?.status === 'QUEUED') return total ? `Queued · ${total} font file(s)` : 'Queued';
+  if (job?.status === 'UPLOADING') return `Uploading fonts · ${completed}/${total}`;
+  if (job?.status === 'SAVING') return 'Fonts uploaded · saving catalog metadata';
+  if (job?.status === 'DONE') return 'Saved successfully';
+  if (job?.status === 'FAILED') return `Failed · ${job.error || 'Unable to save'}`;
+  return 'Preparing';
+}
+
+function dismissMemberNameStyleBackgroundJob(jobId) {
+  state.memberNameStyleBackgroundJobs = (state.memberNameStyleBackgroundJobs || []).filter((job) => job.id !== jobId);
+  updateMemberNameStyleBackgroundIndicator();
+}
+
+function retryMemberNameStyleBackgroundJob(jobId) {
+  const job = (state.memberNameStyleBackgroundJobs || []).find((candidate) => candidate.id === jobId);
+  if (!job || job.status !== 'FAILED') return;
+  job.status = 'QUEUED';
+  job.error = '';
+  job.finishedAt = null;
+  updateMemberNameStyleBackgroundIndicator();
+  processMemberNameStyleBackgroundQueue();
+}
+
+function updateMemberNameStyleBackgroundIndicator() {
+  if (typeof document === 'undefined' || !document.body) return;
+  const jobs = (state.memberNameStyleBackgroundJobs || []).filter((job) => job?.status !== 'DONE' || Date.now() - Number(job.finishedAt || 0) < 12000);
+  let host = document.getElementById('memberNameStyleBackgroundIndicator');
+  if (!jobs.length) {
+    if (host) host.remove();
+    return;
+  }
+  if (!host) {
+    host = el('div', { id: 'memberNameStyleBackgroundIndicator' });
+    document.body.appendChild(host);
+  }
+  host.setAttribute('style', 'position:fixed;right:18px;bottom:18px;z-index:2500;width:min(390px,calc(100vw - 36px));max-height:55vh;overflow:auto;background:#fff;border:1px solid #dbe3ea;border-radius:14px;box-shadow:0 14px 38px rgba(15,23,42,.18);padding:12px;');
+  const activeCount = jobs.filter((job) => ['QUEUED', 'UPLOADING', 'SAVING'].includes(job.status)).length;
+  const rows = jobs.slice(-4).reverse().map((job) => {
+    const actions = [];
+    if (job.status === 'FAILED') actions.push(el('button', { class: 'btn ghost small', text: 'Retry', onclick: () => retryMemberNameStyleBackgroundJob(job.id) }));
+    if (['DONE', 'FAILED'].includes(job.status)) actions.push(el('button', { class: 'btn ghost small', text: 'Dismiss', onclick: () => dismissMemberNameStyleBackgroundJob(job.id) }));
+    return el('div', { style: 'padding:9px 0;border-top:1px solid #eef2f7;' }, [
+      el('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;' }, [
+        el('strong', { text: memberNameStyleBackgroundJobLabel(job) }),
+        el('span', { class: `badge ${job.status === 'DONE' ? 'success' : job.status === 'FAILED' ? 'danger' : 'info'}`, text: job.status === 'DONE' ? 'Done' : job.status === 'FAILED' ? 'Needs attention' : 'Working' }),
+      ]),
+      el('small', { class: 'field-help', text: memberNameStyleBackgroundJobStatusText(job) }),
+      actions.length ? el('div', { class: 'actions', style: 'margin-top:7px;' }, actions) : null,
+    ].filter(Boolean));
+  });
+  host.replaceChildren(
+    el('div', { style: 'display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:4px;' }, [
+      el('div', {}, [
+        el('strong', { text: activeCount ? `Background saves · ${activeCount} active` : 'Background saves' }),
+        el('small', { class: 'field-help', text: activeCount ? 'You can keep using Admin. Keep this browser tab open until uploads finish.' : 'Recent Member font save results.' }),
+      ]),
+    ]),
+    ...rows,
+  );
+}
+
+function rerenderMemberNameStyleCatalogOnly() {
+  if (state.activeTab !== 'memberNameStyles') return false;
+  const host = document.getElementById('memberNameStyleCatalogList');
+  const scoped = getScopedData();
+  if (!host || !Array.isArray(scoped?.content)) return false;
+  const items = sortMemberNameStyleItems(scoped.content);
+  host.replaceChildren(renderControlList(items, renderMemberNameStyleItem, 'No Member name styles configured.'));
+  return true;
+}
+
+async function refreshMemberNameStyleCatalogSilently() {
+  if (state.activeTab !== 'memberNameStyles' || !state.user) return;
+  try {
+    await loadData({ force: true, background: true });
+    rerenderMemberNameStyleCatalogOnly();
+  } catch (error) {
+    console.warn('[Admin] Member name style silent refresh failed', error);
+  }
+}
+
+async function runMemberNameStyleUploadPool(tasks, concurrency = 2) {
+  if (!tasks.length) return;
+  let cursor = 0;
+  let firstError = null;
+  const worker = async () => {
+    while (!firstError) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= tasks.length) return;
+      try {
+        await tasks[index]();
+      } catch (error) {
+        firstError = error;
+      }
+    }
+  };
+  const workerCount = Math.max(1, Math.min(Number(concurrency || 1), tasks.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  if (firstError) throw firstError;
+}
+
+async function uploadMemberNameStyleBackgroundAsset(job, slot) {
+  const snapshot = job.snapshot;
+  const current = snapshot.assetsByScript?.[slot.code];
+  if (!current?.file) return;
+  const rawBody = new Uint8Array(await current.file.arrayBuffer());
+  const uploadPath = `${API_PATHS.memberNameStyles.uploadAssetRaw}?previewText=${encodeURIComponent(slot.sample)}&script=${encodeURIComponent(slot.code)}`;
+  const uploaded = normalizeAdminObjectResponse(await api(uploadPath, {
+    method: 'POST',
+    rawBody,
+    headers: { 'Content-Type': 'application/octet-stream' },
+  }));
+  snapshot.assetsByScript[slot.code] = {
+    ...current,
+    scriptCode: slot.code,
+    assetBucket: uploaded.assetBucket || uploaded.asset_bucket,
+    assetPath: uploaded.assetPath || uploaded.asset_path,
+    assetSha256: uploaded.sha256,
+    mimeType: uploaded.mimeType || uploaded.mime_type,
+    assetBytes: uploaded.bytes || 0,
+    previewBucket: uploaded.previewBucket || uploaded.preview_bucket,
+    previewPath: uploaded.previewPath || uploaded.preview_path,
+    previewSha256: uploaded.previewSha256 || uploaded.preview_sha256,
+    coverageVerified: uploaded.coverageVerified !== false,
+    file: null,
+  };
+  job.completedFiles = Number(job.completedFiles || 0) + 1;
+  updateMemberNameStyleBackgroundIndicator();
+}
+
+function buildMemberNameStyleSaveBody(snapshot) {
+  const assetsByScript = snapshot.assetsByScript || {};
+  return {
+    code: snapshot.id ? snapshot.code : null,
+    title: snapshot.title,
+    description: snapshot.description || null,
+    eligibilityType: snapshot.eligibilityType || 'MEMBER',
+    enabled: Boolean(snapshot.enabled),
+    featured: Boolean(snapshot.featured),
+    sortOrder: Number(snapshot.sortOrder || 0),
+    assetBucket: assetsByScript?.LATIN?.assetBucket || snapshot.assetBucket || null,
+    assetPath: assetsByScript?.LATIN?.assetPath || snapshot.assetPath || null,
+    assetSha256: assetsByScript?.LATIN?.assetSha256 || snapshot.assetSha256 || null,
+    assetVersion: null,
+    mimeType: assetsByScript?.LATIN?.mimeType || snapshot.mimeType || null,
+    assetBytes: Number(assetsByScript?.LATIN?.assetBytes || snapshot.assetBytes || 0),
+    previewBucket: snapshot.previewBucket || null,
+    previewPath: snapshot.previewPath || null,
+    previewSha256: snapshot.previewSha256 || null,
+    previewText: String(snapshot.title || snapshot.previewText || 'Ying').trim(),
+    supportedScripts: Object.keys(assetsByScript).filter((code) => !(snapshot.removedScripts || []).includes(code)).join(','),
+    assets: Object.values(assetsByScript).filter((asset) => !(snapshot.removedScripts || []).includes(asset?.scriptCode) && (asset?.assetPath || asset?.asset_path)).map((asset) => ({
+      scriptCode: asset.scriptCode,
+      assetBucket: asset.assetBucket || asset.asset_bucket,
+      assetPath: asset.assetPath || asset.asset_path,
+      assetSha256: asset.assetSha256 || asset.asset_sha256,
+      mimeType: asset.mimeType || asset.mime_type,
+      assetBytes: Number(asset.assetBytes || asset.asset_bytes || 0),
+      previewBucket: asset.previewBucket || asset.preview_bucket || null,
+      previewPath: asset.previewPath || asset.preview_path || null,
+      previewSha256: asset.previewSha256 || asset.preview_sha256 || null,
+    })),
+    removedScripts: Array.from(new Set(snapshot.removedScripts || [])),
+    licenseType: snapshot.licenseType || null,
+    licenseSource: snapshot.licenseSource || null,
+    commercialUseAllowed: Boolean(snapshot.commercialUseAllowed),
+    redistributionAllowed: Boolean(snapshot.redistributionAllowed),
+    attributionRequired: Boolean(snapshot.attributionRequired),
+    reason: snapshot.reason || null,
+  };
+}
+
+async function runMemberNameStyleBackgroundJob(job) {
+  job.status = 'UPLOADING';
+  job.error = '';
+  job.startedAt = Date.now();
+  const pendingSlots = MEMBER_NAME_STYLE_SCRIPT_SLOTS.filter((slot) => job.snapshot.assetsByScript?.[slot.code]?.file);
+  job.totalFiles = pendingSlots.length;
+  job.completedFiles = 0;
+  updateMemberNameStyleBackgroundIndicator();
+
+  await runMemberNameStyleUploadPool(
+    pendingSlots.map((slot) => () => uploadMemberNameStyleBackgroundAsset(job, slot)),
+    2,
+  );
+
+  job.status = 'SAVING';
+  updateMemberNameStyleBackgroundIndicator();
+  const snapshot = job.snapshot;
+  const body = buildMemberNameStyleSaveBody(snapshot);
+  const result = await api(snapshot.id ? API_PATHS.memberNameStyles.update(snapshot.id) : API_PATHS.memberNameStyles.create, {
+    method: snapshot.id ? 'PATCH' : 'POST',
+    body,
+  });
+  job.result = result || null;
+  job.status = 'DONE';
+  job.finishedAt = Date.now();
+  job.error = '';
+  Object.values(snapshot.assetsByScript || {}).forEach((asset) => { if (asset) asset.file = null; });
+  updateMemberNameStyleBackgroundIndicator();
+  await refreshMemberNameStyleCatalogSilently();
+  window.setTimeout(() => updateMemberNameStyleBackgroundIndicator(), 12500);
+}
+
+async function processMemberNameStyleBackgroundQueue() {
+  if (state.memberNameStyleBackgroundQueueRunning) return;
+  state.memberNameStyleBackgroundQueueRunning = true;
+  try {
+    while (true) {
+      const job = (state.memberNameStyleBackgroundJobs || []).find((candidate) => candidate.status === 'QUEUED');
+      if (!job) break;
+      try {
+        await runMemberNameStyleBackgroundJob(job);
+      } catch (error) {
+        job.status = 'FAILED';
+        job.finishedAt = Date.now();
+        job.error = toFriendlyErrorMessage(error, 'Unable to save Member name style.');
+        updateMemberNameStyleBackgroundIndicator();
+      }
+    }
+  } finally {
+    state.memberNameStyleBackgroundQueueRunning = false;
+    updateMemberNameStyleBackgroundIndicator();
+  }
+}
+
+function enqueueMemberNameStyleBackgroundSave(modal) {
+  const snapshot = snapshotMemberNameStyleModal(modal);
+  state.memberNameStyleBackgroundJobSeq = Number(state.memberNameStyleBackgroundJobSeq || 0) + 1;
+  const job = {
+    id: `member-name-style-${state.memberNameStyleBackgroundJobSeq}`,
+    status: 'QUEUED',
+    snapshot,
+    totalFiles: Object.values(snapshot.assetsByScript || {}).filter((asset) => asset?.file).length,
+    completedFiles: 0,
+    error: '',
+    createdAt: Date.now(),
+    startedAt: null,
+    finishedAt: null,
+  };
+  state.memberNameStyleBackgroundJobs = [...(state.memberNameStyleBackgroundJobs || []), job];
+  state.modal = null;
+  setMessage(`Saving “${snapshot.title}” in the background. You can continue using Admin.`);
+  render();
+  updateMemberNameStyleBackgroundIndicator();
+  Promise.resolve().then(() => processMemberNameStyleBackgroundQueue());
+  return job;
+}
+
 async function submitMemberNameStyleModal() {
-  const modal = state.modal; modal.error = '';
+  const modal = state.modal;
+  if (!modal) return;
+  modal.error = '';
   if (!String(modal.title || '').trim()) { modal.error = 'Display name is required.'; return render(); }
   const latin = modal.assetsByScript?.LATIN || {};
   if (modal.enabled && !latin.file && !latin.assetPath && !latin.asset_path) { modal.error = 'Upload the English / Malay font before enabling it.'; return render(); }
   if (modal.enabled && (!modal.commercialUseAllowed || !modal.redistributionAllowed)) { modal.error = 'Enabled mobile fonts must allow commercial use and redistribution.'; return render(); }
-  modal.loading = true; render();
-  try {
-    modal.assetsByScript = modal.assetsByScript || {};
-    for (const slot of MEMBER_NAME_STYLE_SCRIPT_SLOTS) {
-      const current = modal.assetsByScript[slot.code]; if (!current?.file) continue;
-      const rawBody = new Uint8Array(await current.file.arrayBuffer());
-      const uploadPath = `${API_PATHS.memberNameStyles.uploadAssetRaw}?previewText=${encodeURIComponent(slot.sample)}&script=${encodeURIComponent(slot.code)}`;
-      const uploaded = normalizeAdminObjectResponse(await api(uploadPath, { method:'POST', rawBody, headers:{'Content-Type':'application/octet-stream'} }));
-      modal.assetsByScript[slot.code] = { ...current, scriptCode: slot.code, assetBucket: uploaded.assetBucket||uploaded.asset_bucket, assetPath: uploaded.assetPath||uploaded.asset_path, assetSha256: uploaded.sha256, mimeType: uploaded.mimeType||uploaded.mime_type, assetBytes: uploaded.bytes||0, previewBucket: uploaded.previewBucket||uploaded.preview_bucket, previewPath: uploaded.previewPath||uploaded.preview_path, previewSha256: uploaded.previewSha256||uploaded.preview_sha256, coverageVerified: uploaded.coverageVerified!==false, file:null };
-    }
-    const body = {
-      code: modal.id ? modal.code : null,
-      title: String(modal.title || '').trim(), description: String(modal.description || '').trim() || null,
-      eligibilityType: modal.eligibilityType || 'MEMBER', enabled: Boolean(modal.enabled), featured: Boolean(modal.featured), sortOrder: Number(modal.sortOrder || 0),
-      assetBucket: (modal.assetsByScript?.LATIN?.assetBucket || modal.assetBucket || null), assetPath: (modal.assetsByScript?.LATIN?.assetPath || modal.assetPath || null), assetSha256: (modal.assetsByScript?.LATIN?.assetSha256 || modal.assetSha256 || null), assetVersion: null,
-      mimeType: (modal.assetsByScript?.LATIN?.mimeType || modal.mimeType || null), assetBytes: Number(modal.assetsByScript?.LATIN?.assetBytes || modal.assetBytes || 0), previewBucket: modal.previewBucket || null, previewPath: modal.previewPath || null, previewSha256: modal.previewSha256 || null,
-      previewText: String(modal.title || modal.previewText || 'Ying').trim(), supportedScripts: Object.keys(modal.assetsByScript || {}).join(','), assets: Object.values(modal.assetsByScript || {}).filter((x)=>x?.assetPath||x?.asset_path).map((x)=>({ scriptCode:x.scriptCode, assetBucket:x.assetBucket||x.asset_bucket, assetPath:x.assetPath||x.asset_path, assetSha256:x.assetSha256||x.asset_sha256, mimeType:x.mimeType||x.mime_type, assetBytes:Number(x.assetBytes||x.asset_bytes||0), previewBucket:x.previewBucket||x.preview_bucket||null, previewPath:x.previewPath||x.preview_path||null, previewSha256:x.previewSha256||x.preview_sha256||null })), licenseType: String(modal.licenseType || '').trim() || null,
-      licenseSource: String(modal.licenseSource || '').trim() || null, commercialUseAllowed: Boolean(modal.commercialUseAllowed), redistributionAllowed: Boolean(modal.redistributionAllowed), attributionRequired: Boolean(modal.attributionRequired), reason: String(modal.reason || '').trim() || null,
-    };
-    await api(modal.id ? API_PATHS.memberNameStyles.update(modal.id) : API_PATHS.memberNameStyles.create, { method: modal.id ? 'PATCH' : 'POST', body });
-    closeModal(); await refreshAfterAdminMutation(modal.id ? 'Member name style updated.' : 'Member name style created.');
-  } catch (error) { modal.error = toFriendlyErrorMessage(error, 'Unable to save Member name style.'); modal.loading = false; render(); }
+
+  // Selection-time validation already verifies the local SFNT container. Queue the
+  // expensive Core coverage checks, preview rendering and Supabase uploads outside
+  // the modal so Admin interaction is released immediately. The browser must remain
+  // open because File objects live in this session until their uploads complete.
+  enqueueMemberNameStyleBackgroundSave(modal);
 }
 
 function renderMemberFrameToolbar() {
