@@ -14095,6 +14095,24 @@ function openMemberNameStyleModal(item) {
   render();
 }
 
+
+async function validateMemberNameStyleFontFile(file) {
+  if (!file) throw new Error('Choose a TTF or OTF font file.');
+  if (file.size <= 0) throw new Error('Font file is empty.');
+  if (file.size > 2 * 1024 * 1024) throw new Error('Font must be 2 MB or smaller.');
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  if (bytes.length < 12) throw new Error('Font file is incomplete.');
+  const isTtf = bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00;
+  const isOtf = bytes[0] === 0x4f && bytes[1] === 0x54 && bytes[2] === 0x54 && bytes[3] === 0x4f;
+  if (!isTtf && !isOtf) throw new Error('Only standard TTF or OpenType OTF fonts are supported. TTC/WOFF/WOFF2 files are not supported.');
+  const tableCount = (bytes[4] << 8) | bytes[5];
+  if (!Number.isFinite(tableCount) || tableCount <= 0 || tableCount > 512) throw new Error('Font table directory is invalid. Export the font again as a standard TTF/OTF file.');
+  const name = String(file.name || '').toLowerCase();
+  if (isTtf && name.endsWith('.otf')) throw new Error('This file contains TTF data but is named .otf. Export or rename it as .ttf before upload.');
+  if (isOtf && name.endsWith('.ttf')) throw new Error('This file contains OTF data but is named .ttf. Export or rename it as .otf before upload.');
+  return { format: isOtf ? 'OTF' : 'TTF', bytes: file.size };
+}
+
 function renderMemberNameStyleModal() {
   const modal = state.modal;
   const title = el('input', { value: modal.title || '', placeholder: 'Royal / Luxury / Elegant…' }); title.addEventListener('input', () => { modal.title = title.value; });
@@ -14110,7 +14128,22 @@ function renderMemberNameStyleModal() {
   const redistribute = el('input', { type: 'checkbox' }); redistribute.checked = Boolean(modal.redistributionAllowed); redistribute.addEventListener('change', () => { modal.redistributionAllowed = redistribute.checked; });
   const attribution = el('input', { type: 'checkbox' }); attribution.checked = Boolean(modal.attributionRequired); attribution.addEventListener('change', () => { modal.attributionRequired = attribution.checked; });
   const file = el('input', { type: 'file', accept: '.ttf,.otf,font/ttf,font/otf' });
-  file.addEventListener('change', () => { const selected = file.files?.[0]; if (!selected) return; if (selected.size > 2 * 1024 * 1024) { file.value = ''; modal.error = 'Font must be 2 MB or smaller.'; return render(); } modal.assetFile = selected; modal.assetFileName = selected.name; render(); });
+  file.addEventListener('change', async () => {
+    const selected = file.files?.[0];
+    if (!selected) return;
+    try {
+      await validateMemberNameStyleFontFile(selected);
+      modal.assetFile = selected;
+      modal.assetFileName = selected.name;
+      modal.error = '';
+    } catch (error) {
+      file.value = '';
+      modal.assetFile = null;
+      modal.assetFileName = '';
+      modal.error = error?.message || 'Font file is not compatible.';
+    }
+    render();
+  });
   const reason = el('textarea', { rows: '2', placeholder: 'Optional operational note' }); reason.value = modal.reason || ''; reason.addEventListener('input', () => { modal.reason = reason.value; });
   return renderControlModal(modal.id ? 'Edit Member name style' : 'Add Member name style', 'Dynamic font catalog', [
     modal.previewUrl ? el('img', { src: modal.previewUrl, alt: 'Font preview', style: 'display:block;width:320px;max-width:100%;height:78px;object-fit:contain;border:1px solid #e5e7eb;border-radius:12px;background:#fff;' }) : null,
@@ -14147,7 +14180,7 @@ async function submitMemberNameStyleModal() {
     if (modal.assetFile) {
       const rawBody = new Uint8Array(await modal.assetFile.arrayBuffer());
       const previewText = String(modal.title || 'Ying').trim() || 'Ying';
-      const uploadPath = `${API_PATHS.memberNameStyles.uploadAssetRaw}?previewText=${encodeURIComponent(previewText)}`;
+      const uploadPath = `${API_PATHS.memberNameStyles.uploadAssetRaw}?previewText=${encodeURIComponent(previewText)}&supportedScripts=${encodeURIComponent(String(modal.supportedScripts || 'LATIN').trim())}`;
       const uploaded = normalizeAdminObjectResponse(await api(uploadPath, { method: 'POST', rawBody, headers: { 'Content-Type': 'application/octet-stream' } }));
       modal.assetBucket = uploaded.assetBucket || uploaded.asset_bucket;
       modal.assetPath = uploaded.assetPath || uploaded.asset_path;
@@ -14157,13 +14190,13 @@ async function submitMemberNameStyleModal() {
       modal.previewBucket = uploaded.previewBucket || uploaded.preview_bucket;
       modal.previewPath = uploaded.previewPath || uploaded.preview_path;
       modal.previewSha256 = uploaded.previewSha256 || uploaded.preview_sha256;
-      modal.assetVersion = Math.max(1, Number(modal.assetVersion || 1) + (modal.id ? 1 : 0));
+      // Core is the only asset-version authority. Do not calculate a version in Admin.
     }
     const body = {
       code: modal.id ? modal.code : null,
       title: String(modal.title || '').trim(), description: String(modal.description || '').trim() || null,
       eligibilityType: modal.eligibilityType || 'MEMBER', enabled: Boolean(modal.enabled), featured: Boolean(modal.featured), sortOrder: Number(modal.sortOrder || 0),
-      assetBucket: modal.assetBucket || null, assetPath: modal.assetPath || null, assetSha256: modal.assetSha256 || null, assetVersion: modal.assetFile ? modal.assetVersion : null,
+      assetBucket: modal.assetBucket || null, assetPath: modal.assetPath || null, assetSha256: modal.assetSha256 || null, assetVersion: null,
       mimeType: modal.mimeType || null, assetBytes: Number(modal.assetBytes || 0), previewBucket: modal.previewBucket || null, previewPath: modal.previewPath || null, previewSha256: modal.previewSha256 || null,
       previewText: String(modal.title || modal.previewText || 'Ying').trim(), supportedScripts: String(modal.supportedScripts || 'LATIN').trim(), licenseType: String(modal.licenseType || '').trim() || null,
       licenseSource: String(modal.licenseSource || '').trim() || null, commercialUseAllowed: Boolean(modal.commercialUseAllowed), redistributionAllowed: Boolean(modal.redistributionAllowed), attributionRequired: Boolean(modal.attributionRequired), reason: String(modal.reason || '').trim() || null,
@@ -14513,7 +14546,7 @@ async function submitMemberFrameModal() {
       modal.assetBytes = uploaded.bytes || 0;
       modal.imageWidth = uploaded.width;
       modal.imageHeight = uploaded.height;
-      modal.assetVersion = Math.max(1, Number(modal.assetVersion || 1) + (modal.id ? 1 : 0));
+      // Core is the only asset-version authority. Do not calculate a version in Admin.
     }
     const body = {
       code: modal.id ? (modal.code || null) : null,
