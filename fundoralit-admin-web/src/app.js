@@ -14034,6 +14034,87 @@ function renderUsageAdjustModal() {
 }
 
 
+
+const MEMBER_NAME_STYLE_LICENSE_PRESETS = Object.freeze({
+  '': { label: 'Choose license preset', locked: false },
+  'OFL-1.1': { label: 'SIL Open Font License 1.1', locked: true, commercialUseAllowed: true, redistributionAllowed: true, attributionRequired: false },
+  'Apache-2.0': { label: 'Apache License 2.0', locked: true, commercialUseAllowed: true, redistributionAllowed: true, attributionRequired: true },
+  'Internal-owned': { label: 'Fundoralit / internally owned', locked: true, commercialUseAllowed: true, redistributionAllowed: true, attributionRequired: false },
+  'Commercial': { label: 'Commercial license', locked: false },
+  'Custom': { label: 'Custom / other license', locked: false },
+});
+
+function normalizeMemberNameStyleLicensePreset(value) {
+  const raw = String(value || '').trim();
+  const upper = raw.toUpperCase();
+  if (upper === 'OFL-1.1' || upper === 'SIL OPEN FONT LICENSE 1.1' || upper === 'SIL OPEN FONT LICENSE, VERSION 1.1') return 'OFL-1.1';
+  if (upper === 'APACHE-2.0' || upper === 'APACHE 2.0' || upper === 'APACHE LICENSE 2.0') return 'Apache-2.0';
+  if (upper === 'INTERNAL-OWNED' || upper === 'INTERNAL' || upper === 'FUNDORALIT') return 'Internal-owned';
+  if (upper.includes('COMMERCIAL')) return 'Commercial';
+  if (raw) return 'Custom';
+  return '';
+}
+
+function applyMemberNameStyleLicensePreset(modal, presetKey) {
+  const preset = MEMBER_NAME_STYLE_LICENSE_PRESETS[presetKey] || MEMBER_NAME_STYLE_LICENSE_PRESETS[''];
+  modal.licensePreset = presetKey;
+  if (presetKey === 'OFL-1.1' || presetKey === 'Apache-2.0' || presetKey === 'Internal-owned') modal.licenseType = presetKey;
+  else if (presetKey === 'Commercial' && !String(modal.licenseType || '').trim()) modal.licenseType = 'Commercial license';
+  else if (presetKey === 'Custom' && ['OFL-1.1','Apache-2.0','Internal-owned','Commercial license'].includes(String(modal.licenseType || '').trim())) modal.licenseType = '';
+  if (preset.locked) {
+    modal.commercialUseAllowed = Boolean(preset.commercialUseAllowed);
+    modal.redistributionAllowed = Boolean(preset.redistributionAllowed);
+    modal.attributionRequired = Boolean(preset.attributionRequired);
+  }
+}
+
+function memberNameStyleUpdateBody(item, overrides = {}) {
+  return {
+    code: item.code || null,
+    title: item.title || item.code || 'Member name style',
+    description: item.description || null,
+    eligibilityType: item.eligibilityType || item.eligibility_type || 'MEMBER',
+    enabled: item.enabled !== false,
+    featured: Boolean(item.featured),
+    sortOrder: Number(item.sortOrder ?? item.sort_order ?? 0),
+    assetBucket: item.assetBucket || item.asset_bucket || null,
+    assetPath: item.assetPath || item.asset_path || null,
+    assetSha256: item.assetSha256 || item.asset_sha256 || null,
+    assetVersion: Number(item.assetVersion ?? item.asset_version ?? 1),
+    mimeType: item.mimeType || item.mime_type || null,
+    assetBytes: Number(item.assetBytes ?? item.asset_bytes ?? 0),
+    previewBucket: item.previewBucket || item.preview_bucket || null,
+    previewPath: item.previewPath || item.preview_path || null,
+    previewSha256: item.previewSha256 || item.preview_sha256 || null,
+    previewText: item.previewText || item.preview_text || item.title || 'Ying',
+    supportedScripts: Array.isArray(item.supportedScripts) ? item.supportedScripts.join(',') : (item.supported_scripts || 'LATIN'),
+    licenseType: item.licenseType || item.license_type || null,
+    licenseSource: item.licenseSource || item.license_source || null,
+    commercialUseAllowed: Boolean(item.commercialUseAllowed || item.commercial_use_allowed),
+    redistributionAllowed: Boolean(item.redistributionAllowed || item.redistribution_allowed),
+    attributionRequired: Boolean(item.attributionRequired || item.attribution_required),
+    reason: null,
+    ...overrides,
+  };
+}
+
+async function setMemberNameStyleAvailability(item, nextEnabled) {
+  if (!item?.id) return;
+  if (nextEnabled && (!(item.assetPath || item.asset_path) || !(item.commercialUseAllowed || item.commercial_use_allowed) || !(item.redistributionAllowed || item.redistribution_allowed))) {
+    openMemberNameStyleModal(item);
+    state.modal.enabled = true;
+    state.modal.error = 'Complete the font asset and license requirements below before enabling this style.';
+    return render();
+  }
+  try {
+    await api(API_PATHS.memberNameStyles.update(item.id), { method: 'PATCH', body: memberNameStyleUpdateBody(item, { enabled: Boolean(nextEnabled) }) });
+    await refreshAfterAdminMutation(nextEnabled ? 'Member name style enabled.' : 'Member name style disabled.');
+  } catch (error) {
+    state.error = toFriendlyErrorMessage(error, nextEnabled ? 'Unable to enable Member name style.' : 'Unable to disable Member name style.');
+    render();
+  }
+}
+
 function memberNameStyleSortOrder(item) {
   const raw = item?.sortOrder ?? item?.sort_order;
   const value = Number(raw);
@@ -14075,7 +14156,10 @@ function renderMemberNameStyleItem(item) {
         ['Redistribution', item.redistributionAllowed || item.redistribution_allowed ? 'Allowed' : 'Not confirmed'],
         ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
-      el('div', { class: 'actions' }, [el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openMemberNameStyleModal(item) })]),
+      el('div', { class: 'actions' }, [
+        el('button', { class: 'btn ghost small', text: 'Edit', onclick: () => openMemberNameStyleModal(item) }),
+        el('button', { class: enabled ? 'btn danger small' : 'btn success small', text: enabled ? 'Disable' : 'Enable', onclick: () => setMemberNameStyleAvailability(item, !enabled) }),
+      ]),
     ].filter(Boolean),
   });
 }
@@ -14104,6 +14188,7 @@ function openMemberNameStyleModal(item) {
     previewText: item?.previewText || item?.preview_text || 'Ying',
     supportedScripts: Array.isArray(item?.supportedScripts) ? item.supportedScripts.join(',') : (item?.supported_scripts || 'LATIN'),
     licenseType: item?.licenseType || item?.license_type || '',
+    licensePreset: normalizeMemberNameStyleLicensePreset(item?.licenseType || item?.license_type || ''),
     licenseSource: item?.licenseSource || item?.license_source || '',
     commercialUseAllowed: Boolean(item?.commercialUseAllowed || item?.commercial_use_allowed),
     redistributionAllowed: Boolean(item?.redistributionAllowed || item?.redistribution_allowed),
@@ -14141,14 +14226,17 @@ function renderMemberNameStyleModal() {
   const description = el('textarea', { rows: '2', placeholder: 'Short user-facing description' }); description.value = modal.description || ''; description.addEventListener('input', () => { modal.description = description.value; });
   const sortOrder = el('input', { type: 'number', value: String(modal.sortOrder || 0) }); sortOrder.addEventListener('input', () => { modal.sortOrder = Number(sortOrder.value || 0); });
   const scripts = el('input', { value: modal.supportedScripts || 'LATIN', placeholder: 'LATIN,HAN' }); scripts.addEventListener('input', () => { modal.supportedScripts = scripts.value; });
-  const licenseType = el('input', { value: modal.licenseType || '', placeholder: 'OFL-1.1 / Commercial license' }); licenseType.addEventListener('input', () => { modal.licenseType = licenseType.value; });
-  const licenseSource = el('input', { value: modal.licenseSource || '', placeholder: 'License/source reference' }); licenseSource.addEventListener('input', () => { modal.licenseSource = licenseSource.value; });
+  const licensePreset = select(Object.keys(MEMBER_NAME_STYLE_LICENSE_PRESETS), modal.licensePreset || '', (value) => { applyMemberNameStyleLicensePreset(modal, value); render(); });
+  [...licensePreset.options].forEach((option) => { option.textContent = MEMBER_NAME_STYLE_LICENSE_PRESETS[option.value]?.label || option.value; });
+  const activeLicensePreset = MEMBER_NAME_STYLE_LICENSE_PRESETS[modal.licensePreset || ''] || MEMBER_NAME_STYLE_LICENSE_PRESETS[''];
+  const licenseType = el('input', { value: modal.licenseType || '', placeholder: 'OFL-1.1 / Commercial license', disabled: Boolean(activeLicensePreset.locked) }); licenseType.addEventListener('input', () => { modal.licenseType = licenseType.value; });
+  const licenseSource = el('input', { value: modal.licenseSource || '', placeholder: 'Example: Google Fonts - Cinzel' }); licenseSource.addEventListener('input', () => { modal.licenseSource = licenseSource.value; });
   const eligibility = select(['MEMBER', 'ALL'], modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
   const enabled = el('input', { type: 'checkbox' }); enabled.checked = Boolean(modal.enabled); enabled.addEventListener('change', () => { modal.enabled = enabled.checked; });
   const featured = el('input', { type: 'checkbox' }); featured.checked = Boolean(modal.featured); featured.addEventListener('change', () => { modal.featured = featured.checked; });
-  const commercial = el('input', { type: 'checkbox' }); commercial.checked = Boolean(modal.commercialUseAllowed); commercial.addEventListener('change', () => { modal.commercialUseAllowed = commercial.checked; });
-  const redistribute = el('input', { type: 'checkbox' }); redistribute.checked = Boolean(modal.redistributionAllowed); redistribute.addEventListener('change', () => { modal.redistributionAllowed = redistribute.checked; });
-  const attribution = el('input', { type: 'checkbox' }); attribution.checked = Boolean(modal.attributionRequired); attribution.addEventListener('change', () => { modal.attributionRequired = attribution.checked; });
+  const commercial = el('input', { type: 'checkbox', disabled: Boolean(activeLicensePreset.locked) }); commercial.checked = Boolean(modal.commercialUseAllowed); commercial.addEventListener('change', () => { modal.commercialUseAllowed = commercial.checked; });
+  const redistribute = el('input', { type: 'checkbox', disabled: Boolean(activeLicensePreset.locked) }); redistribute.checked = Boolean(modal.redistributionAllowed); redistribute.addEventListener('change', () => { modal.redistributionAllowed = redistribute.checked; });
+  const attribution = el('input', { type: 'checkbox', disabled: Boolean(activeLicensePreset.locked) }); attribution.checked = Boolean(modal.attributionRequired); attribution.addEventListener('change', () => { modal.attributionRequired = attribution.checked; });
   const file = el('input', { type: 'file', accept: '.ttf,.otf,font/ttf,font/otf' });
   file.addEventListener('change', async () => {
     const selected = file.files?.[0];
@@ -14178,14 +14266,16 @@ function renderMemberNameStyleModal() {
     el('div', { class: 'field' }, [el('label', { text: 'Description' }), description]),
     el('div', { class: 'field' }, [el('label', { text: modal.assetPath ? 'Font file' : 'Font file · required before enabling' }), file, el('small', { class: 'field-help', text: modal.assetFileName || (modal.assetPath ? 'Current private font is kept unless replaced.' : 'TTF/OTF only · max 2 MB. Core generates the lightweight picker preview.') })]),
     el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field' }, [el('label', { text: 'License preset' }), licensePreset, el('small', { class: 'field-help', text: activeLicensePreset.locked ? 'Known license rules are applied automatically.' : 'Commercial/custom licenses keep the policy fields editable.' })]),
+      el('div', { class: 'field' }, [el('label', { text: 'License/source' }), licenseSource, el('small', { class: 'field-help', text: 'Where the font came from, e.g. Google Fonts - Cinzel.' })]),
       el('div', { class: 'field' }, [el('label', { text: 'License type' }), licenseType]),
-      el('div', { class: 'field' }, [el('label', { text: 'License/source' }), licenseSource]),
     ]),
+    activeLicensePreset.locked ? el('div', { class: 'compact-guidance' }, [el('strong', { text: 'License rules applied automatically' }), el('span', { text: ` · Commercial ${modal.commercialUseAllowed ? 'allowed' : 'not allowed'} · Redistribution ${modal.redistributionAllowed ? 'allowed' : 'not allowed'} · Attribution ${modal.attributionRequired ? 'required' : 'not required'}.` })]) : null,
     el('div', { class: 'member-frame-publish-grid' }, [
       el('label', { class: 'check-row' }, [commercial, el('span', {}, [el('strong', { text: 'Commercial use allowed' })])]),
       el('label', { class: 'check-row' }, [redistribute, el('span', {}, [el('strong', { text: 'Redistribution allowed' })])]),
       el('label', { class: 'check-row' }, [attribution, el('span', {}, [el('strong', { text: 'Attribution required' })])]),
-      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: 'Available in app' })])]),
+      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: 'Available in app' })]), el('small', { class: 'field-help', text: 'Turn this on to publish the style to eligible users. Disabled styles can also be re-enabled from the catalog list.' })]),
       el('label', { class: 'check-row' }, [featured, el('span', {}, [el('strong', { text: 'Featured' })])]),
     ]),
     el('div', { class: 'field' }, [el('label', { text: 'Internal note · optional' }), reason]),
