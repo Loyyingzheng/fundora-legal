@@ -154,6 +154,7 @@ const API_PATHS = {
   rewardCampaign: {
     get: '/api/admin/rewards/campaign',
     assignFrame: (achievementType) => `/api/admin/rewards/campaign/frame-assignments/${encodeURIComponent(achievementType)}`,
+    frameReconciliation: '/api/admin/rewards/campaign/frame-reconciliation',
   },
   memberFrames: {
     list: '/api/admin/member-frames',
@@ -15042,6 +15043,9 @@ function openMemberFrameModal(item) {
     rewardCampaign: null,
     rewardCampaignLoading: false,
     rewardAssignmentError: '',
+    rewardReconciliation: null,
+    rewardReconciliationError: '',
+    rewardReconciliationLoading: false,
     rewardAchievementType: '',
     rewardCoreSaved: false,
     rewardAssignmentPending: false,
@@ -15106,11 +15110,47 @@ async function loadRewardFrameAssignmentContext(frameCode = '') {
     const bound = frameCode ? mappings.find((row) => String(row?.frameCatalogKey || '') === String(frameCode)) : null;
     if (bound) modal.rewardAchievementType = bound.achievementType || '';
     modal.rewardCampaignLoading = false;
+    modal.rewardReconciliationLoading = true;
+    render();
+    try {
+      modal.rewardReconciliation = normalizeAdminObjectResponse(await api(API_PATHS.rewardCampaign.frameReconciliation, { service: 'collaboration' }));
+      modal.rewardReconciliationError = '';
+    } catch (reconciliationError) {
+      modal.rewardReconciliation = null;
+      modal.rewardReconciliationError = toFriendlyErrorMessage(reconciliationError, 'Unable to inspect Reward frame reconciliation status.');
+    } finally {
+      modal.rewardReconciliationLoading = false;
+    }
     render();
   } catch (error) {
     if (state.modal !== modal) return;
     modal.rewardCampaignLoading = false;
     modal.rewardAssignmentError = toFriendlyErrorMessage(error, 'Unable to load Reward campaign mappings.');
+    render();
+  }
+}
+
+async function reconcileRewardFrameProjections(modal) {
+  if (!modal?.rewardCampaign) throw new Error('Reward campaign is not loaded.');
+  modal.rewardReconciliationLoading = true;
+  modal.rewardReconciliationError = '';
+  render();
+  try {
+    const result = normalizeAdminObjectResponse(await api(API_PATHS.rewardCampaign.frameReconciliation, {
+      service: 'collaboration',
+      method: 'POST',
+      body: {
+        expectedCampaignVersion: modal.rewardCampaign.version,
+        expectedRulesRevision: modal.rewardCampaign.rulesRevision,
+      },
+    }));
+    modal.rewardReconciliation = result?.report || null;
+    modal.rewardReconciliationError = '';
+    setMessage(`Reward projections reconciled${Number(result?.repairedSnapshotCount || 0) ? ` · ${Number(result.repairedSnapshotCount)} repaired` : ''}.`);
+  } catch (error) {
+    modal.rewardReconciliationError = toFriendlyErrorMessage(error, 'Reward frame reconciliation failed.');
+  } finally {
+    modal.rewardReconciliationLoading = false;
     render();
   }
 }
@@ -15165,6 +15205,10 @@ function renderRewardFrameAssignment(modal) {
   const selected = mappings.find((row) => String(row.achievementType || '') === String(modal.rewardAchievementType || '')) || null;
   const currentCode = selected?.frameCatalogKey || '';
   const replacing = Boolean(selected && modal.code && currentCode && currentCode !== modal.code);
+  const reconciliationFrames = Array.isArray(modal.rewardReconciliation?.frames) ? modal.rewardReconciliation.frames : [];
+  const selectedReconciliation = reconciliationFrames.find((row) => String(row?.achievementType || '') === String(modal.rewardAchievementType || '')) || null;
+  const allMappingsCoreReady = reconciliationFrames.length > 0 && reconciliationFrames.every((row) => row?.readinessReady === true);
+  const staleProjectionCount = reconciliationFrames.reduce((sum, row) => sum + Number(row?.staleUnearnedSnapshotCount || 0), 0);
   const readinessItems = [
     ['Artwork', memberFrameModalHasArtwork(modal) ? 'Ready' : 'Missing'],
     ['Ownership', 'System grant only'],
@@ -15190,6 +15234,24 @@ function renderRewardFrameAssignment(modal) {
     ]),
     replacing ? renderPolicySafetyNote('Mapping replacement', `This milestone currently maps to “${currentCode}”. Saving will change future grants to this frame. Existing earned ownership is not revoked.`) : null,
     modal.rewardAssignmentPending ? renderPolicySafetyNote('Frame saved · mapping pending', 'The Core frame and asset are already saved. Retry only the Reward assignment; the frame will not be uploaded or created a second time.') : null,
+    selectedReconciliation ? el('div', { class: 'member-frame-mode-summary' }, [
+      el('strong', { text: `Mapping health · ${selectedReconciliation.status || 'UNKNOWN'}` }),
+      el('span', { text: selectedReconciliation.readinessReady
+        ? `Core ready · stale unearned snapshots: ${Number(selectedReconciliation.staleUnearnedSnapshotCount || 0)} · earned history preserved: ${Number(selectedReconciliation.earnedAchievementCount || 0)}`
+        : `Core not ready: ${selectedReconciliation.readinessReason || 'UNKNOWN'}. Select the correct existing Core frame and save; Admin will not guess a replacement.` }),
+    ]) : null,
+    modal.rewardReconciliationError ? el('div', { class: 'member-frame-assignment-error', role: 'alert' }, [
+      el('strong', { text: 'Reconciliation diagnostics unavailable' }),
+      el('span', { text: modal.rewardReconciliationError }),
+    ]) : null,
+    staleProjectionCount > 0 ? el('button', {
+      class: 'btn secondary small',
+      type: 'button',
+      disabled: modal.rewardReconciliationLoading || !allMappingsCoreReady,
+      text: modal.rewardReconciliationLoading ? 'Reconciling…' : 'Repair Reward projections',
+      title: allMappingsCoreReady ? 'Repair only unearned participant snapshots to the authoritative campaign mapping.' : 'Every current mapping must pass Core readiness before projection repair can run.',
+      onclick: () => reconcileRewardFrameProjections(modal),
+    }) : null,
     el('div', { class: 'member-frame-mode-summary' }, [
       el('strong', { text: 'Readiness' }),
       el('span', { text: readinessItems.map(([k,v]) => `${k}: ${v}`).join(' · ') }),
@@ -15379,8 +15441,25 @@ async function assignRewardFrameFromModal(modal) {
       expectedCurrentFrameCatalogKey: selected.frameCatalogKey || null,
     },
   }));
+  const persisted = (Array.isArray(updatedCampaign?.achievementFrames) ? updatedCampaign.achievementFrames : [])
+    .find((row) => String(row?.achievementType || '') === String(selected.achievementType || ''));
+  if (!persisted || String(persisted.frameCatalogKey || '') !== String(modal.code || '')) {
+    throw new Error('Reward assignment did not converge to the saved Core frame. Refresh and retry.');
+  }
   modal.rewardCampaign = updatedCampaign;
   modal.rewardAssignmentPending = false;
+  try {
+    modal.rewardReconciliation = normalizeAdminObjectResponse(await api(API_PATHS.rewardCampaign.frameReconciliation, { service: 'collaboration' }));
+    modal.rewardReconciliationError = '';
+    const item = (Array.isArray(modal.rewardReconciliation?.frames) ? modal.rewardReconciliation.frames : [])
+      .find((row) => String(row?.achievementType || '') === String(selected.achievementType || ''));
+    if (!item || item.readinessReady !== true || Number(item.staleUnearnedSnapshotCount || 0) !== 0) {
+      throw new Error('Reward assignment persisted, but its projection/readiness post-condition is not healthy. Retry reconciliation.');
+    }
+  } catch (verificationError) {
+    modal.rewardAssignmentPending = true;
+    throw verificationError;
+  }
   return updatedCampaign;
 }
 
