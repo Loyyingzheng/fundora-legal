@@ -67,6 +67,11 @@ module.exports = [
     "tier": "core"
   },
   {
+    "file": "memberFrameCreateModeAdminAudit.test.js",
+    "domain": "member-frame",
+    "tier": "core"
+  },
+  {
     "file": "responsiveWebUiAudit.test.js",
     "domain": "ui",
     "tier": "core"

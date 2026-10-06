@@ -1770,7 +1770,7 @@ const NAV_GROUPS = [
     title: 'Operations',
     items: [
       { id: 'announcements', label: 'Announcements', helper: 'Remote notices', description: 'Create user-facing app notices without shipping a new app version.', info: 'Use announcements for maintenance, updates, or important messages. Keep copy short; details are hidden in the app until users choose to read or act.' },
-      { id: 'memberFrames', label: 'Member Frames', helper: 'Yearly avatar assets', description: 'Upload and schedule private yearly member avatar frames without shipping a new app build.', info: 'PNG assets stay in private storage. Admin controls claim windows and eligibility; mobile receives only metadata until a frame is claimed or needs authenticated display.' },
+      { id: 'memberFrames', label: 'Member Frames', helper: 'Event & reward avatar assets', description: 'Create scheduled event frames or backend-granted reward frames without shipping a new app build.', info: 'Event frames use a user claim window. Reward frames use trusted backend grants with no global claim dates. PNG assets stay in private storage and Core remains the ownership authority.' },
       { id: 'memberNameStyles', label: 'Member Name Styles', helper: 'Dynamic font catalog', description: 'Upload licensed Member name fonts without shipping a new app build.', info: 'Mobile loads lightweight metadata/preview first and downloads the actual font only when a user chooses it or when a public Member identity needs rendering.' },
       { id: 'premium', label: 'Reward Surveys', helper: 'Trial reward', description: 'Review feedback-trial reward surveys and related service-credit workflows.', info: 'Use this section to verify survey submissions and keep reward decisions traceable.' },
       { id: 'review', label: 'Review Prompts', helper: 'Store prompt', description: 'Monitor app review prompt eligibility and outcomes.', info: 'Review prompt data helps tune rating prompts without showing private finance content.' },
@@ -14287,6 +14287,10 @@ function openMemberNameStyleModal(item) {
     code: item?.code || null,
     title: item?.title || '',
     description: item?.description || '',
+    frameMode: (item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM') === 'SYSTEM_GRANT_ONLY' ? 'REWARD' : 'EVENT',
+    eventEligibilityType: (item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM') === 'SYSTEM_GRANT_ONLY'
+      ? 'MEMBER'
+      : (item?.eligibilityType || item?.eligibility_type || 'MEMBER'),
     eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
     ownershipPolicy: item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM',
     enabled: Boolean(item?.enabled),
@@ -14778,7 +14782,7 @@ function renderMemberFrameToolbar() {
 function memberFrameStatus(item) {
   if (!item.enabled) return { text: 'Disabled', tone: 'neutral' };
   const ownershipPolicy = item.ownershipPolicy || item.ownership_policy || 'USER_CLAIM';
-  if (ownershipPolicy === 'SYSTEM_GRANT_ONLY') return { text: 'System grant only', tone: 'info' };
+  if (ownershipPolicy === 'SYSTEM_GRANT_ONLY') return { text: 'Reward frame active', tone: 'success' };
   const now = Date.now();
   const start = item.claimStartAt || item.claim_start_at ? new Date(item.claimStartAt || item.claim_start_at).getTime() : null;
   const end = item.claimEndAt || item.claim_end_at ? new Date(item.claimEndAt || item.claim_end_at).getTime() : null;
@@ -14791,7 +14795,7 @@ function renderMemberFrameItem(item) {
   const status = memberFrameStatus(item);
   const eligibility = (item.eligibilityType || item.eligibility_type || 'MEMBER') === 'ALL' ? 'All users' : 'Members only';
   const ownershipPolicy = item.ownershipPolicy || item.ownership_policy || 'USER_CLAIM';
-  const ownershipLabel = ownershipPolicy === 'SYSTEM_GRANT_ONLY' ? 'System grant only' : 'User claim';
+  const ownershipLabel = ownershipPolicy === 'SYSTEM_GRANT_ONLY' ? 'Reward frame · system grant' : 'Event frame · user claim';
   return renderCollapsibleItem({
     title: item.title || 'Member frame',
     subtitle: `${item.releaseYear || item.release_year || '-'} · ${ownershipLabel} · ${eligibility}${item.featured ? ' · Featured' : ''}`,
@@ -14978,17 +14982,6 @@ function memberFrameEligibilitySelect(current, onChange) {
   return node;
 }
 
-function memberFrameOwnershipPolicySelect(current, onChange) {
-  const node = el('select');
-  [
-    ['USER_CLAIM', 'User can claim'],
-    ['SYSTEM_GRANT_ONLY', 'System grant only'],
-  ].forEach(([value, text]) => node.appendChild(el('option', { value, text })));
-  node.value = current || 'USER_CLAIM';
-  node.addEventListener('change', () => onChange(node.value));
-  return node;
-}
-
 async function loadMemberFramePreview(id) {
   if (!id || state.modal?.id !== id || state.modal?.previewLoading) return;
   state.modal.previewLoading = true;
@@ -15056,9 +15049,49 @@ function renderMemberFrameModal() {
   title.addEventListener('input', () => { modal.title = title.value; });
   const year = el('input', { type: 'number', min: '2026', max: '2200', value: modal.releaseYear || new Date().getFullYear() });
   year.addEventListener('input', () => { modal.releaseYear = year.value; });
-  const eligibility = memberFrameEligibilitySelect(modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
-  const ownershipPolicy = memberFrameOwnershipPolicySelect(modal.ownershipPolicy || 'USER_CLAIM', (value) => { modal.ownershipPolicy = value; render(); });
-  const isSystemGrantOnly = modal.ownershipPolicy === 'SYSTEM_GRANT_ONLY';
+  const frameMode = modal.frameMode === 'REWARD' ? 'REWARD' : 'EVENT';
+  const isRewardFrame = frameMode === 'REWARD';
+  const eligibility = memberFrameEligibilitySelect(modal.eligibilityType || 'MEMBER', (value) => {
+    modal.eligibilityType = value;
+    modal.eventEligibilityType = value;
+  });
+  const setFrameMode = (nextMode) => {
+    const normalized = nextMode === 'REWARD' ? 'REWARD' : 'EVENT';
+    if (normalized === modal.frameMode) return;
+    if (normalized === 'REWARD') {
+      modal.eventEligibilityType = modal.eligibilityType || modal.eventEligibilityType || 'MEMBER';
+      modal.frameMode = 'REWARD';
+      modal.ownershipPolicy = 'SYSTEM_GRANT_ONLY';
+      modal.eligibilityType = 'ALL';
+    } else {
+      modal.frameMode = 'EVENT';
+      modal.ownershipPolicy = 'USER_CLAIM';
+      modal.eligibilityType = modal.eventEligibilityType || 'MEMBER';
+    }
+    render();
+  };
+  const frameModeTabs = el('div', { class: 'member-frame-mode-tabs', role: 'tablist', 'aria-label': 'Frame type' }, [
+    el('button', {
+      type: 'button',
+      role: 'tab',
+      'aria-selected': frameMode === 'EVENT' ? 'true' : 'false',
+      class: `member-frame-mode-tab ${frameMode === 'EVENT' ? 'active' : ''}`.trim(),
+      onclick: () => setFrameMode('EVENT'),
+    }, [
+      el('strong', { text: 'Event frame' }),
+      el('span', { text: 'Users claim it during a scheduled window.' }),
+    ]),
+    el('button', {
+      type: 'button',
+      role: 'tab',
+      'aria-selected': frameMode === 'REWARD' ? 'true' : 'false',
+      class: `member-frame-mode-tab ${frameMode === 'REWARD' ? 'active' : ''}`.trim(),
+      onclick: () => setFrameMode('REWARD'),
+    }, [
+      el('strong', { text: 'Reward frame' }),
+      el('span', { text: 'Granted automatically when backend eligibility is met.' }),
+    ]),
+  ]);
   const startTime = el('input', { type: 'time', value: modal.claimStartTimeText || '00:00' });
   startTime.addEventListener('input', () => { modal.claimStartTimeText = startTime.value; });
   const endTime = el('input', { type: 'time', value: modal.claimEndTimeText || '23:59' });
@@ -15119,19 +15152,45 @@ function renderMemberFrameModal() {
         el('small', { class: 'field-help', text: modal.assetFileName ? 'Preview shown above. The backend validates a square transparent PNG and enforces the central 48% portrait safe zone before storage.' : (modal.assetPath ? 'Current private asset is kept unless you replace it.' : 'Transparent square PNG · max 5 MB · keep the central 48% portrait safe zone transparent · validated by backend · not bundled into the AAB.') }),
       ]),
     ]),
+    frameModeTabs,
+    el('div', { class: 'member-frame-mode-summary' }, [
+      el('strong', { text: isRewardFrame ? 'Reward frame' : 'Event frame' }),
+      el('span', { text: isRewardFrame
+        ? 'No claim dates. Core only allows trusted system grants, and earned ownership remains displayable without an active Member/Pro plan.'
+        : 'Use a claim window for seasonal, launch, anniversary, or other time-limited collectible frames.' }),
+    ]),
     el('div', { class: 'form-grid two' }, [
       el('div', { class: 'field' }, [el('label', { text: 'Display name' }), title, el('small', { class: 'field-help', text: 'Shown to users. If blank when you choose a file, the file name is used as a starting point.' })]),
       el('div', { class: 'field' }, [el('label', { text: 'Release year' }), year]),
-      el('div', { class: 'field' }, [el('label', { text: 'Who can display it' }), eligibility]),
-      el('div', { class: 'field' }, [el('label', { text: 'Ownership method' }), ownershipPolicy, el('small', { class: 'field-help', text: isSystemGrantOnly ? 'Only trusted backend flows can grant ownership. Public Claim API is blocked.' : 'Authenticated users may claim this frame during the configured claim window.' })]),
-      ...(isSystemGrantOnly ? [] : [
-        el('div', { class: 'field' }, [el('label', { text: 'Claim opens' }), start]),
-        el('div', { class: 'field' }, [el('label', { text: 'Claim closes' }), end]),
-      ]),
+      ...(isRewardFrame
+        ? [
+            el('div', { class: 'field member-frame-locked-field' }, [
+              el('label', { text: 'Ownership' }),
+              el('strong', { text: 'System grant only' }),
+              el('small', { class: 'field-help', text: 'The public Claim API cannot grant this frame.' }),
+            ]),
+            el('div', { class: 'field member-frame-locked-field' }, [
+              el('label', { text: 'Display access' }),
+              el('strong', { text: 'Permanent for users who earn it' }),
+              el('small', { class: 'field-help', text: 'Saved as eligibility ALL; Reward ownership remains usable after Member/Pro expires.' }),
+            ]),
+          ]
+        : [
+            el('div', { class: 'field' }, [el('label', { text: 'Who can display it' }), eligibility]),
+            el('div', { class: 'field member-frame-locked-field' }, [
+              el('label', { text: 'Ownership' }),
+              el('strong', { text: 'User claim' }),
+              el('small', { class: 'field-help', text: 'Authenticated users may claim during the configured window.' }),
+            ]),
+            el('div', { class: 'field' }, [el('label', { text: 'Claim opens' }), start]),
+            el('div', { class: 'field' }, [el('label', { text: 'Claim closes' }), end]),
+          ]),
     ]),
-    isSystemGrantOnly ? renderPolicySafetyNote('System grant only', 'This frame cannot be claimed through the public Member Frame Claim API. Reward or other trusted backend flows must grant ownership. Display eligibility remains a separate rule.') : null,
+    isRewardFrame
+      ? renderPolicySafetyNote('Backend-managed reward', 'Active/disabled controls whether trusted reward grants may use this frame. Each user receives it when the Reward backend confirms their achievement; there is no global claim window.')
+      : renderPolicySafetyNote('Scheduled user claim', 'The frame can be discovered and claimed only while it is enabled and the claim window is open.'),
     el('div', { class: 'member-frame-publish-grid' }, [
-      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: 'Available' }), el('small', { text: isSystemGrantOnly ? ' Trusted backend grants may use this frame; claim window does not apply.' : ' Users can discover this frame during its claim window.' })])]),
+      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: isRewardFrame ? 'Reward frame active' : 'Available' }), el('small', { text: isRewardFrame ? ' Trusted backend grants may use this frame while active.' : ' Users can discover and claim this frame during its claim window.' })])]),
       el('label', { class: 'check-row' }, [featured, el('span', {}, [el('strong', { text: 'Feature this frame' }), el('small', { text: ' Makes it the current highlighted yearly frame.' })])]),
     ]),
     el('details', { class: 'member-frame-advanced' }, [
@@ -15148,12 +15207,17 @@ async function submitMemberFrameModal() {
   modal.error = '';
   if (!String(modal.title || '').trim()) return setMemberFrameModalError('Display name is required.');
   if (!modal.assetFile && !modal.assetPath) return setMemberFrameModalError('Choose a transparent PNG frame.');
-  const isSystemGrantOnly = modal.ownershipPolicy === 'SYSTEM_GRANT_ONLY';
-  const claimStartIso = isSystemGrantOnly ? null : parseMemberFrameParts(modal.claimStartParts, modal.claimStartTimeText);
-  const claimEndIso = isSystemGrantOnly ? null : parseMemberFrameParts(modal.claimEndParts, modal.claimEndTimeText);
-  if (!isSystemGrantOnly && !claimStartIso) return setMemberFrameModalError('Choose a valid claim open date and time.');
-  if (!isSystemGrantOnly && !claimEndIso) return setMemberFrameModalError('Choose a valid claim close date and time.');
-  if (!isSystemGrantOnly && new Date(claimStartIso).getTime() >= new Date(claimEndIso).getTime()) return setMemberFrameModalError('Claim close must be later than claim open.');
+  const frameMode = modal.frameMode === 'REWARD' ? 'REWARD' : 'EVENT';
+  const isRewardFrame = frameMode === 'REWARD';
+  // Frame type is an Admin presentation choice only. Core remains authoritative through
+  // ownershipPolicy + eligibilityType + claim-window invariants.
+  modal.ownershipPolicy = isRewardFrame ? 'SYSTEM_GRANT_ONLY' : 'USER_CLAIM';
+  modal.eligibilityType = isRewardFrame ? 'ALL' : (modal.eventEligibilityType || modal.eligibilityType || 'MEMBER');
+  const claimStartIso = isRewardFrame ? null : parseMemberFrameParts(modal.claimStartParts, modal.claimStartTimeText);
+  const claimEndIso = isRewardFrame ? null : parseMemberFrameParts(modal.claimEndParts, modal.claimEndTimeText);
+  if (!isRewardFrame && !claimStartIso) return setMemberFrameModalError('Choose a valid claim open date and time.');
+  if (!isRewardFrame && !claimEndIso) return setMemberFrameModalError('Choose a valid claim close date and time.');
+  if (!isRewardFrame && new Date(claimStartIso).getTime() >= new Date(claimEndIso).getTime()) return setMemberFrameModalError('Claim close must be later than claim open.');
   modal.loading = true; render();
   try {
     if (modal.assetFile) {

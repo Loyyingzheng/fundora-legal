@@ -6414,6 +6414,51 @@ body {
 }
 
 /* Member frame campaign editor */
+
+.member-frame-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 2px 0 4px;
+}
+.member-frame-mode-tab {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.member-frame-mode-tab strong { font-size: .95rem; }
+.member-frame-mode-tab span { color: var(--muted); font-size: .8rem; line-height: 1.35; }
+.member-frame-mode-tab.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.member-frame-mode-summary {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+.member-frame-mode-summary span {
+  color: var(--muted);
+  font-size: .82rem;
+  line-height: 1.4;
+}
+.member-frame-locked-field {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+.member-frame-locked-field > strong { color: var(--text); font-size: .92rem; }
+
 .member-frame-preview-shell {
   height: 188px;
   display: grid;
@@ -6627,3 +6672,7 @@ body {
 }
 .admin-render-failure-banner p { margin: 4px 0; }
 .entitlement-render-error { border-color: var(--danger-border, #f3b4b4); }
+
+@media (max-width: 720px) {
+  .member-frame-mode-tabs { grid-template-columns: 1fr; }
+}
