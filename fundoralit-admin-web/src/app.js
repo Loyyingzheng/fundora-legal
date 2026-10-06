@@ -158,6 +158,7 @@ const API_PATHS = {
     uploadAsset: '/api/admin/member-frames/assets',
     uploadAssetRaw: '/api/admin/member-frames/assets/raw',
     preview: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}/preview-ticket`,
+    ownerships: '/api/admin/member-frames/ownerships',
   },
   memberNameStyles: {
     list: '/api/admin/member-name-styles',
@@ -7489,6 +7490,7 @@ function renderAdminModal() {
   if (state.modal.kind === 'memberOverride') return renderMemberOverrideModal();
   if (state.modal.kind === 'announcementEdit') return renderAnnouncementModal();
   if (state.modal.kind === 'memberFrameEdit') return renderMemberFrameModal();
+  if (state.modal.kind === 'memberFrameOwnershipLog') return renderMemberFrameOwnershipLogModal();
   if (state.modal.kind === 'memberNameStyleEdit') return renderMemberNameStyleModal();
   if (state.modal.kind === 'emergencyAction') return renderEmergencyActionModal();
   if (state.modal.kind === 'emergencyRuleAction') return renderEmergencyRuleActionModal();
@@ -13911,7 +13913,7 @@ function renderAdminControlPage() {
     children.push(renderAdminControlHero('Member Frames', 'Operate yearly and limited avatar frames from the backend instead of the AAB.', 'Assets are uploaded to a private Supabase bucket. Users see metadata first; the app requests short-lived delivery only after claim or when an authenticated shared-group view needs to render that frame.'));
     children.push(renderMemberFrameToolbar());
     children.push(renderStats(items));
-    children.push(renderPolicySafetyNote('Use transparent square PNG files. Set a claim window and display access explicitly. Claim ownership is available to all users; eligibility controls who may apply/display the frame. “Featured” is only presentation priority; ownership remains permanent until an explicit future revoke workflow is used.'));
+    children.push(renderPolicySafetyNote('Use transparent square PNG files. Set a claim window and display access explicitly. Ownership method controls how the frame is acquired; display eligibility separately controls who may apply/display an already-owned frame. “Featured” is only presentation priority; ownership remains permanent until an explicit future revoke workflow is used.'));
     children.push(renderControlList(items, renderMemberFrameItem, 'No member frames configured.'));
   } else if (state.activeTab === 'memberNameStyles') {
     children.push(renderAdminControlHero('Member Name Styles', 'Operate the Member font catalog from Core without shipping a new app build.', 'Upload only licensed TTF/OTF files. Core generates a lightweight preview. Mobile downloads the real font lazily only after selection or when it must render a public Member identity.'));
@@ -14286,6 +14288,7 @@ function openMemberNameStyleModal(item) {
     title: item?.title || '',
     description: item?.description || '',
     eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
+    ownershipPolicy: item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM',
     enabled: Boolean(item?.enabled),
     featured: Boolean(item?.featured),
     sortOrder: Number(item?.sortOrder ?? item?.sort_order ?? 0),
@@ -14767,12 +14770,15 @@ async function submitMemberNameStyleModal() {
 function renderMemberFrameToolbar() {
   return renderControlToolbar([
     el('button', { class: 'btn', text: 'Create member frame', onclick: () => openMemberFrameModal(null) }),
+    el('button', { class: 'btn ghost', text: 'Ownership log', onclick: openMemberFrameOwnershipLog }),
     el('button', { class: 'btn ghost', text: 'Refresh', onclick: () => loadData({ force: true }) }),
   ]);
 }
 
 function memberFrameStatus(item) {
   if (!item.enabled) return { text: 'Disabled', tone: 'neutral' };
+  const ownershipPolicy = item.ownershipPolicy || item.ownership_policy || 'USER_CLAIM';
+  if (ownershipPolicy === 'SYSTEM_GRANT_ONLY') return { text: 'System grant only', tone: 'info' };
   const now = Date.now();
   const start = item.claimStartAt || item.claim_start_at ? new Date(item.claimStartAt || item.claim_start_at).getTime() : null;
   const end = item.claimEndAt || item.claim_end_at ? new Date(item.claimEndAt || item.claim_end_at).getTime() : null;
@@ -14784,16 +14790,18 @@ function memberFrameStatus(item) {
 function renderMemberFrameItem(item) {
   const status = memberFrameStatus(item);
   const eligibility = (item.eligibilityType || item.eligibility_type || 'MEMBER') === 'ALL' ? 'All users' : 'Members only';
+  const ownershipPolicy = item.ownershipPolicy || item.ownership_policy || 'USER_CLAIM';
+  const ownershipLabel = ownershipPolicy === 'SYSTEM_GRANT_ONLY' ? 'System grant only' : 'User claim';
   return renderCollapsibleItem({
     title: item.title || 'Member frame',
-    subtitle: `${item.releaseYear || item.release_year || '-'} · ${eligibility}${item.featured ? ' · Featured' : ''}`,
+    subtitle: `${item.releaseYear || item.release_year || '-'} · ${ownershipLabel} · ${eligibility}${item.featured ? ' · Featured' : ''}`,
     statusNode: el('span', { class: `badge ${status.tone}`, text: status.text }),
     children: [
       renderMetaGrid([
-        ['Release year', item.releaseYear || item.release_year], ['Who can display', eligibility],
-        ['Claim opens', formatDate(item.claimStartAt || item.claim_start_at)], ['Claim closes', formatDate(item.claimEndAt || item.claim_end_at)],
+        ['Release year', item.releaseYear || item.release_year], ['Ownership', ownershipLabel], ['Who can display', eligibility],
+        ['Claim opens', ownershipPolicy === 'SYSTEM_GRANT_ONLY' ? 'Not applicable' : formatDate(item.claimStartAt || item.claim_start_at)], ['Claim closes', ownershipPolicy === 'SYSTEM_GRANT_ONLY' ? 'Not applicable' : formatDate(item.claimEndAt || item.claim_end_at)],
         ['PNG size', `${item.imageWidth || item.image_width || '-'} × ${item.imageHeight || item.image_height || '-'}`],
-        ['Asset version', item.assetVersion || item.asset_version], ['Updated', formatDate(item.updatedAt || item.updated_at)],
+        ['Asset version', item.assetVersion || item.asset_version], ['Owners', item.ownerCount ?? item.owner_count ?? '—'], ['Updated', formatDate(item.updatedAt || item.updated_at)],
       ]),
       el('details', { class: 'member-frame-advanced' }, [
         el('summary', { text: 'System metadata' }),
@@ -14804,6 +14812,45 @@ function renderMemberFrameItem(item) {
       ]),
     ],
   });
+}
+
+async function openMemberFrameOwnershipLog() {
+  state.modal = { kind: 'memberFrameOwnershipLog', loading: true, items: [], error: '', submitLabel: 'Close', submitClass: 'btn ghost' };
+  render();
+  try {
+    const response = await api(API_PATHS.memberFrames.ownerships);
+    if (state.modal?.kind !== 'memberFrameOwnershipLog') return;
+    state.modal.items = normalizeAdminListResponse(response);
+    state.modal.loading = false;
+    render();
+  } catch (error) {
+    if (state.modal?.kind !== 'memberFrameOwnershipLog') return;
+    state.modal.loading = false;
+    state.modal.error = toFriendlyErrorMessage(error, 'Unable to load frame ownership history.');
+    render();
+  }
+}
+
+function renderMemberFrameOwnershipLogModal() {
+  const modal = state.modal || {};
+  const items = Array.isArray(modal.items) ? modal.items : [];
+  const body = modal.loading
+    ? [el('p', { class: 'muted', text: 'Loading ownership history…' })]
+    : modal.error
+      ? [el('p', { class: 'error-text', text: modal.error })]
+      : items.length
+        ? items.map((item) => el('section', { class: 'compact-guidance' }, [
+            el('strong', { text: `${item.frameTitle || item.frame_title || item.frameCode || item.frame_code || 'Member frame'} · ${item.source || 'UNKNOWN'}` }),
+            renderMetaGrid([
+              ['User', item.userId || item.user_id || '—'],
+              ['Frame', item.frameCode || item.frame_code || '—'],
+              ['Source', item.source || '—'],
+              ['Status', item.status || '—'],
+              ['Granted / claimed', formatDate(item.claimedAt || item.claimed_at)],
+            ]),
+          ]))
+        : [renderEmptyState('No frame ownership records found.')];
+  return renderControlModal('Frame ownership log', 'Ownership provenance', body, closeModal, true);
 }
 
 function formatDmyDate(value) {
@@ -14931,6 +14978,17 @@ function memberFrameEligibilitySelect(current, onChange) {
   return node;
 }
 
+function memberFrameOwnershipPolicySelect(current, onChange) {
+  const node = el('select');
+  [
+    ['USER_CLAIM', 'User can claim'],
+    ['SYSTEM_GRANT_ONLY', 'System grant only'],
+  ].forEach(([value, text]) => node.appendChild(el('option', { value, text })));
+  node.value = current || 'USER_CLAIM';
+  node.addEventListener('change', () => onChange(node.value));
+  return node;
+}
+
 async function loadMemberFramePreview(id) {
   if (!id || state.modal?.id !== id || state.modal?.previewLoading) return;
   state.modal.previewLoading = true;
@@ -14960,6 +15018,7 @@ function openMemberFrameModal(item) {
     collection: item?.collection || '',
     releaseYear: item?.releaseYear || item?.release_year || new Date().getFullYear(),
     eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
+    ownershipPolicy: item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM',
     claimStartAt: item?.claimStartAt || item?.claim_start_at || defaults.start,
     claimEndAt: item?.claimEndAt || item?.claim_end_at || defaults.end,
     claimStartDateText: formatDmyDate(item?.claimStartAt || item?.claim_start_at || defaults.start),
@@ -14998,6 +15057,8 @@ function renderMemberFrameModal() {
   const year = el('input', { type: 'number', min: '2026', max: '2200', value: modal.releaseYear || new Date().getFullYear() });
   year.addEventListener('input', () => { modal.releaseYear = year.value; });
   const eligibility = memberFrameEligibilitySelect(modal.eligibilityType || 'MEMBER', (value) => { modal.eligibilityType = value; });
+  const ownershipPolicy = memberFrameOwnershipPolicySelect(modal.ownershipPolicy || 'USER_CLAIM', (value) => { modal.ownershipPolicy = value; render(); });
+  const isSystemGrantOnly = modal.ownershipPolicy === 'SYSTEM_GRANT_ONLY';
   const startTime = el('input', { type: 'time', value: modal.claimStartTimeText || '00:00' });
   startTime.addEventListener('input', () => { modal.claimStartTimeText = startTime.value; });
   const endTime = el('input', { type: 'time', value: modal.claimEndTimeText || '23:59' });
@@ -15062,11 +15123,15 @@ function renderMemberFrameModal() {
       el('div', { class: 'field' }, [el('label', { text: 'Display name' }), title, el('small', { class: 'field-help', text: 'Shown to users. If blank when you choose a file, the file name is used as a starting point.' })]),
       el('div', { class: 'field' }, [el('label', { text: 'Release year' }), year]),
       el('div', { class: 'field' }, [el('label', { text: 'Who can display it' }), eligibility]),
-      el('div', { class: 'field' }, [el('label', { text: 'Claim opens' }), start]),
-      el('div', { class: 'field' }, [el('label', { text: 'Claim closes' }), end]),
+      el('div', { class: 'field' }, [el('label', { text: 'Ownership method' }), ownershipPolicy, el('small', { class: 'field-help', text: isSystemGrantOnly ? 'Only trusted backend flows can grant ownership. Public Claim API is blocked.' : 'Authenticated users may claim this frame during the configured claim window.' })]),
+      ...(isSystemGrantOnly ? [] : [
+        el('div', { class: 'field' }, [el('label', { text: 'Claim opens' }), start]),
+        el('div', { class: 'field' }, [el('label', { text: 'Claim closes' }), end]),
+      ]),
     ]),
+    isSystemGrantOnly ? renderPolicySafetyNote('System grant only', 'This frame cannot be claimed through the public Member Frame Claim API. Reward or other trusted backend flows must grant ownership. Display eligibility remains a separate rule.') : null,
     el('div', { class: 'member-frame-publish-grid' }, [
-      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: 'Available' }), el('small', { text: ' Users can discover this frame during its claim window.' })])]),
+      el('label', { class: 'check-row' }, [enabled, el('span', {}, [el('strong', { text: 'Available' }), el('small', { text: isSystemGrantOnly ? ' Trusted backend grants may use this frame; claim window does not apply.' : ' Users can discover this frame during its claim window.' })])]),
       el('label', { class: 'check-row' }, [featured, el('span', {}, [el('strong', { text: 'Feature this frame' }), el('small', { text: ' Makes it the current highlighted yearly frame.' })])]),
     ]),
     el('details', { class: 'member-frame-advanced' }, [
@@ -15083,11 +15148,12 @@ async function submitMemberFrameModal() {
   modal.error = '';
   if (!String(modal.title || '').trim()) return setMemberFrameModalError('Display name is required.');
   if (!modal.assetFile && !modal.assetPath) return setMemberFrameModalError('Choose a transparent PNG frame.');
-  const claimStartIso = parseMemberFrameParts(modal.claimStartParts, modal.claimStartTimeText);
-  const claimEndIso = parseMemberFrameParts(modal.claimEndParts, modal.claimEndTimeText);
-  if (!claimStartIso) return setMemberFrameModalError('Choose a valid claim open date and time.');
-  if (!claimEndIso) return setMemberFrameModalError('Choose a valid claim close date and time.');
-  if (new Date(claimStartIso).getTime() >= new Date(claimEndIso).getTime()) return setMemberFrameModalError('Claim close must be later than claim open.');
+  const isSystemGrantOnly = modal.ownershipPolicy === 'SYSTEM_GRANT_ONLY';
+  const claimStartIso = isSystemGrantOnly ? null : parseMemberFrameParts(modal.claimStartParts, modal.claimStartTimeText);
+  const claimEndIso = isSystemGrantOnly ? null : parseMemberFrameParts(modal.claimEndParts, modal.claimEndTimeText);
+  if (!isSystemGrantOnly && !claimStartIso) return setMemberFrameModalError('Choose a valid claim open date and time.');
+  if (!isSystemGrantOnly && !claimEndIso) return setMemberFrameModalError('Choose a valid claim close date and time.');
+  if (!isSystemGrantOnly && new Date(claimStartIso).getTime() >= new Date(claimEndIso).getTime()) return setMemberFrameModalError('Claim close must be later than claim open.');
   modal.loading = true; render();
   try {
     if (modal.assetFile) {
@@ -15112,6 +15178,7 @@ async function submitMemberFrameModal() {
       collection: modal.id ? (modal.collection || null) : null,
       releaseYear: Number(modal.releaseYear) || null,
       eligibilityType: modal.eligibilityType || 'MEMBER',
+      ownershipPolicy: modal.ownershipPolicy || 'USER_CLAIM',
       enabled: Boolean(modal.enabled),
       featured: Boolean(modal.featured),
       claimStartAt: claimStartIso,

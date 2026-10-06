@@ -1,0 +1,16 @@
+const fs=require('fs');
+const path=require('path');
+const app=fs.readFileSync(path.resolve(__dirname,'../app.js'),'utf8');
+const assert=(ok,msg)=>{if(!ok)throw new Error(msg);};
+assert(app.includes('memberFrameOwnershipPolicySelect'), 'Admin must expose ownership policy selector');
+assert(app.includes("['SYSTEM_GRANT_ONLY', 'System grant only']"), 'Admin must offer system-grant-only mode');
+assert(app.includes("ownershipPolicy: item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM'"), 'Admin edit must hydrate ownership policy');
+assert(app.includes("ownershipPolicy: modal.ownershipPolicy || 'USER_CLAIM'"), 'Admin save payload must include ownership policy');
+assert(app.includes("isSystemGrantOnly ? [] : ["), 'claim window fields must be hidden for system-grant-only frames');
+assert(app.includes('Public Claim API is blocked.'), 'Admin must explain system grant security boundary');
+assert(app.includes("['Ownership', ownershipLabel]"), 'Admin catalog must show ownership policy');
+assert(app.includes("['Owners', item.ownerCount"), 'Admin catalog must expose owner count');
+assert(app.includes('Ownership log') && app.includes('Ownership provenance'), 'Admin must expose claim/grant provenance visibility');
+assert(app.includes("['Source', item.source"), 'Ownership log must show provenance source');
+assert(app.includes('Stable code'), 'Admin must preserve stable code semantics');
+console.log('PASS member frame ownership policy admin audit');
