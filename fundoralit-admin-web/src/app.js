@@ -151,6 +151,10 @@ const API_PATHS = {
     user: '/api/admin/member-support/users',
     override: (id) => `/api/admin/member-support/users/${encodeURIComponent(id)}/override`,
   },
+  rewardCampaign: {
+    get: '/api/admin/rewards/campaign',
+    assignFrame: (achievementType) => `/api/admin/rewards/campaign/frame-assignments/${encodeURIComponent(achievementType)}`,
+  },
   memberFrames: {
     list: '/api/admin/member-frames',
     create: '/api/admin/member-frames',
@@ -158,6 +162,7 @@ const API_PATHS = {
     uploadAsset: '/api/admin/member-frames/assets',
     uploadAssetRaw: '/api/admin/member-frames/assets/raw',
     preview: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}/preview-ticket`,
+    previewContent: (id) => `/api/admin/member-frames/${encodeURIComponent(id)}/preview-content`,
     ownerships: '/api/admin/member-frames/ownerships',
   },
   memberNameStyles: {
@@ -14986,10 +14991,13 @@ async function loadMemberFramePreview(id) {
   if (!id || state.modal?.id !== id || state.modal?.previewLoading) return;
   state.modal.previewLoading = true;
   try {
-    const data = normalizeAdminObjectResponse(await api(API_PATHS.memberFrames.preview(id), { method: 'POST' }));
+    const response = await apiRaw(API_PATHS.memberFrames.previewContent(id), { accept: 'image/png' });
+    const blob = await response.blob();
+    const previewUrl = await blobToDataUrl(blob);
     if (state.modal?.id === id) {
-      state.modal.remotePreviewUrl = data.url || '';
+      state.modal.remotePreviewUrl = previewUrl;
       state.modal.previewLoading = false;
+      state.modal.previewUnavailable = false;
       render();
     }
   } catch (_) {
@@ -15012,6 +15020,16 @@ function openMemberFrameModal(item) {
     releaseYear: item?.releaseYear || item?.release_year || new Date().getFullYear(),
     eligibilityType: item?.eligibilityType || item?.eligibility_type || 'MEMBER',
     ownershipPolicy: item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM',
+    frameMode: (item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM') === 'SYSTEM_GRANT_ONLY' ? 'REWARD' : 'EVENT',
+    eventEligibilityType: (item?.ownershipPolicy || item?.ownership_policy || 'USER_CLAIM') === 'SYSTEM_GRANT_ONLY'
+      ? 'MEMBER'
+      : (item?.eligibilityType || item?.eligibility_type || 'MEMBER'),
+    rewardCampaign: null,
+    rewardCampaignLoading: false,
+    rewardAssignmentError: '',
+    rewardAchievementType: '',
+    rewardCoreSaved: false,
+    rewardAssignmentPending: false,
     claimStartAt: item?.claimStartAt || item?.claim_start_at || defaults.start,
     claimEndAt: item?.claimEndAt || item?.claim_end_at || defaults.end,
     claimStartDateText: formatDmyDate(item?.claimStartAt || item?.claim_start_at || defaults.start),
@@ -15041,6 +15059,93 @@ function openMemberFrameModal(item) {
   };
   render();
   if (item?.id) loadMemberFramePreview(item.id);
+  if ((item?.ownershipPolicy || item?.ownership_policy || '') === 'SYSTEM_GRANT_ONLY') {
+    loadRewardFrameAssignmentContext(item?.code || '');
+  }
+}
+
+function rewardAchievementDisplayName(mapping) {
+  const type = String(mapping?.achievementType || '').toUpperCase();
+  if (type.includes('48')) return 'Founding Connector';
+  if (type.includes('72')) return 'Founding Ambassador';
+  if (type.includes('100')) return 'Founding 100';
+  return String(mapping?.achievementType || 'Reward milestone').replaceAll('_', ' ');
+}
+
+async function loadRewardFrameAssignmentContext(frameCode = '') {
+  const modal = state.modal;
+  if (!modal || modal.kind !== 'memberFrameEdit' || modal.rewardCampaignLoading) return;
+  if (!collaborationApiBaseUrl) {
+    modal.rewardAssignmentError = 'Collaboration API is not configured. Reward frames cannot be published without an authoritative campaign mapping.';
+    return render();
+  }
+  modal.rewardCampaignLoading = true;
+  modal.rewardAssignmentError = '';
+  render();
+  try {
+    const campaign = normalizeAdminObjectResponse(await api(API_PATHS.rewardCampaign.get, { service: 'collaboration' }));
+    if (state.modal !== modal) return;
+    modal.rewardCampaign = campaign;
+    const mappings = Array.isArray(campaign?.achievementFrames) ? campaign.achievementFrames : [];
+    const bound = frameCode ? mappings.find((row) => String(row?.frameCatalogKey || '') === String(frameCode)) : null;
+    if (bound) modal.rewardAchievementType = bound.achievementType || '';
+    modal.rewardCampaignLoading = false;
+    render();
+  } catch (error) {
+    if (state.modal !== modal) return;
+    modal.rewardCampaignLoading = false;
+    modal.rewardAssignmentError = toFriendlyErrorMessage(error, 'Unable to load Reward campaign mappings.');
+    render();
+  }
+}
+
+function renderRewardFrameAssignment(modal) {
+  if (modal.rewardCampaignLoading) return el('section', { class: 'member-frame-mode-summary' }, [el('strong', { text: 'Reward assignment' }), el('span', { text: 'Loading authoritative Reward campaign…' })]);
+  if (modal.rewardAssignmentError && !modal.rewardCampaign) return renderPolicySafetyNote('Reward assignment unavailable', modal.rewardAssignmentError);
+  const campaign = modal.rewardCampaign;
+  const mappings = Array.isArray(campaign?.achievementFrames) ? campaign.achievementFrames : [];
+  const select = el('select', {});
+  select.appendChild(el('option', { value: '', text: 'Choose achievement milestone' }));
+  mappings.forEach((row) => {
+    const label = `${Number(row.threshold || 0)} · ${rewardAchievementDisplayName(row)}`;
+    const option = el('option', { value: row.achievementType || '', text: label });
+    option.selected = String(row.achievementType || '') === String(modal.rewardAchievementType || '');
+    select.appendChild(option);
+  });
+  select.addEventListener('change', () => { modal.rewardAchievementType = select.value; render(); });
+  const selected = mappings.find((row) => String(row.achievementType || '') === String(modal.rewardAchievementType || '')) || null;
+  const currentCode = selected?.frameCatalogKey || '';
+  const replacing = Boolean(selected && modal.code && currentCode && currentCode !== modal.code);
+  const readinessItems = [
+    ['Artwork', modal.assetPath || modal.assetFile ? 'Ready' : 'Missing'],
+    ['Ownership', 'System grant only'],
+    ['Display', 'Permanent after earned'],
+    ['Reward mapping', selected ? `${selected.threshold} · ${rewardAchievementDisplayName(selected)}` : 'Choose milestone'],
+  ];
+  return el('section', { class: 'member-frame-reward-assignment' }, [
+    el('div', { class: 'member-frame-mode-summary' }, [
+      el('strong', { text: 'Reward assignment' }),
+      el('span', { text: 'Bind this Core frame to the authoritative Collaboration Reward campaign. Mobile renders the returned frameCatalogKey; it never guesses from 48/72/100.' }),
+    ]),
+    el('div', { class: 'form-grid two' }, [
+      el('div', { class: 'field member-frame-locked-field' }, [
+        el('label', { text: 'Reward activity' }),
+        el('strong', { text: campaign?.code || '—' }),
+        el('small', { class: 'field-help', text: campaign ? `Status: ${campaign.status || '—'} · Rules: ${campaign.rulesRevision || '—'}` : 'Campaign authority is Collaboration.' }),
+      ]),
+      el('div', { class: 'field' }, [
+        el('label', { text: 'Achievement milestone' }),
+        select,
+        el('small', { class: 'field-help', text: selected ? `Current mapping: ${currentCode || 'none'}` : 'Required for Reward frames.' }),
+      ]),
+    ]),
+    replacing ? renderPolicySafetyNote('Mapping replacement', `This milestone currently maps to “${currentCode}”. Saving will change future grants to this frame. Existing earned ownership is not revoked.`) : null,
+    modal.rewardAssignmentPending ? renderPolicySafetyNote('Frame saved · mapping pending', 'The Core frame and asset are already saved. Retry only the Reward assignment; the frame will not be uploaded or created a second time.') : null,
+    el('div', { class: 'member-frame-mode-summary' }, [
+      el('strong', { text: 'Readiness' }),
+      el('span', { text: readinessItems.map(([k,v]) => `${k}: ${v}`).join(' · ') }),
+    ]),
+  ].filter(Boolean));
 }
 
 function renderMemberFrameModal() {
@@ -15063,6 +15168,7 @@ function renderMemberFrameModal() {
       modal.frameMode = 'REWARD';
       modal.ownershipPolicy = 'SYSTEM_GRANT_ONLY';
       modal.eligibilityType = 'ALL';
+      if (!modal.rewardCampaign && !modal.rewardCampaignLoading) loadRewardFrameAssignmentContext(modal.code || '');
     } else {
       modal.frameMode = 'EVENT';
       modal.ownershipPolicy = 'USER_CLAIM';
@@ -15159,6 +15265,7 @@ function renderMemberFrameModal() {
         ? 'No claim dates. Core only allows trusted system grants, and earned ownership remains displayable without an active Member/Pro plan.'
         : 'Use a claim window for seasonal, launch, anniversary, or other time-limited collectible frames.' }),
     ]),
+    isRewardFrame ? renderRewardFrameAssignment(modal) : null,
     el('div', { class: 'form-grid two' }, [
       el('div', { class: 'field' }, [el('label', { text: 'Display name' }), title, el('small', { class: 'field-help', text: 'Shown to users. If blank when you choose a file, the file name is used as a starting point.' })]),
       el('div', { class: 'field' }, [el('label', { text: 'Release year' }), year]),
@@ -15202,6 +15309,32 @@ function renderMemberFrameModal() {
   ], submitMemberFrameModal, true);
 }
 
+async function assignRewardFrameFromModal(modal) {
+  const campaign = modal.rewardCampaign;
+  if (!campaign) throw new Error('Reward campaign is not loaded. Refresh the assignment and retry.');
+  if (String(campaign.status || '').toUpperCase() === 'ENABLED') {
+    throw new Error('Pause or disable the Reward campaign before changing a frame mapping. This prevents bypassing the production readiness gate.');
+  }
+  const mappings = Array.isArray(campaign.achievementFrames) ? campaign.achievementFrames : [];
+  const selected = mappings.find((row) => String(row?.achievementType || '') === String(modal.rewardAchievementType || ''));
+  if (!selected) throw new Error('Choose the Reward achievement milestone for this frame.');
+  if (!modal.code) throw new Error('Core did not return a stable frame code. Reward assignment cannot continue.');
+  const updatedCampaign = normalizeAdminObjectResponse(await api(API_PATHS.rewardCampaign.assignFrame(selected.achievementType), {
+    service: 'collaboration',
+    method: 'PUT',
+    body: {
+      frameCatalogKey: modal.code,
+      threshold: Number(selected.threshold),
+      expectedCampaignVersion: campaign.version,
+      expectedRulesRevision: campaign.rulesRevision,
+      expectedCurrentFrameCatalogKey: selected.frameCatalogKey || null,
+    },
+  }));
+  modal.rewardCampaign = updatedCampaign;
+  modal.rewardAssignmentPending = false;
+  return updatedCampaign;
+}
+
 async function submitMemberFrameModal() {
   const modal = state.modal;
   modal.error = '';
@@ -15209,59 +15342,98 @@ async function submitMemberFrameModal() {
   if (!modal.assetFile && !modal.assetPath) return setMemberFrameModalError('Choose a transparent PNG frame.');
   const frameMode = modal.frameMode === 'REWARD' ? 'REWARD' : 'EVENT';
   const isRewardFrame = frameMode === 'REWARD';
-  // Frame type is an Admin presentation choice only. Core remains authoritative through
-  // ownershipPolicy + eligibilityType + claim-window invariants.
   modal.ownershipPolicy = isRewardFrame ? 'SYSTEM_GRANT_ONLY' : 'USER_CLAIM';
   modal.eligibilityType = isRewardFrame ? 'ALL' : (modal.eventEligibilityType || modal.eligibilityType || 'MEMBER');
+
+  if (isRewardFrame) {
+    if (!collaborationApiBaseUrl) return setMemberFrameModalError('Collaboration API must be configured before a Reward frame can be created.');
+    if (!modal.rewardCampaign) return setMemberFrameModalError('Reward campaign is still unavailable. Refresh and retry.');
+    if (!modal.rewardAchievementType) return setMemberFrameModalError('Choose the Reward achievement milestone for this frame.');
+    if (modal.rewardCampaign?.version == null) return setMemberFrameModalError('Reward campaign version is missing. Deploy the latest Collaboration backend before assigning frames.');
+  }
+
   const claimStartIso = isRewardFrame ? null : parseMemberFrameParts(modal.claimStartParts, modal.claimStartTimeText);
   const claimEndIso = isRewardFrame ? null : parseMemberFrameParts(modal.claimEndParts, modal.claimEndTimeText);
   if (!isRewardFrame && !claimStartIso) return setMemberFrameModalError('Choose a valid claim open date and time.');
   if (!isRewardFrame && !claimEndIso) return setMemberFrameModalError('Choose a valid claim close date and time.');
   if (!isRewardFrame && new Date(claimStartIso).getTime() >= new Date(claimEndIso).getTime()) return setMemberFrameModalError('Claim close must be later than claim open.');
-  modal.loading = true; render();
+
+  modal.loading = true;
+  modal.loadingLabel = modal.rewardAssignmentPending ? 'Retrying assignment…' : 'Saving…';
+  render();
+  const wasExisting = Boolean(modal.id);
   try {
-    if (modal.assetFile) {
-      const rawBody = new Uint8Array(await modal.assetFile.arrayBuffer());
-      const uploaded = normalizeAdminObjectResponse(await api(API_PATHS.memberFrames.uploadAssetRaw, {
-        method: 'POST',
-        rawBody,
-        headers: { 'Content-Type': 'image/png' },
+    // A failed cross-service assignment never rolls Core back. On retry we skip Core entirely
+    // and replay only the authoritative Collaboration mapping mutation.
+    if (!(isRewardFrame && modal.rewardCoreSaved && modal.rewardAssignmentPending)) {
+      if (modal.assetFile) {
+        const rawBody = new Uint8Array(await modal.assetFile.arrayBuffer());
+        const uploaded = normalizeAdminObjectResponse(await api(API_PATHS.memberFrames.uploadAssetRaw, {
+          method: 'POST', rawBody, headers: { 'Content-Type': 'image/png' },
+        }));
+        modal.assetBucket = uploaded.assetBucket || uploaded.asset_bucket;
+        modal.assetPath = uploaded.assetPath || uploaded.asset_path;
+        modal.assetSha256 = uploaded.sha256;
+        modal.mimeType = uploaded.mimeType || uploaded.mime_type || 'image/png';
+        modal.assetBytes = uploaded.bytes || 0;
+        modal.imageWidth = uploaded.width;
+        modal.imageHeight = uploaded.height;
+      }
+      const body = {
+        code: modal.id ? (modal.code || null) : null,
+        title: String(modal.title).trim(),
+        collection: modal.id ? (modal.collection || null) : null,
+        releaseYear: Number(modal.releaseYear) || null,
+        eligibilityType: modal.eligibilityType || 'MEMBER',
+        ownershipPolicy: modal.ownershipPolicy || 'USER_CLAIM',
+        enabled: Boolean(modal.enabled),
+        featured: Boolean(modal.featured),
+        claimStartAt: claimStartIso,
+        claimEndAt: claimEndIso,
+        assetBucket: modal.assetBucket || null,
+        assetPath: modal.assetPath || null,
+        assetSha256: modal.assetSha256 || null,
+        assetVersion: modal.assetFile ? Math.max(1, Number(modal.assetVersion) || 1) : null,
+        mimeType: modal.mimeType || 'image/png',
+        assetBytes: Number(modal.assetBytes) || 0,
+        imageWidth: modal.imageWidth || null,
+        imageHeight: modal.imageHeight || null,
+        reason: String(modal.internalNote || '').trim() || null,
+      };
+      const saved = normalizeAdminObjectResponse(await api(modal.id ? API_PATHS.memberFrames.update(modal.id) : API_PATHS.memberFrames.create, {
+        method: modal.id ? 'PATCH' : 'POST', body,
       }));
-      modal.assetBucket = uploaded.assetBucket || uploaded.asset_bucket;
-      modal.assetPath = uploaded.assetPath || uploaded.asset_path;
-      modal.assetSha256 = uploaded.sha256;
-      modal.mimeType = uploaded.mimeType || uploaded.mime_type || 'image/png';
-      modal.assetBytes = uploaded.bytes || 0;
-      modal.imageWidth = uploaded.width;
-      modal.imageHeight = uploaded.height;
-      // Core is the only asset-version authority. Do not calculate a version in Admin.
+      modal.id = saved.id || modal.id;
+      modal.code = saved.code || modal.code;
+      modal.collection = saved.collection || modal.collection;
+      modal.assetVersion = saved.assetVersion || saved.asset_version || modal.assetVersion;
+      modal.assetFile = null;
+      modal.assetFileName = '';
+      modal.rewardCoreSaved = isRewardFrame;
     }
-    const body = {
-      code: modal.id ? (modal.code || null) : null,
-      title: String(modal.title).trim(),
-      collection: modal.id ? (modal.collection || null) : null,
-      releaseYear: Number(modal.releaseYear) || null,
-      eligibilityType: modal.eligibilityType || 'MEMBER',
-      ownershipPolicy: modal.ownershipPolicy || 'USER_CLAIM',
-      enabled: Boolean(modal.enabled),
-      featured: Boolean(modal.featured),
-      claimStartAt: claimStartIso,
-      claimEndAt: claimEndIso,
-      assetBucket: modal.assetBucket || null,
-      assetPath: modal.assetPath || null,
-      assetSha256: modal.assetSha256 || null,
-      assetVersion: modal.assetFile ? Math.max(1, Number(modal.assetVersion) || 1) : null,
-      mimeType: modal.mimeType || 'image/png',
-      assetBytes: Number(modal.assetBytes) || 0,
-      imageWidth: modal.imageWidth || null,
-      imageHeight: modal.imageHeight || null,
-      reason: String(modal.internalNote || '').trim() || null,
-    };
-    await api(modal.id ? API_PATHS.memberFrames.update(modal.id) : API_PATHS.memberFrames.create, { method: modal.id ? 'PATCH' : 'POST', body });
+
+    if (isRewardFrame) {
+      try {
+        await assignRewardFrameFromModal(modal);
+      } catch (assignmentError) {
+        modal.rewardAssignmentPending = true;
+        modal.loading = false;
+        modal.loadingLabel = 'Saving...';
+        modal.submitLabel = 'Retry reward assignment';
+        modal.error = `Frame saved in Core, but Reward assignment is incomplete. ${toFriendlyErrorMessage(assignmentError, 'Retry the Reward assignment.')}`;
+        render();
+        return;
+      }
+    }
+
     if (modal.localPreviewUrl) URL.revokeObjectURL(modal.localPreviewUrl);
     closeModal();
-    await refreshAfterAdminMutation(modal.id ? 'Member frame updated.' : 'Member frame created.');
+    await refreshAfterAdminMutation(isRewardFrame
+      ? 'Reward frame saved, mapped, and readiness-verified.'
+      : (wasExisting ? 'Member frame updated.' : 'Member frame created.'));
   } catch (error) {
+    modal.loading = false;
+    modal.loadingLabel = 'Saving...';
     setMemberFrameModalError(error);
   }
 }
