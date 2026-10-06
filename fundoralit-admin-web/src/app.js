@@ -15009,6 +15009,21 @@ async function loadMemberFramePreview(id) {
   }
 }
 
+function memberFrameHasPersistedAsset(source) {
+  if (!source) return false;
+  const version = Number(source.assetVersion ?? source.asset_version ?? 0);
+  const sha = String(source.assetSha256 || source.asset_sha256 || '').trim();
+  const width = Number(source.imageWidth ?? source.image_width ?? 0);
+  const height = Number(source.imageHeight ?? source.image_height ?? 0);
+  // Admin catalog intentionally does not expose the private storage path.
+  // Treat immutable persisted asset metadata as the edit-mode asset authority.
+  return Boolean(source.id && (version > 0 || sha || (width > 0 && height > 0)));
+}
+
+function memberFrameModalHasArtwork(modal) {
+  return Boolean(modal?.assetFile || modal?.assetPath || modal?.persistedAssetPresent);
+}
+
 function openMemberFrameModal(item) {
   const defaults = memberFrameDefaultWindow();
   state.modal = {
@@ -15050,6 +15065,7 @@ function openMemberFrameModal(item) {
     imageHeight: item?.imageHeight || item?.image_height || null,
     assetFile: null,
     assetFileName: '',
+    persistedAssetPresent: memberFrameHasPersistedAsset(item),
     localPreviewUrl: '',
     remotePreviewUrl: '',
     previewLoading: false,
@@ -15150,7 +15166,7 @@ function renderRewardFrameAssignment(modal) {
   const currentCode = selected?.frameCatalogKey || '';
   const replacing = Boolean(selected && modal.code && currentCode && currentCode !== modal.code);
   const readinessItems = [
-    ['Artwork', modal.assetPath || modal.assetFile ? 'Ready' : 'Missing'],
+    ['Artwork', memberFrameModalHasArtwork(modal) ? 'Ready' : 'Missing'],
     ['Ownership', 'System grant only'],
     ['Display', 'Permanent after earned'],
     ['Reward mapping', selected ? `${selected.threshold} · ${rewardAchievementDisplayName(selected)}` : 'Choose milestone'],
@@ -15282,11 +15298,11 @@ function renderMemberFrameModal() {
     preview,
     el('div', { class: 'member-frame-upload-row' }, [
       el('div', { class: 'field' }, [
-        el('label', { text: modal.assetPath ? 'Frame artwork' : 'Frame artwork · required' }),
+        el('label', { text: memberFrameModalHasArtwork(modal) ? 'Frame artwork' : 'Frame artwork · required' }),
         el('div', { class: 'member-frame-file-picker' }, [
           asset,
-          el('button', { class: 'btn secondary', type: 'button', text: modal.assetFileName ? 'Choose another PNG' : (modal.assetPath ? 'Replace PNG' : 'Choose PNG'), onclick: () => asset.click() }),
-          el('span', { class: 'member-frame-file-name', text: modal.assetFileName || (modal.assetPath ? 'Current private PNG' : 'No PNG selected') }),
+          el('button', { class: 'btn secondary', type: 'button', text: modal.assetFileName ? 'Choose another PNG' : (memberFrameModalHasArtwork(modal) ? 'Replace PNG' : 'Choose PNG'), onclick: () => asset.click() }),
+          el('span', { class: 'member-frame-file-name', text: modal.assetFileName || (modal.persistedAssetPresent ? 'Current saved PNG' : (modal.assetPath ? 'Current private PNG' : 'No PNG selected')) }),
         ]),
         el('small', { class: 'field-help', text: modal.assetFileName ? 'Preview shown above. The backend validates a square transparent PNG and enforces the central 48% portrait safe zone before storage.' : (modal.assetPath ? 'Current private asset is kept unless you replace it.' : 'Transparent square PNG · max 5 MB · keep the central 48% portrait safe zone transparent · validated by backend · not bundled into the AAB.') }),
       ]),
@@ -15372,7 +15388,7 @@ async function submitMemberFrameModal() {
   const modal = state.modal;
   modal.error = '';
   if (!String(modal.title || '').trim()) return setMemberFrameModalError('Display name is required.');
-  if (!modal.assetFile && !modal.assetPath) return setMemberFrameModalError('Choose a transparent PNG frame.');
+  if (!memberFrameModalHasArtwork(modal)) return setMemberFrameModalError('Choose a transparent PNG frame.');
   const frameMode = modal.frameMode === 'REWARD' ? 'REWARD' : 'EVENT';
   const isRewardFrame = frameMode === 'REWARD';
   modal.ownershipPolicy = isRewardFrame ? 'SYSTEM_GRANT_ONLY' : 'USER_CLAIM';
@@ -15411,6 +15427,7 @@ async function submitMemberFrameModal() {
         modal.assetBytes = uploaded.bytes || 0;
         modal.imageWidth = uploaded.width;
         modal.imageHeight = uploaded.height;
+        modal.persistedAssetPresent = true;
       }
       const body = {
         code: modal.id ? (modal.code || null) : null,
@@ -15423,14 +15440,16 @@ async function submitMemberFrameModal() {
         featured: Boolean(modal.featured),
         claimStartAt: claimStartIso,
         claimEndAt: claimEndIso,
-        assetBucket: modal.assetBucket || null,
-        assetPath: modal.assetPath || null,
-        assetSha256: modal.assetSha256 || null,
-        assetVersion: modal.assetFile ? Math.max(1, Number(modal.assetVersion) || 1) : null,
-        mimeType: modal.mimeType || 'image/png',
-        assetBytes: Number(modal.assetBytes) || 0,
-        imageWidth: modal.imageWidth || null,
-        imageHeight: modal.imageHeight || null,
+        ...(modal.assetFile ? {
+          assetBucket: modal.assetBucket || null,
+          assetPath: modal.assetPath || null,
+          assetSha256: modal.assetSha256 || null,
+          assetVersion: Math.max(1, Number(modal.assetVersion) || 1),
+          mimeType: modal.mimeType || 'image/png',
+          assetBytes: Number(modal.assetBytes) || 0,
+          imageWidth: modal.imageWidth || null,
+          imageHeight: modal.imageHeight || null,
+        } : {}),
         reason: String(modal.internalNote || '').trim() || null,
       };
       const saved = normalizeAdminObjectResponse(await api(modal.id ? API_PATHS.memberFrames.update(modal.id) : API_PATHS.memberFrames.create, {
