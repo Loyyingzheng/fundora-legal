@@ -15076,7 +15076,7 @@ async function loadRewardFrameAssignmentContext(frameCode = '') {
   const modal = state.modal;
   if (!modal || modal.kind !== 'memberFrameEdit' || modal.rewardCampaignLoading) return;
   if (!collaborationApiBaseUrl) {
-    modal.rewardAssignmentError = 'Collaboration API is not configured. Reward frames cannot be published without an authoritative campaign mapping.';
+    modal.rewardAssignmentError = 'Collaboration API base URL is not configured for Admin. Configure collaborationApiBaseUrl before binding this Reward frame to a campaign milestone.';
     return render();
   }
   modal.rewardCampaignLoading = true;
@@ -15100,9 +15100,42 @@ async function loadRewardFrameAssignmentContext(frameCode = '') {
 }
 
 function renderRewardFrameAssignment(modal) {
-  if (modal.rewardCampaignLoading) return el('section', { class: 'member-frame-mode-summary' }, [el('strong', { text: 'Reward assignment' }), el('span', { text: 'Loading authoritative Reward campaign…' })]);
-  if (modal.rewardAssignmentError && !modal.rewardCampaign) return renderPolicySafetyNote('Reward assignment unavailable', modal.rewardAssignmentError);
   const campaign = modal.rewardCampaign;
+  const hasLoadError = Boolean(modal.rewardAssignmentError && !campaign);
+
+  // Reward assignment is a required business configuration surface for every
+  // SYSTEM_GRANT_ONLY frame. Never replace the whole section with a generic
+  // collapsed safety note: doing so hides the real cross-service failure and
+  // makes an existing Reward frame look as if it has no assignment feature.
+  // Keep the section visible, surface the concrete failure, and provide an
+  // explicit retry that reuses the same authoritative Collaboration endpoint.
+  if (modal.rewardCampaignLoading) {
+    return el('section', { class: 'member-frame-reward-assignment' }, [
+      el('div', { class: 'member-frame-mode-summary' }, [
+        el('strong', { text: 'Reward assignment' }),
+        el('span', { text: 'Loading authoritative Reward campaign…' }),
+      ]),
+    ]);
+  }
+
+  if (hasLoadError) {
+    return el('section', { class: 'member-frame-reward-assignment' }, [
+      el('div', { class: 'member-frame-mode-summary' }, [
+        el('strong', { text: 'Reward assignment' }),
+        el('span', { text: 'This Reward frame still exists safely in Core, but its Collaboration campaign mapping could not be loaded.' }),
+      ]),
+      el('div', { class: 'member-frame-assignment-error', role: 'alert' }, [
+        el('strong', { text: 'Reward assignment unavailable' }),
+        el('span', { text: modal.rewardAssignmentError }),
+        el('button', {
+          class: 'btn secondary small',
+          type: 'button',
+          text: 'Retry assignment',
+          onclick: () => loadRewardFrameAssignmentContext(modal.code || ''),
+        }),
+      ]),
+    ]);
+  }
   const mappings = Array.isArray(campaign?.achievementFrames) ? campaign.achievementFrames : [];
   const select = el('select', {});
   select.appendChild(el('option', { value: '', text: 'Choose achievement milestone' }));

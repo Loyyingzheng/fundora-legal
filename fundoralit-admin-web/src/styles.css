@@ -6439,6 +6439,26 @@ body {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
 }
+
+.member-frame-reward-assignment {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.member-frame-assignment-error {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(220, 38, 38, .24);
+  border-radius: 10px;
+  background: rgba(254, 242, 242, .72);
+}
+.member-frame-assignment-error > strong { color: #b91c1c; }
+.member-frame-assignment-error > span { color: var(--muted); font-size: .84rem; line-height: 1.45; overflow-wrap: anywhere; }
+.member-frame-assignment-error .btn { justify-self: start; }
 .member-frame-mode-summary {
   display: grid;
   gap: 3px;
