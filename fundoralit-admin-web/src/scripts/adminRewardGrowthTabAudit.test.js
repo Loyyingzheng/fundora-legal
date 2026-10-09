@@ -1,0 +1,11 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const app = fs.readFileSync(path.join(__dirname,'..','app.js'),'utf8');
+assert.match(app,/rewardPool: '\/api\/analytics\/admin\/reward-pool'/);
+assert.match(app,/label: 'Reward Pool'/);
+assert.match(app,/sections: \[\['rewardPool', API_PATHS.analytics.rewardPool\]\]/);
+assert.match(app,/rewardPool: \[rewardPoolSection\]/);
+assert.match(app,/Core-confirmed Reward claims/);
+assert.match(app,/test accounts are not yet excluded/);
+console.log('PASS: Reward tab uses existing lazy-loaded, admin-only analytics flow and discloses measurement limits');

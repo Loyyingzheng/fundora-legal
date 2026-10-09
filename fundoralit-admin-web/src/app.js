@@ -107,6 +107,7 @@ const API_PATHS = {
     conversionView: '/api/analytics/admin/conversion-view',
     inviteLinks: '/api/analytics/admin/invite-links',
     collaboration: '/api/analytics/admin/collaboration',
+    rewardPool: '/api/analytics/admin/reward-pool',
   },
   featureLimits: {
     list: '/api/admin/feature-limits',
@@ -520,6 +521,7 @@ const state = {
     usagePeriods: null,
     conversion: null,
     inviteLinks: null,
+    rewardPool: null,
   },
   analyticsLoading: false,
   analyticsError: '',
@@ -2401,6 +2403,7 @@ function resetSignedInRuntimeState() {
     usagePeriods: null,
     conversion: null,
     inviteLinks: null,
+    rewardPool: null,
   };
   try { closeAllInfoHints(); } catch (_) {}
 }
@@ -3830,6 +3833,11 @@ const ANALYTICS_VIEWS = {
     sections: [['collaboration', API_PATHS.analytics.collaboration]],
     dataKeys: ['invites', 'inviteLinks'],
   },
+  rewardPool: {
+    label: 'Reward Pool',
+    helper: 'Campaign performance',
+    sections: [['rewardPool', API_PATHS.analytics.rewardPool]],
+  },
   smartCapture: {
     label: 'Smart Capture',
     helper: 'Capture performance',
@@ -3911,6 +3919,7 @@ async function loadAnalyticsData(loadRequest = null) {
     usagePeriods: null,
     conversion: null,
     inviteLinks: null,
+    rewardPool: null,
   };
   const sameCacheScope = state.activeDataCacheMeta?.cacheKey === request.cacheKey;
   const nextData = sameCacheScope ? { ...state.analyticsData } : { ...emptyData };
@@ -6106,6 +6115,7 @@ function renderAnalyticsDashboard() {
   const usagePeriodRows = normalizeAnalyticsList(usagePeriods, 'periods');
   const conversion = normalizeAnalyticsResponse(state.analyticsData.conversion) || {};
   const inviteLinks = normalizeAnalyticsResponse(state.analyticsData.inviteLinks) || {};
+  const rewardPool = normalizeAnalyticsResponse(state.analyticsData.rewardPool) || {};
   const conversionFunnel = normalizeAnalyticsResponse(conversion.funnel) || {};
   const limitMetrics = normalizeAnalyticsResponse(conversion.limits) || {};
   const byLimitType = normalizeAnalyticsList(conversion, 'byLimitType');
@@ -6322,6 +6332,35 @@ function renderAnalyticsDashboard() {
     ]
   );
 
+  const rewardPoolSection = renderAnalyticsSection('Reward Pool performance',
+    'Aggregated server-side business outcomes in the selected UTC date range. Counts represent events, not a single-user cohort.', [
+    el('div', { class: 'analytics-grid' }, [
+      renderAnalyticsCard('Participants', formatMetricValue(getMetric(rewardPool, ['participants'])), 'Users joining the campaign during this range.'),
+      renderAnalyticsCard('Registered referrals', formatMetricValue(getMetric(rewardPool, ['referralsRegistered'])), 'Referral attributions accepted during this range.'),
+      renderAnalyticsCard('Qualified referrals', formatMetricValue(getMetric(rewardPool, ['referralsQualified'])), 'Invitees reaching the first valid financial entry.'),
+      renderAnalyticsCard('Rewards confirmed', formatMetricValue(getMetric(rewardPool, ['claimsGranted'])), 'Core-confirmed Reward claims.'),
+      renderAnalyticsCard('Granted Pro days', formatMetricValue(getMetric(rewardPool, ['grantDaysApplied'])), 'Core Reward Pool Grants in APPLIED state.'),
+      renderAnalyticsCard('Pending claims', formatMetricValue(getMetric(rewardPool, ['claimsPending'])), 'Claims pending or retryable in Collaboration.'),
+    ]),
+    renderAnalyticsMiniTable('Acquisition and qualification', [
+      ['Metric', 'Count'],
+      ['Campaign joins', formatMetricValue(getMetric(rewardPool, ['participants']))],
+      ['Registered invitees', formatMetricValue(getMetric(rewardPool, ['referralsRegistered']))],
+      ['Qualified invitees', formatMetricValue(getMetric(rewardPool, ['referralsQualified']))],
+      ['Rejected referrals', formatMetricValue(getMetric(rewardPool, ['referralsRejected']))],
+    ]),
+    renderAnalyticsMiniTable('Reward delivery and reconciliation', [
+      ['Metric', 'Count'],
+      ['Claims requested', formatMetricValue(getMetric(rewardPool, ['claimsRequested']))],
+      ['Claims confirmed', formatMetricValue(getMetric(rewardPool, ['claimsGranted']))],
+      ['Reward months confirmed', formatMetricValue(getMetric(rewardPool, ['claimedMonths']))],
+      ['Core grants applied', formatMetricValue(getMetric(rewardPool, ['grantApplied']))],
+      ['Core grants outstanding', formatMetricValue(getMetric(rewardPool, ['grantPending']))],
+    ]),
+    el('p', { class: 'muted', text: rewardPool.measurementNote || 'These figures are event totals, not comparable funnel cohorts.' }),
+    el('p', { class: 'muted', text: 'Internal and test accounts are not yet excluded; do not use these metrics as public acquisition or ROI figures.' }),
+  ]);
+
   const activeKeys = analyticsViewKeys();
   const anyData = activeKeys.some((key) => {
     const segment = state.analyticsData[key];
@@ -6361,6 +6400,7 @@ function renderAnalyticsDashboard() {
     ],
     features: [featuresList, usageAnalyticsSection],
     collaboration: [invitesSection, inviteLinkFunnelSection],
+    rewardPool: [rewardPoolSection],
     smartCapture: [smartCaptureSection],
   };
 
