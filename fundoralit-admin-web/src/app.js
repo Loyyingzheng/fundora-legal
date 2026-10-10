@@ -89,6 +89,7 @@ const API_PATHS = {
   },
   rewardSurvey: {
     list: '/api/subscription/feedback-trial/admin/surveys',
+    analytics: '/api/subscription/feedback-trial/admin/analytics',
     close: (id) => `/api/subscription/feedback-trial/admin/surveys/${encodeURIComponent(id)}/close`,
     reopen: (id) => `/api/subscription/feedback-trial/admin/surveys/${encodeURIComponent(id)}/reopen`,
   },
@@ -3640,6 +3641,19 @@ async function loadData(options = {}) {
         });
       }
     } else if (state.activeTab === 'premium') {
+      // Distinct admin-side read model: aggregates are computed over all surveys on Core.
+      // Never compute product metrics from the current paginated review queue.
+      try {
+        state.rewardSurveyAnalytics = await api(API_PATHS.rewardSurvey.analytics, { params: {
+          ...(state.rewardSurveyPeriodFrom ? { from: state.rewardSurveyPeriodFrom } : {}),
+          ...(state.rewardSurveyPeriodTo ? { to: state.rewardSurveyPeriodTo } : {}),
+          ...(state.rewardSurveyVersion ? { version: state.rewardSurveyVersion } : {}),
+        } });
+        state.rewardSurveyAnalyticsError = '';
+      } catch (analyticsError) {
+        state.rewardSurveyAnalyticsError = toFriendlyErrorMessage(analyticsError, 'Analytics unavailable.');
+        state.rewardSurveyAnalytics = null;
+      }
       response = await api(API_PATHS.rewardSurvey.list, {
         params: { page: state.page, size: 50 },
       });
@@ -7453,6 +7467,101 @@ function renderFeedbackItem(item) {
   });
 }
 
+const SURVEY_FEATURE_LABELS = Object.freeze({
+  TRANSACTION_RECORDS: 'Income & expense records',
+  EXPENSE_TRACKING: 'Expense records (legacy v2)',
+  INCOME_TRACKING: 'Income records (legacy v2)',
+  MULTI_CURRENCY: 'Multi-currency management',
+  WALLETS: 'Wallets / accounts', BUCKETS: 'Buckets',
+  SAVING_GOALS: 'Savings goals', BILLS_MANAGEMENT: 'Bills',
+  ANALYTICS: 'Reports & analytics', SMART_CAPTURE: 'Smart Capture',
+  OCR_RECEIPTS: 'Receipt scanning', GROUP_EVENTS: 'Shared expenses',
+  GROUP_GOALS: 'Group savings goals', CLOUD_BACKUP: 'Cloud backup',
+  REWARD_REFERRALS: 'Reward invitations', OTHER: 'Other',
+});
+
+function rewardSurveyAnswerLabel(dimension, value) {
+  const id = String(value || '').toUpperCase();
+  if (dimension === 'mostUsedFeatures' && SURVEY_FEATURE_LABELS[id]) return SURVEY_FEATURE_LABELS[id];
+  return String(value || '').replace(/_/g, ' ');
+}
+
+const REWARD_SURVEY_DIMENSIONS = [
+  ['mostUsedFeatures', 'Most-used features'],
+  ['discoverySource', 'Acquisition channel'],
+  ['strengths', 'Strengths (v1) / Friction (v2)'],
+  ['futureUsageIntent', 'Usage intent (v1) / Improvement priority (v2)'],
+  ['reviewStatus', 'Review queue'],
+  ['rewardStatus', 'Reward synchronization'],
+];
+
+function renderRewardSurveyAnalytics() {
+  const report = state.rewardSurveyAnalytics;
+  if (!report) return el('section', { class: 'card' }, [
+    el('h2', { text: 'Survey insights' }),
+    el('p', { class: 'muted', text: state.rewardSurveyAnalyticsError || 'Survey analytics are loading.' }),
+  ]);
+  const dimensions = report.dimensions || {};
+  const total = Math.max(0, Number(report.totalResponses || 0));
+  return el('section', { class: 'card' }, [
+    el('p', { class: 'eyebrow', text: 'Product insights · filtered UTC period' }),
+    el('div', { class: 'actions', style: 'display:flex;flex-wrap:wrap;gap:8px;align-items:center' }, [
+      el('label', { text: 'From (UTC)' }),
+      el('input', { type: 'date', value: state.rewardSurveyPeriodFrom || '', onchange: (e) => { state.rewardSurveyPeriodFrom = e.target.value; } }),
+      el('label', { text: 'To (UTC)' }),
+      el('input', { type: 'date', value: state.rewardSurveyPeriodTo || '', onchange: (e) => { state.rewardSurveyPeriodTo = e.target.value; } }),
+      el('label', { text: 'Questionnaire version' }),
+      el('select', { onchange: (e) => { state.rewardSurveyVersion = e.target.value; } }, [
+        ...['', ...Object.keys(report.versions || {}).map((v) => v.replace(/^v/, ''))].map((v) => el('option', { value: v, selected: String(state.rewardSurveyVersion || '') === v, text: v || 'All versions' })),
+      ]),
+      el('button', { class: 'btn small', text: 'Apply', onclick: async () => {
+        try {
+          state.rewardSurveyAnalytics = await api(API_PATHS.rewardSurvey.analytics, { params: {
+            ...(state.rewardSurveyPeriodFrom ? { from: state.rewardSurveyPeriodFrom } : {}),
+            ...(state.rewardSurveyPeriodTo ? { to: state.rewardSurveyPeriodTo } : {}),
+            ...(state.rewardSurveyVersion ? { version: state.rewardSurveyVersion } : {}),
+          } });
+          state.rewardSurveyAnalyticsError = '';
+        } catch (error) {
+          state.rewardSurveyAnalyticsError = toFriendlyErrorMessage(error, 'Analytics unavailable.');
+        }
+        render();
+      } }),
+    ]),
+    el('div', { class: 'survey-insight-group' }, [
+      el('h3', { text: 'Funnel milestones (distinct users, not cohort conversion)' }),
+      ...Object.entries(report.funnel || {}).map(([step,count]) => el('p', { text: `${step}: ${Number(count).toLocaleString()}` })),
+      el('p', { class: 'muted', text: 'Milestones are deduplicated by user/version. Historical app installs have no open/start telemetry. Each stage uses its own event date, so the counts must not be divided into conversion rates.' }),
+      el('h3', { text: 'Opened-user cohort (eventual transitions)' }),
+      ...Object.entries(report.openedCohort || {}).map(([step,count]) => el('p', { text: `${step}: ${Number(count).toLocaleString()}` })),
+      el('p', { class: 'muted', text: 'Users first opening within selected UTC dates, then proceeding to later stages. Old clients before instrumentation are excluded; in-flight surveys may finish after the reporting period.' }),
+    ]),
+    el('div', { class: 'survey-insight-group' }, [
+      el('h3', { text: 'Reward bridge delivery reconciliation' }),
+      ...Object.entries(report.outboxDelivery || {}).map(([status,count]) => el('p', { text: `${status}: ${Number(count).toLocaleString()}` })),
+      el('p', { class: 'muted', text: report.deliveryDisclaimer || 'Core outbox delivery does not prove Collaboration credited the reward.' }),
+    ]),
+    el('div', { class: 'survey-insight-group' }, [
+      el('h3', { text: 'Questionnaire schema versions' }),
+      ...Object.entries(report.versions || {}).map(([version,count]) => el('p', { text: `${version}: ${Number(count).toLocaleString()}` })),
+    ]),
+    el('h2', { text: `Reward survey analysis · ${total.toLocaleString()} submissions` }),
+    el('p', { class: 'muted', text: 'Counts are based on all non-deleted submissions, not the current review page. Multi-select categories may total more than the number of respondents. No free-text or personal identifiers are included in these aggregates.' }),
+    ...REWARD_SURVEY_DIMENSIONS.map(([key, title]) => {
+      const entries = Object.entries(dimensions[key] || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+      const highest = Math.max(1, ...entries.map(([, count]) => Number(count)));
+      return el('div', { class: 'survey-insight-group' }, [
+        el('h3', { text: title }),
+        ...(entries.length ? entries.map(([answer, count]) => el('div', { class: 'survey-insight-row' }, [
+          el('span', { text: rewardSurveyAnswerLabel(key, answer) }),
+          el('div', { class: 'survey-insight-track' }, [el('div', { class: 'survey-insight-fill', style: `width:${Math.min(100, Number(count) / highest * 100)}%` })]),
+          el('strong', { text: String(count) }),
+        ])) : [el('p', { class: 'muted', text: 'No answers yet.' })]),
+      ]);
+    }),
+  ]);
+}
+
 function renderPremiumItem(item) {
   const status = String(item.status || 'OPEN').toUpperCase();
   const isClosed = status === 'CLOSED';
@@ -7467,7 +7576,7 @@ function renderPremiumItem(item) {
       renderMetaGrid([
         ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail],
         ['Most Used Features', item.mostUsedFeatures], ['Feature Note', item.mostUsedFeatureNote], ['Discovery Source', item.discoverySource],
-        ['Discovery Note', item.discoveryNote], ['Strengths', item.strengths], ['Strengths Note', item.strengthsNote],
+        ['Discovery Note', item.discoveryNote], ['Strengths (v1) / Friction (v2)', item.strengths], ['Strengths Note', item.strengthsNote],
         ['Reward Days', item.rewardDays], ['Reward Status', item.rewardStatus], ['Reward Expires', formatDate(item.rewardExpiresAt)],
         ['Created', formatDate(item.createdAt)], ['Updated', formatDate(item.updatedAt)], ['Closed', formatDate(item.closedAt)],
         ['Closed By Email', item.closedByEmail], ['Closed By User ID', item.closedByUserId],
@@ -13854,7 +13963,8 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'policyVersions') {
     children.push(renderAdminControlHero('Policy Versions', 'View backend policy snapshots and roll back bad operational configuration.', 'Rollback should be used only when a remote config, flag, app version policy, or rule update causes production risk. It requires reason, exact phrase, and admin password verification.'));
     children.push(renderPolicyVersionToolbar());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Snapshots should contain policy/config data only. Never store raw OCR text, notification text, merchant names, payees, or exact transaction amounts.'));
     children.push(renderControlList(items, renderPolicyVersionItem, 'No policy versions found. Deploy backend snapshot wiring or change a policy first.'));
   } else if (state.activeTab === 'reviewPromptPolicy') {
@@ -13864,7 +13974,8 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'rateLimitOverrides') {
     children.push(renderAdminControlHero('Rate Limit Overrides', 'Store temporary route limit overrides for incidents, campaigns, or backend protection.', 'This page stores override records. They only affect traffic if the backend has wired this table into a real central rate-limit enforcement path.'));
     children.push(renderRateLimitOverrideToolbar());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Use short expiry windows and clear reasons. Do not create permanent high limits unless backend capacity has been verified.'));
     children.push(renderControlList(items, renderRateLimitOverrideItem, 'No rate limit overrides found.'));
   } else if (state.activeTab === 'planMatrix') {
@@ -13884,7 +13995,8 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'featureFlags') {
     children.push(renderAdminControlHero('Feature Flags', 'Remote kill switches for Smart Capture, OCR, cloud, collaboration, and future features.', 'Flags should be used to safely disable risky features without a new app release. Avoid enabling experimental features such as income auto-save unless the app has strict safety checks.'));
     children.push(renderFeatureFlagToolbar());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Disabling a feature should hide or block entry points safely. Save actions now bump the mobile policy revision for passive app refresh.'));
     children.push(renderControlList(items, renderFeatureFlagItem, 'No feature flags found.'));
   } else if (state.activeTab === 'productPolicies') {
@@ -13907,7 +14019,8 @@ function renderAdminControlPage() {
     children.push(renderLearningConsoleCompatibilityNote('Global Learning Review'));
     children.push(renderAdminControlHero('Global Learning Review', 'Manually review anonymous aggregate candidates before any global behavior becomes active.', 'One page reviews Smart Capture, OCR Receipt, OCR Financial List, OCR Handwritten, and Statement Import candidates. Approved OCR/Statement rules stay review-only, cannot quick-save or auto-save, and cannot change financial ranking while stability hardening is active.'));
     children.push(renderGlobalLearningSourceFilter());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Approval creates suggestion rules only: forceReview=true, allowQuickAction=false, allowAutoSave=false. Personal local learning remains higher priority than global rules.'));
     children.push(renderPolicySafetyNote('OCR safety: no OCR text, merchant, payee, note, exact amount, account/card number, receipt id, image URL/path, embedding, or vector is displayed. Local OCR still works when OCR global rules are disabled.'));
     children.push(renderControlList(items, renderGlobalLearningRuleCandidate, 'No pending global learning rule candidates.'));
@@ -13916,7 +14029,8 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'usage') {
     children.push(renderAdminControlHero('Usage & Quota', 'Support lookup for user usage counters and idempotent save events.', 'Use this to debug OCR or Smart Capture quota issues. Adjustments require an audit reason and should be rare.'));
     children.push(renderUsageToolbar());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderControlList(items, renderUsageItem, 'Search a user or feature to view usage counters.'));
     children.push(renderUsageEvents(state.data?.events || []));
   } else if (state.activeTab === 'subscriptionSupport') {
@@ -13941,7 +14055,8 @@ function renderAdminControlPage() {
         el('div', {}, [el('h2', { text: 'Approval requests' }), el('p', { class: 'muted section-helper', text: 'Review request status, evidence, before/after values, and approval actions without mixing in normal users.' })]),
         el('span', { class: 'badge neutral', text: String(items.length) }),
       ]));
-      children.push(renderStats(items));
+      if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
       children.push(renderControlList(items, renderSubscriptionSupportRequestItem, 'No subscription support requests match the selected filters.'));
     }
   } else if (state.activeTab === 'featureAnalytics') {
@@ -13952,13 +14067,15 @@ function renderAdminControlPage() {
   } else if (state.activeTab === 'announcements') {
     children.push(renderAdminControlHero('Announcements', 'Create online app notices for updates, maintenance, and important information.', 'Announcements are stored in the core backend. The app fetches active announcements online and only keeps dismissed announcement IDs locally for clean UX.'));
     children.push(renderAnnouncementToolbar());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Keep announcement messages meaningful and short. Use Modal only for important service-impacting notices; normal updates should use Banner.'));
     children.push(renderControlList(items, renderAnnouncementItem, 'No announcements found.'));
   } else if (state.activeTab === 'memberFrames') {
     children.push(renderAdminControlHero('Member Frames', 'Operate yearly and limited avatar frames from the backend instead of the AAB.', 'Assets are uploaded to a private Supabase bucket. Users see metadata first; the app requests short-lived delivery only after claim or when an authenticated shared-group view needs to render that frame.'));
     children.push(renderMemberFrameToolbar());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Use transparent square PNG files. Set a claim window and display access explicitly. Ownership method controls how the frame is acquired; display eligibility separately controls who may apply/display an already-owned frame. “Featured” is only presentation priority; ownership remains permanent until an explicit future revoke workflow is used.'));
     children.push(renderControlList(items, renderMemberFrameItem, 'No member frames configured.'));
   } else if (state.activeTab === 'memberNameStyles') {
@@ -13968,13 +14085,15 @@ function renderAdminControlPage() {
       el('strong', { text: 'Display order' }),
       renderInfoHint('The catalog list follows Sort order from lowest to highest. Items with the same value are ordered deterministically by display name, then stable code.', { compact: true, label: 'Member name style sorting details' }),
     ]));
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderPolicySafetyNote('Only enable a font when commercial use and redistribution are permitted. Keep supported scripts accurate so Mobile can fall back safely for names the font cannot render.'));
     children.push(el('div', { id: 'memberNameStyleCatalogList' }, [renderControlList(items, renderMemberNameStyleItem, 'No Member name styles configured.')]));
   } else if (state.activeTab === 'auditLogs') {
     children.push(renderAdminControlHero('Audit Logs', 'Review admin changes to policies, flags, limits, usage, version, and support actions.', 'Every control action should leave a reasoned audit trail: who changed it, what changed, before/after values, and when.'));
     children.push(renderAuditToolbar());
-    children.push(renderStats(items));
+    if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
+  children.push(renderStats(items));
     children.push(renderControlList(items, renderAuditItem, 'No audit logs found.'));
     children.push(renderPagination());
   }
@@ -15730,6 +15849,7 @@ function renderSignedIn() {
   if (state.activeTab === 'feedback') children.push(renderFeedbackToolbar());
   else children.push(el('div', { class: 'toolbar' }, [el('button', { class: 'btn', text: state.loading ? 'Loading...' : 'Refresh', disabled: state.loading, onclick: () => loadData({ force: true }) })]));
 
+  if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
   children.push(renderStats(items));
 
   if (state.loading && !items.length) {

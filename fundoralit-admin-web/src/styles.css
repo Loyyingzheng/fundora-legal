@@ -6696,3 +6696,11 @@ body {
 @media (max-width: 720px) {
   .member-frame-mode-tabs { grid-template-columns: 1fr; }
 }
+
+/* Reward survey product insights (read-only aggregate; no user-level metadata) */
+.survey-insight-group { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--border, #e2e8f0); }
+.survey-insight-group h3 { margin: 0 0 12px; font-size: 15px; }
+.survey-insight-row { display: grid; grid-template-columns: minmax(95px, 1fr) minmax(80px, 3fr) 52px; align-items: center; gap: 12px; margin: 9px 0; font-size: 13px; }
+.survey-insight-row strong { text-align: right; font-variant-numeric: tabular-nums; }
+.survey-insight-track { height: 8px; overflow: hidden; border-radius: 20px; background: #e2e8f0; }
+.survey-insight-fill { height: 100%; border-radius: inherit; background: #14b8a6; }
