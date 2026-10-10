@@ -7496,26 +7496,75 @@ const REWARD_SURVEY_DIMENSIONS = [
   ['rewardStatus', 'Reward synchronization'],
 ];
 
+// Analysis-first view; aggregated metrics come exclusively from the filtered backend report.
+let rewardSurveyWorkspaceTab = 'insights';
+
+function rewardSurveyMetric(name, value, hint) {
+  return el('div', { class: 'survey-kpi' }, [
+    el('span', { class: 'muted', text: name }),
+    el('strong', { text: Number(value || 0).toLocaleString() }),
+    hint ? el('small', { class: 'muted', text: hint }) : null,
+  ]);
+}
+
+function rewardSurveyBreakdown(key, title, dimensions, total) {
+  const entries = Object.entries(dimensions[key] || {})
+    .map(([answer, count]) => [answer, Number(count) || 0])
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...entries.map(([, count]) => count));
+  return el('section', { class: 'survey-dimension' }, [
+    el('div', { class: 'survey-dimension-heading' }, [
+      el('h3', { text: title }),
+      el('span', { class: 'muted', text: `${entries.length} answer categories` }),
+    ]),
+    ...(entries.length ? entries.map(([answer, count]) => el('div', { class: 'survey-breakdown-row' }, [
+      el('span', { class: 'survey-breakdown-label', text: rewardSurveyAnswerLabel(key, answer) }),
+      el('div', { class: 'survey-insight-track' }, [
+        el('div', { class: 'survey-insight-fill', style: `width:${Math.min(100, count/max*100)}%` }),
+      ]),
+      el('strong', { text: `${count.toLocaleString()} · ${total ? Math.round(count / total * 100) : 0}%` }),
+    ])) : [el('p', { class: 'muted', text: 'No responses in this period.' })]),
+  ]);
+}
+
 function renderRewardSurveyAnalytics() {
   const report = state.rewardSurveyAnalytics;
-  if (!report) return el('section', { class: 'card' }, [
-    el('h2', { text: 'Survey insights' }),
-    el('p', { class: 'muted', text: state.rewardSurveyAnalyticsError || 'Survey analytics are loading.' }),
-  ]);
-  const dimensions = report.dimensions || {};
-  const total = Math.max(0, Number(report.totalResponses || 0));
-  return el('section', { class: 'card' }, [
-    el('p', { class: 'eyebrow', text: 'Product insights · filtered UTC period' }),
-    el('div', { class: 'actions', style: 'display:flex;flex-wrap:wrap;gap:8px;align-items:center' }, [
-      el('label', { text: 'From (UTC)' }),
-      el('input', { type: 'date', value: state.rewardSurveyPeriodFrom || '', onchange: (e) => { state.rewardSurveyPeriodFrom = e.target.value; } }),
-      el('label', { text: 'To (UTC)' }),
-      el('input', { type: 'date', value: state.rewardSurveyPeriodTo || '', onchange: (e) => { state.rewardSurveyPeriodTo = e.target.value; } }),
-      el('label', { text: 'Questionnaire version' }),
-      el('select', { onchange: (e) => { state.rewardSurveyVersion = e.target.value; } }, [
-        ...['', ...Object.keys(report.versions || {}).map((v) => v.replace(/^v/, ''))].map((v) => el('option', { value: v, selected: String(state.rewardSurveyVersion || '') === v, text: v || 'All versions' })),
+  const total = Number(report?.totalResponses || 0);
+  const dimensions = report?.dimensions || {};
+  const v2 = String(state.rewardSurveyVersion || '') === '2';
+  const historical = !state.rewardSurveyVersion;
+  const cohort = report?.openedCohort || {};
+  const delivery = report?.outboxDelivery || {};
+  const currentItems = getScopedData()?.content || [];
+  const notes = currentItems.flatMap((item) => [
+    ['Feature suggestion', item.mostUsedFeatureNote],
+    ['Acquisition context', item.discoveryNote],
+    ['Issue / missing feature', item.strengthsNote],
+    ['Specific improvement', item.improvementText],
+    ['Priority explanation', item.futureUsageNote],
+  ].filter(([, value]) => typeof value === 'string' && value.trim().length)
+    .map(([type, value]) => ({ type, value: value.trim(), date: item.createdAt })));
+  return el('section', { class: 'card survey-workspace' }, [
+    el('div', { class: 'survey-workspace-heading' }, [
+      el('div', {}, [el('p', { class: 'eyebrow', text: 'Product intelligence' }), el('h2', { text: 'Reward survey workspace' }),
+        el('p', { class: 'muted', text: 'Understand feature demand, pain points and reward delivery without opening individual submissions.' })]),
+      el('div', { class: 'survey-workspace-tabs' }, [
+        ...[['insights','Insights'], ['responses','Responses']].map(([id, title]) => el('button', {
+          class: `btn small ${rewardSurveyWorkspaceTab === id ? '' : 'secondary'}`, text: title,
+          onclick: () => { rewardSurveyWorkspaceTab = id; render(); },
+        })),
       ]),
-      el('button', { class: 'btn small', text: 'Apply', onclick: async () => {
+    ]),
+    el('div', { class: 'survey-filterbar' }, [
+      el('label', {}, ['From (UTC)', el('input', { type: 'date', value: state.rewardSurveyPeriodFrom || '', onchange: e => { state.rewardSurveyPeriodFrom = e.target.value; } })]),
+      el('label', {}, ['To (UTC)', el('input', { type: 'date', value: state.rewardSurveyPeriodTo || '', onchange: e => { state.rewardSurveyPeriodTo = e.target.value; } })]),
+      el('label', {}, ['Survey version', el('select', { onchange: e => { state.rewardSurveyVersion = e.target.value; } }, [
+        ...['', '1', '2', ...Object.keys(report?.versions || {}).map(x => x.replace(/^v/, ''))]
+          .filter((x,i,a) => a.indexOf(x) === i)
+          .map(x => el('option', { value:x, selected: String(state.rewardSurveyVersion || '') === x, text: x ? `v${x}` : 'All versions' })),
+      ])]),
+      el('button', { class: 'btn small', text: 'Apply filters', onclick: async () => {
         try {
           state.rewardSurveyAnalytics = await api(API_PATHS.rewardSurvey.analytics, { params: {
             ...(state.rewardSurveyPeriodFrom ? { from: state.rewardSurveyPeriodFrom } : {}),
@@ -7523,43 +7572,49 @@ function renderRewardSurveyAnalytics() {
             ...(state.rewardSurveyVersion ? { version: state.rewardSurveyVersion } : {}),
           } });
           state.rewardSurveyAnalyticsError = '';
-        } catch (error) {
+        } catch(error) {
+          state.rewardSurveyAnalytics = null;
           state.rewardSurveyAnalyticsError = toFriendlyErrorMessage(error, 'Analytics unavailable.');
         }
         render();
       } }),
     ]),
-    el('div', { class: 'survey-insight-group' }, [
-      el('h3', { text: 'Funnel milestones (distinct users, not cohort conversion)' }),
-      ...Object.entries(report.funnel || {}).map(([step,count]) => el('p', { text: `${step}: ${Number(count).toLocaleString()}` })),
-      el('p', { class: 'muted', text: 'Milestones are deduplicated by user/version. Historical app installs have no open/start telemetry. Each stage uses its own event date, so the counts must not be divided into conversion rates.' }),
-      el('h3', { text: 'Opened-user cohort (eventual transitions)' }),
-      ...Object.entries(report.openedCohort || {}).map(([step,count]) => el('p', { text: `${step}: ${Number(count).toLocaleString()}` })),
-      el('p', { class: 'muted', text: 'Users first opening within selected UTC dates, then proceeding to later stages. Old clients before instrumentation are excluded; in-flight surveys may finish after the reporting period.' }),
-    ]),
-    el('div', { class: 'survey-insight-group' }, [
-      el('h3', { text: 'Reward bridge delivery reconciliation' }),
-      ...Object.entries(report.outboxDelivery || {}).map(([status,count]) => el('p', { text: `${status}: ${Number(count).toLocaleString()}` })),
-      el('p', { class: 'muted', text: report.deliveryDisclaimer || 'Core outbox delivery does not prove Collaboration credited the reward.' }),
-    ]),
-    el('div', { class: 'survey-insight-group' }, [
-      el('h3', { text: 'Questionnaire schema versions' }),
-      ...Object.entries(report.versions || {}).map(([version,count]) => el('p', { text: `${version}: ${Number(count).toLocaleString()}` })),
-    ]),
-    el('h2', { text: `Reward survey analysis · ${total.toLocaleString()} submissions` }),
-    el('p', { class: 'muted', text: 'Counts are based on all non-deleted submissions, not the current review page. Multi-select categories may total more than the number of respondents. No free-text or personal identifiers are included in these aggregates.' }),
-    ...REWARD_SURVEY_DIMENSIONS.map(([key, title]) => {
-      const entries = Object.entries(dimensions[key] || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
-      const highest = Math.max(1, ...entries.map(([, count]) => Number(count)));
-      return el('div', { class: 'survey-insight-group' }, [
-        el('h3', { text: title }),
-        ...(entries.length ? entries.map(([answer, count]) => el('div', { class: 'survey-insight-row' }, [
-          el('span', { text: rewardSurveyAnswerLabel(key, answer) }),
-          el('div', { class: 'survey-insight-track' }, [el('div', { class: 'survey-insight-fill', style: `width:${Math.min(100, Number(count) / highest * 100)}%` })]),
-          el('strong', { text: String(count) }),
-        ])) : [el('p', { class: 'muted', text: 'No answers yet.' })]),
-      ]);
-    }),
+    !report ? el('p', { class: 'muted', text: state.rewardSurveyAnalyticsError || 'Insights loading…' }) :
+    rewardSurveyWorkspaceTab === 'responses'
+      ? el('p', { class: 'muted', text: 'Individual responses are listed below. Use Insights to view aggregated analysis without expanding records.' })
+      : el('div', { class: 'survey-workspace-content' }, [
+        el('div', { class: 'survey-kpi-grid' }, [
+          rewardSurveyMetric('Survey submissions', total, 'All matching records · not just this page'),
+          rewardSurveyMetric('Awaiting review', dimensions.reviewStatus?.OPEN || 0, 'Based on recorded review status'),
+          rewardSurveyMetric('Opened-user cohort', cohort.opened || cohort.OPENED || 0, 'Only instrumented versions'),
+          rewardSurveyMetric('Reward delivery failed', delivery.FAILED || delivery.failed || 0, 'Core outbox status, not credited units'),
+        ]),
+        historical ? el('p', { class: 'survey-caution', text: 'Viewing all versions: v1 strengths/intent and v2 friction/priorities have different meanings. Select v2 for actionable question comparisons.' }) : null,
+        el('h3', { text: 'Question-by-question analysis' }),
+        el('div', { class: 'survey-dimension-grid' }, [
+          rewardSurveyBreakdown('mostUsedFeatures','Q1 · Features actually used',dimensions,total),
+          rewardSurveyBreakdown('discoverySource','Q2 · Discovery source (self-reported)',dimensions,total),
+          rewardSurveyBreakdown('strengths',v2?'Q3 · Obstacles & missing capabilities':'Q3 · Strengths (v1) / Obstacles (v2)',dimensions,total),
+          rewardSurveyBreakdown('futureUsageIntent',v2?'Q5 · Improvement priorities':'Q5 · Usage intent (v1) / Priorities (v2)',dimensions,total),
+        ]),
+        el('div', { class: 'survey-dimension-grid' }, [
+          el('section', { class: 'survey-dimension' }, [el('h3', { text: 'Survey funnel (unique-user milestones)' }),
+            ...Object.entries(report.funnel || {}).map(([key,value]) => el('p', { class: 'survey-status-line' }, [el('span', { text: rewardSurveyAnswerLabel('',key) }),el('strong',{text:Number(value).toLocaleString()})])),
+            el('p', { class:'muted', text:'Milestones have independent event dates; these values are not a conversion rate. Older clients may lack telemetry.' })]),
+          el('section', { class: 'survey-dimension' }, [el('h3', { text: 'Reward outbox delivery' }),
+            ...Object.entries(delivery).map(([key,value]) => el('p', { class: 'survey-status-line' }, [el('span', { text:key.replace(/_/g,' ') }),el('strong',{text:Number(value).toLocaleString()})])),
+            el('p', { class:'muted', text: report.deliveryDisclaimer || 'Core SENT does not confirm reward credited by Collaboration.' })]),
+        ]),
+        el('section', { class: 'survey-dimension' }, [
+          el('h3', { text: 'Written feedback · currently loaded review page' }),
+          el('p', { class:'muted', text: 'This is a quick reading queue, NOT an all-submissions text analysis. Date/version aggregate filters do not filter the review page. Use the individual records below for full context.' }),
+          ...(notes.length ? notes.slice(0,20).map(note => el('div', { class:'survey-note' }, [
+            el('strong', { text:note.type }),
+            el('p', { text:note.value }),
+          ])) : [el('p', { class:'muted', text:'No explanatory notes among the currently loaded responses.' })]),
+        ]),
+        el('p', { class:'muted', text:'Percentages use submissions as the denominator; multi-select answers can exceed 100% in total. Counts are backend aggregates; no inference of confirmed acquisition or reward credit.' }),
+      ]),
   ]);
 }
 
@@ -15851,7 +15906,11 @@ function renderSignedIn() {
   else children.push(el('div', { class: 'toolbar' }, [el('button', { class: 'btn', text: state.loading ? 'Loading...' : 'Refresh', disabled: state.loading, onclick: () => loadData({ force: true }) })]));
 
   if (state.activeTab === 'premium') children.push(renderRewardSurveyAnalytics());
-  children.push(renderStats(items));
+  if (state.activeTab !== 'premium' || rewardSurveyWorkspaceTab === 'responses') children.push(renderStats(items));
+  if (state.activeTab === 'premium' && rewardSurveyWorkspaceTab !== 'responses') {
+    children.push(el('p', { class: 'muted', text: 'Select Responses above to review or close individual submissions.' }));
+    return renderAdminShell(children);
+  }
 
   if (state.loading && !items.length) {
     children.push(renderLoadingState('Loading admin data...', 'Please wait while the latest records are being prepared.'));
