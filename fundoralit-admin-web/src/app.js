@@ -7491,6 +7491,7 @@ const REWARD_SURVEY_DIMENSIONS = [
   ['discoverySource', 'Acquisition channel'],
   ['strengths', 'Strengths (v1) / Friction (v2)'],
   ['futureUsageIntent', 'Usage intent (v1) / Improvement priority (v2)'],
+  ['futureUsageNote', 'Priority explanation (v2)'],
   ['reviewStatus', 'Review queue'],
   ['rewardStatus', 'Reward synchronization'],
 ];
@@ -7572,7 +7573,7 @@ function renderPremiumItem(item) {
     subtitle: item.userEmail || item.userId || item.improvementText || '-',
     statusNode: el('span', { class: getStatusClass(status), text: status }),
     children: [
-      el('p', { class: 'item-desc', text: item.improvementText || item.strengthsNote || item.mostUsedFeatureNote || '-' }),
+      el('p', { class: 'item-desc', text: item.futureUsageNote || item.improvementText || item.strengthsNote || item.mostUsedFeatureNote || '-' }),
       renderMetaGrid([
         ['ID', item.id], ['User ID', item.userId], ['User Email', item.userEmail],
         ['Most Used Features', item.mostUsedFeatures], ['Feature Note', item.mostUsedFeatureNote], ['Discovery Source', item.discoverySource],
