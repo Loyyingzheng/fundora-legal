@@ -558,6 +558,7 @@ const state = {
     focus: 'all',
   },
   learningInspector: { domain: 'SMART_CAPTURE', stage: 'AGGREGATES', pattern: '', offset: 0, loading: false, error: '', response: null, requestId: 0 },
+  learningFinancialSources: { candidates: [], rules: [], loading: false, error: '', loaded: false },
   subscriptionSupport: {
     activeView: 'users',
   },
@@ -1675,6 +1676,7 @@ const LEARNING_CONSOLE_TABS = [
   'Overview',
   'Review Queue',
   'Data Inspector',
+  'Financial Sources',
   'Template Families',
   'Rules',
   'Jobs & Housekeeping',
@@ -12908,6 +12910,9 @@ function setLearningConsoleSubtab(tab) {
   if (tab === 'Data Inspector' && !state.learningInspector.response && !state.learningInspector.loading) {
     loadLearningInspector();
   }
+  if (tab === 'Financial Sources' && !state.learningFinancialSources.loaded && !state.learningFinancialSources.loading) {
+    loadLearningFinancialSources();
+  }
   render();
 }
 
@@ -13446,6 +13451,110 @@ function renderLearningConsoleEvaluation() {
   ]);
 }
 
+// Financial Source Intelligence is independent of user-specific Wallet Learning.
+// This inspector returns only structural, allowlisted Backend records.
+async function loadLearningFinancialSources() {
+  if (state.learningFinancialSources.loading) return;
+  state.learningFinancialSources.loading = true;
+  state.learningFinancialSources.error = '';
+  render();
+  try {
+    const [candidates, rules] = await Promise.all([
+      api('/api/admin/smart-capture/global-source/candidates'),
+      api('/api/admin/smart-capture/global-source/rules'),
+    ]);
+    state.learningFinancialSources.candidates = normalizeAdminListResponse(candidates);
+    state.learningFinancialSources.rules = normalizeAdminListResponse(rules);
+    state.learningFinancialSources.loaded = true;
+  } catch (error) {
+    state.learningFinancialSources.error = toFriendlyErrorMessage(error, 'Financial source rules could not be loaded.');
+  } finally {
+    state.learningFinancialSources.loading = false;
+    render();
+  }
+}
+
+async function reviewLearningFinancialSource(item, action, kind) {
+  const identifier = String(item?.id || item?.ruleId || '').trim();
+  if (!/^[a-f0-9-]{36}$/i.test(identifier)) return;
+  const phrases = { approve: 'APPROVE SOURCE RULE', reject: 'REJECT SOURCE RULE', disable: 'DISABLE SOURCE RULE', resume: 'RESUME SOURCE RULE' };
+  const phrase = phrases[action];
+  const reason = window.prompt(`Reason for ${action} Financial Source rule?`) || '';
+  if (reason.trim().length < 10) return;
+  if ((window.prompt(`Type ${phrase} to continue:`) || '') !== phrase) return;
+  const verified = await promptCriticalActionReauthentication('ADMIN_CRITICAL');
+  if (!verified) return;
+  const path = kind === 'rule'
+    ? `/api/admin/smart-capture/global-source/rules/${identifier}/${action}`
+    : `/api/admin/smart-capture/global-source/candidates/${identifier}/${action}`;
+  await runGovernanceAction(`Financial Source ${action} completed.`, async () => {
+    await api(path, {
+      method: 'POST',
+      body: { ...criticalActionFields(reason.trim(), phrase, `global_source_${action}`), rolloutPercentage: 100 },
+    });
+    state.learningFinancialSources.loaded = false;
+    await loadLearningFinancialSources();
+  });
+}
+
+function renderLearningFinancialSources() {
+  const model = state.learningFinancialSources;
+  const candidateCards = (model.candidates || []).map((item) => {
+    const id = String(item.id || '');
+    const status = String(item.status || 'PENDING');
+    return el('article', { class: 'card learning-source-card' }, [
+      el('h4', { text: `${item.source_package_name || 'Unknown source'} · ${item.transaction_direction || '?'}` }),
+      renderMetaGrid([
+        ['Semantic signature', item.semantic_slot_signature_hash || 'None'],
+        ['Provider', item.provider_family || 'Unknown'],
+        ['Movement', item.movement_nature || 'Unknown'],
+        ['Accounting intent', item.accounting_intent || 'Unknown'],
+        ['Independent users', String(item.unique_user_count ?? '—')],
+        ['Resolver-label consensus (not verified accuracy)', item.agreement_rate == null ? 'Not measured' : `${(Number(item.agreement_rate) * 100).toFixed(1)}%`],
+        ['Conflicting labels', String(item.competing_labels ?? '—')],
+        ['Status', status],
+      ]),
+      status === 'PENDING' ? el('div', { class: 'button-row wrap' }, [
+        el('button', { class: 'btn small', text: 'Approve (shadow only)', onclick: () => reviewLearningFinancialSource({ ...item, id }, 'approve', 'candidate') }),
+        el('button', { class: 'btn small ghost', text: 'Reject', onclick: () => reviewLearningFinancialSource({ ...item, id }, 'reject', 'candidate') }),
+      ]) : null,
+    ]);
+  });
+  const ruleCards = (model.rules || []).map((item) => el('article', { class: 'card learning-source-card' }, [
+    el('h4', { text: `${item.source_package_name || 'Unknown source'} · ${item.transaction_direction || '?'}` }),
+    renderMetaGrid([
+      ['Semantic signature', item.semantic_slot_signature_hash || 'None'],
+      ['Provider', item.provider_family || 'Unknown'],
+      ['Movement', item.movement_nature || 'Unknown'],
+      ['Accounting intent', item.accounting_intent || 'Unknown'],
+      ['Independent users', String(item.unique_user_count ?? '—')],
+      ['Resolver-label consensus (not verified accuracy)', item.agreement_rate == null ? 'Not measured' : `${(Number(item.agreement_rate) * 100).toFixed(1)}%`],
+      ['Rule version', String(item.version ?? '—')],
+      ['Status', String(item.status || 'Unknown')],
+      ['Rollout', `${item.rollout_percentage ?? 0}%`],
+    ]),
+    item.status === 'ACTIVE'
+      ? el('button', { class: 'btn small ghost', text: 'Disable', onclick: () => reviewLearningFinancialSource(item, 'disable', 'rule') })
+      : item.status === 'DISABLED'
+        ? el('button', { class: 'btn small ghost', text: 'Resume', onclick: () => reviewLearningFinancialSource(item, 'resume', 'rule') })
+        : el('p', { class: 'muted', text: 'Paused for drift: requires new independent evidence and Admin reapproval.' }),
+  ]));
+  return el('div', { class: 'learning-source-page' }, [
+    renderAdminControlHero('Global Financial Sources',
+      'Inspect resolver-semantic consensus from privacy-safe, cross-user evidence. These are not independently verified financial-source labels; mobile remains shadow-only.',
+      'Global output contains no Wallet ID, bank account number, masked tail, account fingerprint or ledger authority.'),
+    model.error ? el('div', { class: 'notice warning', text: model.error }) : null,
+    el('div', { class: 'button-row wrap' }, [
+      el('button', { class: 'btn small ghost', text: model.loading ? 'Loading...' : 'Refresh sources', disabled: model.loading, onclick: loadLearningFinancialSources }),
+    ]),
+    el('h3', { text: `Candidates (${candidateCards.length})` }),
+    candidateCards.length ? el('div', { class: 'learning-card-list' }, candidateCards) : renderEmptyState('No candidates. Background training needs enough independent confirmed observations.'),
+    el('h3', { text: `Active source rules (${ruleCards.length})` }),
+    ruleCards.length ? el('div', { class: 'learning-card-list' }, ruleCards) : renderEmptyState('No approved source rules yet.'),
+    renderPolicySafetyNote('This is semantic-source observability, not Wallet prediction accuracy. Source rules cannot save transactions or modify balances.'),
+  ]);
+}
+
 function renderLearningConsolePage() {
   const consoleData = getLearningConsoleData();
   const activeSubtab = state.learningConsole.activeSubtab || LEARNING_CONSOLE_TABS[0];
@@ -13457,6 +13566,7 @@ function renderLearningConsolePage() {
   if (activeSubtab === 'Overview') children.push(renderLearningConsoleOverview(consoleData));
   else if (activeSubtab === 'Review Queue') children.push(renderLearningConsoleReviewQueue(consoleData));
   else if (activeSubtab === 'Data Inspector') children.push(renderLearningDataInspector());
+  else if (activeSubtab === 'Financial Sources') children.push(renderLearningFinancialSources());
   else if (activeSubtab === 'Template Families') children.push(renderLearningConsoleTemplateFamilies(consoleData));
   else if (activeSubtab === 'Rules') children.push(renderLearningConsoleRules(consoleData));
   else if (activeSubtab === 'Jobs & Housekeeping') children.push(renderLearningConsoleJobsAndHousekeeping(consoleData));

@@ -1,0 +1,15 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../src/app.js'),'utf8');
+assert.match(source, /'Financial Sources'/);
+assert.match(source, /loadLearningFinancialSources\(\)/);
+assert.match(source, /renderLearningFinancialSources\(\)/);
+assert.match(source, /\/api\/admin\/smart-capture\/global-source\/candidates/);
+assert.match(source, /\/api\/admin\/smart-capture\/global-source\/rules/);
+assert.match(source, /promptCriticalActionReauthentication\('ADMIN_CRITICAL'\)/);
+assert.match(source, /APPROVE SOURCE RULE/);
+assert.match(source, /PAUSED_DRIFT|Paused for drift/);
+assert.match(source, /Unique users|Independent users/);
+assert.match(source, /Global output contains no Wallet ID/);
+console.log('PASS Admin Financial Sources governance, safety and observability contract');
