@@ -270,6 +270,7 @@ const API_PATHS = {
   learningOps: {
     overview: '/api/admin/learning-ops/overview',
     console: '/api/admin/learning-ops/console',
+    inspector: '/api/admin/learning-ops/inspector',
     jobs: '/api/admin/learning-ops/jobs',
     runJob: '/api/admin/learning-ops/jobs',
   },
@@ -556,6 +557,7 @@ const state = {
     activeSubtab: 'Overview',
     focus: 'all',
   },
+  learningInspector: { domain: 'SMART_CAPTURE', stage: 'AGGREGATES', pattern: '', offset: 0, loading: false, error: '', response: null, requestId: 0 },
   subscriptionSupport: {
     activeView: 'users',
   },
@@ -1672,6 +1674,7 @@ const STATUS_COPY = {
 const LEARNING_CONSOLE_TABS = [
   'Overview',
   'Review Queue',
+  'Data Inspector',
   'Template Families',
   'Rules',
   'Jobs & Housekeeping',
@@ -2394,6 +2397,8 @@ function resetSignedInRuntimeState() {
     activeSubtab: 'Overview',
     focus: 'all',
   };
+  state.learningInspector = { domain: 'SMART_CAPTURE', stage: 'AGGREGATES', pattern: '', offset: 0, loading: false, error: '', response: null, requestId: Number(state.learningInspector?.requestId || 0) + 1 };
+  state.learningConsoleReadModel = null;
   state.analyticsData = {
     overview: null,
     retention: null,
@@ -12900,6 +12905,9 @@ function renderLearningOpsPage() {
 function setLearningConsoleSubtab(tab) {
   if (!LEARNING_CONSOLE_TABS.includes(tab)) return;
   state.learningConsole.activeSubtab = tab;
+  if (tab === 'Data Inspector' && !state.learningInspector.response && !state.learningInspector.loading) {
+    loadLearningInspector();
+  }
   render();
 }
 
@@ -13251,16 +13259,190 @@ function renderLearningConsoleSafety(consoleData) {
   ]);
 }
 
-function renderLearningConsoleEvaluation() {
-  return el('section', { class: 'card' }, [
-    el('div', { class: 'section-title-row' }, [
-      el('div', {}, [el('p', { class: 'eyebrow', text: 'Evaluation' }), el('h3', { text: 'Golden sample + shadow evaluation workspace' })]),
-      el('span', { class: 'status-pill neutral', text: 'placeholder: true' }),
-      el('span', { class: 'status-pill neutral', text: 'Evaluation placeholder' }),
+const LEARNING_INSPECTOR_DOMAINS = Object.freeze([
+  { value: 'SMART_CAPTURE', label: 'Smart Capture' },
+  { value: 'OCR_RECEIPT', label: 'OCR Receipt' },
+  { value: 'CENTRAL_CATEGORY', label: 'Central Category' },
+]);
+const LEARNING_INSPECTOR_STAGES = Object.freeze(['EVENTS', 'AGGREGATES', 'CANDIDATES', 'RULES']);
+
+async function loadLearningInspector() {
+  const inspector = state.learningInspector;
+  const requestId = ++inspector.requestId;
+  const requestedBy = state.user?.email || '';
+  if (!requestedBy) return;
+  inspector.loading = true;
+  inspector.error = '';
+  render();
+  try {
+    const args = new URLSearchParams({
+      domain: inspector.domain,
+      stage: inspector.stage,
+      offset: String(inspector.offset),
+      limit: '20',
+    });
+    if (inspector.pattern) args.set('pattern', inspector.pattern);
+    const response = normalizeAdminObjectResponse(await api(`${API_PATHS.learningOps.inspector}?${args.toString()}`));
+    if (requestId !== state.learningInspector.requestId || (state.user?.email || '') !== requestedBy) return;
+    inspector.response = response;
+  } catch (error) {
+    if (requestId !== state.learningInspector.requestId || (state.user?.email || '') !== requestedBy) return;
+    inspector.response = null;
+    inspector.error = toFriendlyErrorMessage(error, 'Learning data inspector is unavailable.');
+  } finally {
+    if (requestId === state.learningInspector.requestId && (state.user?.email || '') === requestedBy) {
+      inspector.loading = false;
+      render();
+    }
+  }
+}
+
+function changeLearningInspector(values = {}) {
+  const inspector = state.learningInspector;
+  // Invalidate older requests before starting another read. Never mix rows
+  // from different domains, stages, admin sessions, or pattern selectors.
+  inspector.requestId += 1;
+  Object.assign(inspector, values, { offset: 0, response: null, error: '' });
+  loadLearningInspector();
+}
+
+function formatInspectorValue(value, column = '') {
+  if (value === undefined || value === null) return '—';
+  if (column === 'pattern_hash') return `${String(value).slice(0, 14)}…`;
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return String(value);
+}
+
+function renderLearningDataInspector() {
+  const inspector = state.learningInspector;
+  const result = inspector.response;
+  const fields = Array.isArray(result?.fields) ? result.fields : [];
+  const rows = Array.isArray(result?.rows) ? result.rows : [];
+  return el('div', { class: 'learning-inspector-layout' }, [
+    el('section', { class: 'card learning-inspector-top' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Learning Data Inspector' }), el('h3', { text: 'What the pipeline actually stored' })]),
+        el('span', { class: 'status-pill neutral', text: 'Read-only · privacy-filtered' }),
+      ]),
+      el('p', { class: 'muted', text: 'Inspect bounded database projections and field meanings, then trace the same pattern through learning stages. This is real stored metadata, not raw customer events or synthetic sample data.' }),
+      el('div', { class: 'learning-inspector-controls' }, [
+        el('div', {}, [el('strong', { text: 'Learning domain' }),
+          el('div', { class: 'actions compact-actions' }, LEARNING_INSPECTOR_DOMAINS.map((d) => el('button', {
+            class: `btn small ${inspector.domain === d.value ? '' : 'ghost'}`.trim(), text: d.label,
+            onclick: () => changeLearningInspector({ domain: d.value, stage: 'AGGREGATES', pattern: '' }),
+          })))]),
+        el('div', {}, [el('strong', { text: 'Data stage' }),
+          el('div', { class: 'actions compact-actions' }, LEARNING_INSPECTOR_STAGES.map((stage) => el('button', {
+            class: `btn small ${inspector.stage === stage ? '' : 'ghost'}`.trim(), text: stage,
+            onclick: () => changeLearningInspector({ stage }),
+          })))]),
+      ]),
+      inspector.pattern ? el('div', { class: 'learning-inspector-filter' }, [
+        el('span', { text: `Pattern selected: ${inspector.pattern.slice(0, 20)}… (same pattern hash across stages)` }),
+        el('button', { class: 'btn small ghost', text: 'Clear pattern', onclick: () => changeLearningInspector({ pattern: '' }) }),
+      ]) : null,
+      el('p', { class: 'muted', text: 'Correlation uses a pattern hash, not a personal Wallet ID. OCR patterns also include hash/parser versions: multiple versions with the same hash must not be treated as one identical model record.' }),
     ]),
-    el('p', { class: 'muted', text: 'Latest golden/shadow evaluation per domain: Not run yet unless backend data is available. Domains: Smart Capture notification, OCR Receipt layout, OCR Financial List layout, Statement Import format, Central Category pattern. No fake metrics are shown.' }),
-    el('p', { class: 'muted', text: 'fakeNumbers: false' }),
-    renderPolicySafetyNote('Do not approve future auto-maintenance from this tab until before/after accuracy, critical regression checks, regression status, and recommendation are available.'),
+    inspector.loading ? el('section', { class: 'card', text: 'Loading bounded learning sample…' }) : null,
+    inspector.error ? el('section', { class: 'notice danger', text: inspector.error }) : null,
+    !inspector.loading && result && !result.available ? el('section', { class: 'card' }, [
+      el('h3', { text: 'Stage not available as a standalone table' }),
+      el('p', { text: result.notice || 'This learning stage does not exist as an independent dataset.' }),
+      el('button', { class: 'btn small ghost', text: 'Open Template Families', onclick: () => setLearningConsoleSubtab('Template Families') }),
+    ]) : null,
+    !inspector.loading && result?.available ? el('section', { class: 'card learning-inspector-table-card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: `Physical table: ${result.sourceTable || 'unknown'}` }),
+          el('h3', { text: `${rows.length} stored record${rows.length === 1 ? '' : 's'} shown` })]),
+        el('button', { class: 'btn small ghost', text: 'Refresh', onclick: loadLearningInspector }),
+      ]),
+      el('p', { class: 'muted', text: result.notice || 'Limited safe projection; no complete counts implied.' }),
+      rows.length ? el('div', { class: 'table-wrap learning-inspector-scroller' }, [
+        el('table', { class: 'admin-table' }, [
+          el('thead', {}, [el('tr', {}, [
+            el('th', { text: 'Pattern lineage' }),
+            ...fields.filter((f) => f.column !== 'pattern_hash').map((f) => el('th', { text: f.column })),
+          ])]),
+          el('tbody', {}, rows.map((row) => el('tr', {}, [
+            el('td', {}, [row.pattern_hash ? el('button', { class: 'btn small ghost',
+              text: formatInspectorValue(row.pattern_hash, 'pattern_hash'),
+              title: 'Show the same pattern across stages',
+              onclick: () => changeLearningInspector({ pattern: String(row.pattern_hash), stage: 'AGGREGATES' }),
+            }) : el('span', { text: '—' })]),
+            ...fields.filter((f) => f.column !== 'pattern_hash').map((f) => el('td', { text: formatInspectorValue(row[f.column], f.column) })),
+          ]))),
+        ]),
+      ]) : renderEmptyState('No observations in this sample. There may be no records for the selected stage or pattern.'),
+      el('div', { class: 'actions compact-actions' }, [
+        el('button', { class: 'btn small ghost', text: 'Previous 20', disabled: inspector.offset === 0,
+          onclick: () => { inspector.offset = Math.max(0, inspector.offset - 20); loadLearningInspector(); } }),
+        el('span', { class: 'muted', text: `Offset ${result.offset ?? inspector.offset}; limit 20; bounded results` }),
+        el('button', { class: 'btn small ghost', text: 'Next 20', disabled: !result.hasMore || inspector.offset >= 500,
+          onclick: () => { inspector.offset = Math.min(500, inspector.offset + 20); loadLearningInspector(); } }),
+      ]),
+    ]) : null,
+    !inspector.loading && result?.available ? el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [el('h3', { text: 'Stored schema & privacy-safe JSON projection' })]),
+      el('p', { class: 'muted', text: 'The schema lists exact physical columns (except observed_day, which is deliberately derived from a timestamp). Raw JSON/text fields, user identifiers, exact timestamps and account information are excluded on the server. Expand a record to inspect the returned column/value shape.' }),
+      el('div', { class: 'table-wrap' }, [el('table', { class: 'admin-table' }, [
+        el('thead', {}, [el('tr', {}, [el('th', { text: 'Column' }), el('th', { text: 'PostgreSQL type' }), el('th', { text: 'Meaning' })])]),
+        el('tbody', {}, fields.map((f) => el('tr', {}, [el('td', { text: f.column }), el('td', { text: f.storageType }), el('td', { text: f.meaning })]))),
+      ])]),
+      ...rows.slice(0, 3).map((row, index) => el('details', { class: 'learning-inspector-json' }, [
+        el('summary', { text: `Inspect privacy-safe JSON projection #${inspector.offset + index + 1}` }),
+        el('pre', { text: JSON.stringify(row, null, 2) }),
+      ])),
+      el('p', { class: 'muted', text: 'JSON distribution columns may exist in the physical table, but their unreviewed free-form values are not exposed by this inspector. Use existing aggregate/candidate metrics for evidence evaluation.' }),
+    ]) : null,
+  ]);
+}
+
+function renderLearningConsoleEvaluation() {
+  const overview = getLearningConsoleData().learningOpsOverview || {};
+  const smartMl = overview.smartCaptureMl || {};
+  const smart = overview.smartCapture || {};
+  const ocr = overview.ocrReceipt || {};
+  const latestJobs = Array.isArray(overview.latestJobs) ? overview.latestJobs : [];
+  const row = (name, value, hint) => [name, value === null || value === undefined || value === '' ? 'Not measured' : String(value), hint];
+  const pct = (value) => value == null ? 'Not measured' : formatLearningOpsPercent(value);
+  return el('div', { class: 'learning-console-evaluation' }, [
+    el('section', { class: 'card' }, [
+      el('div', { class: 'section-title-row' }, [
+        el('div', {}, [el('p', { class: 'eyebrow', text: 'Evaluation' }), el('h3', { text: 'Measured learning signals — not fabricated AI accuracy' })]),
+      ]),
+      el('p', { class: 'muted', text: 'These are existing backend snapshot metrics and job outcomes. Agreement/correction measurements are behavioral evidence, not automatically ground-truth accuracy. Missing data is shown as Not measured.' }),
+      el('p', { class: 'muted', text: `Snapshot generated: ${formatLearningOpsDate(overview.generatedAt || null)}. Dashboard snapshots can be bounded or stale; check Jobs for the latest run.` }),
+    ]),
+    renderLearningOpsHealthCard('Smart Capture · Global', 'Observed resolver disagreement and category/type corrections', smart.status || 'UNKNOWN', [
+      row('Events 7 days', smart.events7d, 'Bounded window, not lifetime total'),
+      row('Changed type rate', pct(smart.changedTypeRate7d), 'Observed user type corrections'),
+      row('Resolver conflicts', pct(smart.conflictRate7d), 'Conflicting resolver decisions'),
+      row('Resolver disagreements', pct(smart.disagreementRate7d), 'Not necessarily erroneous predictions'),
+    ]),
+    renderLearningOpsHealthCard('Smart Capture · ML shadow', 'Measured only for sampled shadow predictions', smartMl.status || 'UNKNOWN', [
+      row('Model status', smartMl.latestModelStatus, 'Latest published shadow model status'),
+      row('Shadow observations 7 days', smartMl.shadowSamples7d, 'Sample count, not coverage of all notifications'),
+      row('Shadow agreement', pct(smartMl.agreementRate7d), 'Agreement on measured shadow samples'),
+      row('Internal → false expense', pct(smartMl.internalFalseExpenseRate7d), 'Safety-critical error on measured samples'),
+      row('Marketing → false transaction', pct(smartMl.marketingFalseTransactionRate7d), 'False positive risk on measured samples'),
+    ]),
+    renderLearningOpsHealthCard('OCR Receipt · Global', 'Parser outcomes and user correction signals', ocr.status || 'UNKNOWN', [
+      row('Events 7 days', ocr.events7d, 'Bounded observation window'),
+      row('Edited total rate', pct(ocr.amountEditedRate7d), 'User-adjusted receipt totals'),
+      row('Parser changed rate', pct(ocr.parserChangedRate7d), 'Changes to parser-selected result'),
+      row('Verification conflict', pct(ocr.verificationConflictRate7d), 'Verifier disagreements where measured'),
+    ]),
+    el('section', { class: 'card' }, [
+      el('h3', { text: 'Recent evaluation & training jobs' }),
+      latestJobs.length ? renderLearningOpsMetricRows(latestJobs.filter((job) => /TRAIN|EVALUAT|DATASET|CANDIDATE/.test(String(job.jobType || ''))).slice(0, 6)
+        .map((job) => [job.jobType || 'Job', `${job.status || 'UNKNOWN'} · ${formatLearningOpsDate(job.completedAt || job.startedAt)}`])) : renderEmptyState('No recent jobs were included in the snapshot.'),
+      el('p', { class: 'muted', text: 'Central Category: no verified outcome-based accuracy metric is exposed by this snapshot. Inspect stored aggregates and Template Families rather than inferring a score.' }),
+      el('div', { class: 'actions compact-actions' }, [
+        el('button', { class: 'btn small ghost', text: 'Inspect stored evidence', onclick: () => setLearningConsoleSubtab('Data Inspector') }),
+        el('button', { class: 'btn small ghost', text: 'Open Jobs & Housekeeping', onclick: () => setLearningConsoleSubtab('Jobs & Housekeeping') }),
+      ]),
+    ]),
+    renderPolicySafetyNote('Rule approval and graduation remain in the existing governance flows. These measured signals do not authorize auto-save or auto-approval.'),
   ]);
 }
 
@@ -13274,6 +13456,7 @@ function renderLearningConsolePage() {
   if (['Overview', 'Review Queue', 'Rules'].includes(activeSubtab)) children.push(renderLearningConsoleFocusFilter());
   if (activeSubtab === 'Overview') children.push(renderLearningConsoleOverview(consoleData));
   else if (activeSubtab === 'Review Queue') children.push(renderLearningConsoleReviewQueue(consoleData));
+  else if (activeSubtab === 'Data Inspector') children.push(renderLearningDataInspector());
   else if (activeSubtab === 'Template Families') children.push(renderLearningConsoleTemplateFamilies(consoleData));
   else if (activeSubtab === 'Rules') children.push(renderLearningConsoleRules(consoleData));
   else if (activeSubtab === 'Jobs & Housekeeping') children.push(renderLearningConsoleJobsAndHousekeeping(consoleData));

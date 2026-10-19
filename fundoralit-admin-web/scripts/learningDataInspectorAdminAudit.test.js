@@ -1,0 +1,18 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const assert = require('node:assert/strict');
+const app = fs.readFileSync(path.join(__dirname, '../src/app.js'), 'utf8');
+const style = fs.readFileSync(path.join(__dirname, '../src/styles.css'), 'utf8');
+assert.match(app, /inspector: '\/api\/admin\/learning-ops\/inspector'/);
+assert.match(app, /'Data Inspector'/);
+assert.match(app, /function renderLearningDataInspector\(/);
+assert.match(app, /function renderLearningConsoleEvaluation\(/);
+assert.match(app, /renderLearningDataInspector\(\)/);
+assert.match(app, /encodeURIComponent|new URLSearchParams/);
+assert.match(app, /if \(requestId !== state\.learningInspector\.requestId \|\| \(state\.user\?\.email \|\| ''\) !== requestedBy\) return;/);
+assert.match(app, /JSON\.stringify\(row, null, 2\)/);
+assert.match(app, /if \(tab === 'Data Inspector'/);
+assert.match(app, /sourceTable/);
+assert.match(style, /learning-inspector-json/);
+assert.doesNotMatch(app.slice(app.indexOf('function renderLearningConsoleEvaluation()'), app.indexOf('function renderLearningConsolePage()')), /placeholder: true|fakeNumbers:/);
+console.log('PASS Learning Data Inspector Admin UI contract');
